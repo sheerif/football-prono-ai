@@ -291,7 +291,7 @@ def season_summary(title: str, subtitle: str, cards: list[tuple[str, str]], rows
             }
             for row in rows
         ]
-        st.dataframe(table_rows, hide_index=True, use_container_width=True)
+        st.dataframe(table_rows, hide_index=True, width="stretch")
 
 
 def run_direct_page(title: str, show_func):

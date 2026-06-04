@@ -317,7 +317,7 @@ def show():
         st.error("Veuillez sélectionner deux équipes différentes.")
         return
 
-    if st.button("Analyser le match", type="primary", use_container_width=True):
+    if st.button("Analyser le match", type="primary", width="stretch"):
         matches_df = _load_matches_window(league_id, seasons_window)
         if matches_df.empty:
             st.warning("Aucun match disponible sur les 10 saisons retenues pour ce championnat.")
@@ -386,19 +386,19 @@ def show():
             if home_history_table.empty:
                 st.info(f"Aucun match trouvé pour {home_view['team_name']} dans les saisons sélectionnées.")
             else:
-                st.dataframe(home_history_table, use_container_width=True, hide_index=True)
+                st.dataframe(home_history_table, width="stretch", hide_index=True)
         with away_history:
             away_history_table = _team_matches_history_table(matches_df, away_team, team_options)
             if away_history_table.empty:
                 st.info(f"Aucun match trouvé pour {away_view['team_name']} dans les saisons sélectionnées.")
             else:
-                st.dataframe(away_history_table, use_container_width=True, hide_index=True)
+                st.dataframe(away_history_table, width="stretch", hide_index=True)
         with h2h_history:
             h2h_history_df = _h2h_history_table(matches_df, home_team, away_team, team_options)
             if h2h_history_df.empty:
                 st.info("Aucune confrontation directe trouvée dans les saisons sélectionnées.")
             else:
-                st.dataframe(h2h_history_df, use_container_width=True, hide_index=True)
+                st.dataframe(h2h_history_df, width="stretch", hide_index=True)
 
         st.subheader("Confrontations directes")
         h2h_df = matches_df[
@@ -437,7 +437,7 @@ def show():
         st.write(f"Buts {home_view['team_name']}: {goals_home} — Buts {away_view['team_name']}: {goals_away}")
         if not h2h_table.empty:
             st.caption("Chaque ligne affiche clairement l’équipe gagnante du match.")
-            st.dataframe(h2h_table, use_container_width=True, hide_index=True)
+            st.dataframe(h2h_table, width="stretch", hide_index=True)
         else:
             st.info("Aucune confrontation trouvée sur la fenêtre choisie.")
 

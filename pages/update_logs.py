@@ -186,7 +186,7 @@ def show():
                     ]
                 ],
                 hide_index=True,
-                use_container_width=True,
+                width="stretch",
             )
 
             selected_id = st.selectbox("Voir le détail brut", options=filtered["id"].tolist())
@@ -215,7 +215,7 @@ def show():
             st.dataframe(
                 connections[["id", "Connexion", "MAJ en cours effectuée"]],
                 hide_index=True,
-                use_container_width=True,
+                width="stretch",
             )
 
     with tab_state:
@@ -225,7 +225,7 @@ def show():
             st.dataframe(
                 sync_state[["Clé", "Valeur", "Dernière modification"]],
                 hide_index=True,
-                use_container_width=True,
+                width="stretch",
             )
 
 

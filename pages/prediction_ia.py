@@ -307,7 +307,7 @@ def show():
             format_func=lambda key: team_options[key],
         )
 
-    if st.button("Calculer la prédiction", type="primary", use_container_width=True):
+    if st.button("Calculer la prédiction", type="primary", width="stretch"):
         pred, home_stats, away_stats, details = prediction_helpers.predict_match(matches_df, home_team, away_team)
         home_name = team_options[home_team]
         away_name = team_options[away_team]
@@ -316,7 +316,7 @@ def show():
         st.dataframe(
             _match_context_table(league_map[league_id], seasons_with_data, matches_df, home_name, away_name),
             hide_index=True,
-            use_container_width=True,
+            width="stretch",
         )
 
         ui.section_label("Résultat")
@@ -326,7 +326,7 @@ def show():
         cols[2].metric(f"Victoire {away_name}", f"{pred['away_probability']} %")
         cols[3].metric("Confiance", f"{pred['confidence']} %")
 
-        st.dataframe(_glossary_table(), hide_index=True, use_container_width=True)
+        st.dataframe(_glossary_table(), hide_index=True, width="stretch")
 
         favorite = max(
             [
@@ -343,28 +343,28 @@ def show():
             st.write(f"- {reason}")
 
         ui.section_label("Méthode de calcul")
-        st.dataframe(_explanation_table(details), hide_index=True, use_container_width=True)
+        st.dataframe(_explanation_table(details), hide_index=True, width="stretch")
         st.caption(
             "La prédiction est une estimation statistique interne. Elle compare les deux équipes dans la période sélectionnée; "
             "elle ne tient pas encore compte des blessures, suspensions, compositions probables, météo ou cotes de marché."
         )
 
         ui.section_label("Légende des valeurs analysées")
-        st.dataframe(_analysis_legend_table(), hide_index=True, use_container_width=True)
+        st.dataframe(_analysis_legend_table(), hide_index=True, width="stretch")
 
         ui.section_label("Base statistique")
         stats_cols = st.columns(2)
         stats_cols[0].markdown(f"### {home_name}")
-        stats_cols[0].dataframe(_stats_table(home_stats), hide_index=True, use_container_width=True)
+        stats_cols[0].dataframe(_stats_table(home_stats), hide_index=True, width="stretch")
         stats_cols[1].markdown(f"### {away_name}")
-        stats_cols[1].dataframe(_stats_table(away_stats), hide_index=True, use_container_width=True)
+        stats_cols[1].dataframe(_stats_table(away_stats), hide_index=True, width="stretch")
 
         ui.section_label("Détails utilisés par le modèle")
         detail_cols = st.columns(2)
         detail_cols[0].markdown(f"### {home_name}")
-        detail_cols[0].dataframe(_derived_stats_table(home_stats, details, "home"), hide_index=True, use_container_width=True)
+        detail_cols[0].dataframe(_derived_stats_table(home_stats, details, "home"), hide_index=True, width="stretch")
         detail_cols[1].markdown(f"### {away_name}")
-        detail_cols[1].dataframe(_derived_stats_table(away_stats, details, "away"), hide_index=True, use_container_width=True)
+        detail_cols[1].dataframe(_derived_stats_table(away_stats, details, "away"), hide_index=True, width="stretch")
 
         ui.section_label("Matchs joués analysés avec horodatage")
         st.caption(
@@ -377,19 +377,19 @@ def show():
             if home_table.empty:
                 st.info(f"Aucun match joué trouvé pour {home_name} dans cette sélection.")
             else:
-                st.dataframe(home_table, hide_index=True, use_container_width=True)
+                st.dataframe(home_table, hide_index=True, width="stretch")
         with away_matches:
             away_table = _team_matches_table(matches_df, away_team, team_options)
             if away_table.empty:
                 st.info(f"Aucun match joué trouvé pour {away_name} dans cette sélection.")
             else:
-                st.dataframe(away_table, hide_index=True, use_container_width=True)
+                st.dataframe(away_table, hide_index=True, width="stretch")
         with h2h_matches:
             h2h_table = _head_to_head_table(matches_df, home_team, away_team, team_options)
             if h2h_table.empty:
                 st.info("Aucune confrontation directe jouée dans les saisons sélectionnées.")
             else:
-                st.dataframe(h2h_table, hide_index=True, use_container_width=True)
+                st.dataframe(h2h_table, hide_index=True, width="stretch")
 
 
 if __name__ == "__main__":

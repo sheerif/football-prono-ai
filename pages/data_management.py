@@ -66,10 +66,10 @@ def show():
         max_retries = st.slider("Nombre maximal de tentatives", min_value=1, max_value=10, value=6)
 
         quick_cols = st.columns([1, 1])
-        quick_import_l1 = quick_cols[0].button("Import rapide Ligue 1", use_container_width=True)
-        quick_import_6 = quick_cols[1].button("Import LDC + 5 championnats", use_container_width=True)
+        quick_import_l1 = quick_cols[0].button("Import rapide Ligue 1", width="stretch")
+        quick_import_6 = quick_cols[1].button("Import LDC + 5 championnats", width="stretch")
 
-        launch = st.button("Lancer le traitement", type="primary", use_container_width=True)
+        launch = st.button("Lancer le traitement", type="primary", width="stretch")
 
     if quick_import_l1:
         selected_presets = ["France - Ligue 1"]

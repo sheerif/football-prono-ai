@@ -227,7 +227,7 @@ def show():
         st.error("Choisissez deux équipes différentes.")
         return
 
-    if st.button("Comparer les équipes", type="primary", use_container_width=True):
+    if st.button("Comparer les équipes", type="primary", width="stretch"):
         matches_df = _load_matches_window(league_id, seasons_window)
 
         stats_a = stats_service.compute_basic_stats(matches_df, team_a)
@@ -282,7 +282,7 @@ def show():
         ]
         radar = charts.radar_team_comparison(labels, values_a, values_b, team_options[team_a], team_options[team_b])
         if radar is not None:
-            st.plotly_chart(radar, use_container_width=True, key="radar_compare")
+            st.plotly_chart(radar, width="stretch", key="radar_compare")
 
         st.subheader("Confrontations directes")
         if h2h_df.empty:
@@ -299,7 +299,7 @@ def show():
             summary_cols[5].metric("Nuls", h2h_totals[team_a]["draws"])
 
             st.caption(f"Analyse des face-à-face sur {seasons_window[0]} → {seasons_window[-1]} : chaque ligne indique le vainqueur du match.")
-            st.dataframe(h2h_table, use_container_width=True, hide_index=True)
+            st.dataframe(h2h_table, width="stretch", hide_index=True)
 
         # Global info for selected seasons (league-wide)
         completed_matches_df = matches_df.dropna(subset=['home_goals', 'away_goals'])
@@ -393,7 +393,7 @@ def show():
                     'Perdant': loser,
                 })
             if rows:
-                st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+                st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
 
         st.subheader("Lecture rapide")
         adv_a = stats_a["wins"] + stats_a["goals_for"] - stats_a["goals_against"]

@@ -19,7 +19,7 @@ def is_authenticated() -> bool:
 
 
 def logout_button():
-    if st.sidebar.button("Déconnexion", use_container_width=True):
+    if st.sidebar.button("Déconnexion", width="stretch"):
         st.session_state["authenticated"] = False
         st.session_state.pop("auth_user", None)
         st.rerun()
@@ -34,7 +34,7 @@ def login_page() -> bool:
     with st.container(border=True):
         username = st.text_input("Identifiant", value="", placeholder="admin")
         password = st.text_input("Mot de passe", value="", type="password")
-        submitted = st.button("Se connecter", type="primary", use_container_width=True)
+        submitted = st.button("Se connecter", type="primary", width="stretch")
 
     if submitted:
         valid_user = hmac.compare_digest(username, expected_user)

@@ -125,15 +125,15 @@ def show():
         st.warning("Sélectionnez au moins deux équipes.")
         return
 
-    if st.button("Générer le classement", type="primary", use_container_width=True):
+    if st.button("Générer le classement", type="primary", width="stretch"):
         rankings = _build_rankings(matches_df, selected_options, int(top_limit))
         ui.section_label("Classement")
-        st.dataframe(_glossary_table(), hide_index=True, use_container_width=True)
+        st.dataframe(_glossary_table(), hide_index=True, width="stretch")
         st.caption(
             "Le tableau classe les matchs simulés entre les équipes sélectionnées. "
             "La première ligne est le pronostic le plus fort selon les données disponibles."
         )
-        st.dataframe(rankings, hide_index=True, use_container_width=True)
+        st.dataframe(rankings, hide_index=True, width="stretch")
 
         if not rankings.empty:
             best = rankings.iloc[0]
