@@ -241,14 +241,22 @@ def _parse_int_list(value: str, fallback: list[int]) -> list[int]:
 
 
 def get_auto_refresh_config() -> dict:
-    current_year = datetime.date.today().year
-    end_season = os.getenv("AUTO_REFRESH_END_SEASON") or str(current_year)
+    configured_end_season = os.getenv("AUTO_REFRESH_END_SEASON", "").strip()
+    if configured_end_season:
+        end_season = int(configured_end_season)
+    else:
+        try:
+            with engine.begin() as conn:
+                end_season = conn.execute(text("SELECT MAX(season) FROM matches")).scalar_one_or_none()
+            end_season = int(end_season) if end_season else 2025
+        except Exception:
+            end_season = 2025
     return {
         "enabled": os.getenv("AUTO_REFRESH_ON_CONNECTION", "true").lower() in {"1", "true", "yes", "oui"},
         "current_enabled": os.getenv("AUTO_REFRESH_CURRENT_ON_CONNECTION", "true").lower() in {"1", "true", "yes", "oui"},
         "league_ids": _parse_int_list(os.getenv("AUTO_REFRESH_LEAGUE_IDS", ""), DEFAULT_LEAGUE_IDS),
         "start_season": int(os.getenv("AUTO_REFRESH_START_SEASON", "2016")),
-        "end_season": int(end_season),
+        "end_season": end_season,
         "recent_seasons": int(os.getenv("AUTO_REFRESH_RECENT_SEASONS", "2")),
         "interval_minutes": int(os.getenv("AUTO_REFRESH_INTERVAL_MINUTES", "360")),
         "pause": float(os.getenv("AUTO_REFRESH_PAUSE_SECONDS", "0.8")),
