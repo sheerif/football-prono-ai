@@ -1,6 +1,18 @@
 import streamlit as st
 import datetime
+import os
+
+os.environ["AUTO_REFRESH_END_SEASON"] = "2026"
+
 from services import import_service
+
+
+def _force_2026_active_season(session, league_id: int, fallback_season: int) -> int:
+	return max(2026, int(fallback_season or 2026))
+
+
+import_service._active_season_for_league = _force_2026_active_season
+
 from components import auth, sidebar, ui
 from pages import dashboard, data_management, update_logs, api_widgets, analyse_match, comparaison_equipes, prediction_ia, top_pronostics
 

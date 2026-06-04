@@ -15,7 +15,14 @@ def fetch_leagues():
 def fetch_seasons(league_id: int):
     try:
         df = pd.read_sql(
-            text("SELECT DISTINCT season FROM matches WHERE league_id = :lid ORDER BY season DESC"),
+            text(
+                """
+                SELECT season FROM league_seasons WHERE league_id = :lid
+                UNION
+                SELECT DISTINCT season FROM matches WHERE league_id = :lid
+                ORDER BY season DESC
+                """
+            ),
             engine,
             params={"lid": league_id},
         )
@@ -25,27 +32,29 @@ def fetch_seasons(league_id: int):
 
 
 def configured_seasons():
+    config = import_service.get_auto_refresh_config()
+    configured = set(range(config["start_season"], config["end_season"] + 1))
     try:
-        df = pd.read_sql("SELECT DISTINCT season FROM matches ORDER BY season", engine)
-        seasons = [int(season) for season in df["season"].dropna().tolist()]
-        if seasons:
-            return seasons
+        df = pd.read_sql(
+            """
+            SELECT season FROM league_seasons
+            UNION
+            SELECT DISTINCT season FROM matches
+            ORDER BY season
+            """,
+            engine,
+        )
+        configured.update(int(season) for season in df["season"].dropna().tolist())
     except Exception:
         pass
-    config = import_service.get_auto_refresh_config()
-    return list(range(config["start_season"], config["end_season"] + 1))
+    return sorted(configured)
 
 
 def selected_season_status(selected_seasons, available_seasons):
     selected = [int(season) for season in selected_seasons]
     available = {int(season) for season in available_seasons}
     used = [season for season in selected if season in available]
-    max_available = max(available) if available else None
-    missing = [
-        season
-        for season in selected
-        if season not in available and (max_available is None or season <= max_available)
-    ]
+    missing = [season for season in selected if season not in available]
     return used, missing
 
 

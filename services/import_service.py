@@ -14,6 +14,8 @@ from requests.exceptions import HTTPError
 logger = logging.getLogger(__name__)
 client = ApiFootballClient()
 DEFAULT_LEAGUE_IDS = [61, 39, 140, 135, 78, 2]
+DEFAULT_START_SEASON = 2016
+DEFAULT_END_SEASON = 2026
 
 # configure basic logging if not set
 if not logging.getLogger().handlers:
@@ -27,6 +29,13 @@ def init_db():
     _ensure_sync_state_table()
     _ensure_connection_log_table()
     _ensure_update_log_table()
+    _ensure_league_seasons_table()
+    config = get_auto_refresh_config()
+    register_league_seasons(
+        config["league_ids"],
+        range(config["start_season"], config["end_season"] + 1),
+        source="configuration",
+    )
 
 
 def _ensure_schema_columns():
@@ -98,6 +107,48 @@ def _ensure_update_log_table():
                 )
                 """
             )
+        )
+
+
+def _ensure_league_seasons_table():
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS league_seasons (
+                    league_id INTEGER NOT NULL,
+                    season INTEGER NOT NULL,
+                    source TEXT,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (league_id, season)
+                )
+                """
+            )
+        )
+
+
+def register_league_seasons(league_ids, seasons, source: str = "import"):
+    _ensure_league_seasons_table()
+    now = datetime.datetime.utcnow().isoformat()
+    rows = [
+        {"league_id": int(league_id), "season": int(season), "source": source, "updated_at": now}
+        for league_id in league_ids
+        for season in seasons
+    ]
+    if not rows:
+        return
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO league_seasons (league_id, season, source, updated_at)
+                VALUES (:league_id, :season, :source, :updated_at)
+                ON CONFLICT(league_id, season) DO UPDATE SET
+                    source = excluded.source,
+                    updated_at = excluded.updated_at
+                """
+            ),
+            rows,
         )
 
 
@@ -243,19 +294,31 @@ def _parse_int_list(value: str, fallback: list[int]) -> list[int]:
 def get_auto_refresh_config() -> dict:
     configured_end_season = os.getenv("AUTO_REFRESH_END_SEASON", "").strip()
     if configured_end_season:
-        end_season = int(configured_end_season)
+        end_season = max(int(configured_end_season), DEFAULT_END_SEASON)
     else:
+        current_year = datetime.datetime.utcnow().year
         try:
             with engine.begin() as conn:
-                end_season = conn.execute(text("SELECT MAX(season) FROM matches")).scalar_one_or_none()
-            end_season = int(end_season) if end_season else 2025
+                stored_end_season = conn.execute(
+                    text(
+                        """
+                        SELECT MAX(season) FROM (
+                            SELECT season FROM league_seasons
+                            UNION
+                            SELECT season FROM matches
+                        )
+                        """
+                    )
+                ).scalar_one_or_none()
+            stored_end_season = int(stored_end_season) if stored_end_season else DEFAULT_END_SEASON
+            end_season = max(current_year, stored_end_season)
         except Exception:
-            end_season = 2025
+            end_season = max(current_year, DEFAULT_END_SEASON)
     return {
         "enabled": os.getenv("AUTO_REFRESH_ON_CONNECTION", "true").lower() in {"1", "true", "yes", "oui"},
         "current_enabled": os.getenv("AUTO_REFRESH_CURRENT_ON_CONNECTION", "true").lower() in {"1", "true", "yes", "oui"},
         "league_ids": _parse_int_list(os.getenv("AUTO_REFRESH_LEAGUE_IDS", ""), DEFAULT_LEAGUE_IDS),
-        "start_season": int(os.getenv("AUTO_REFRESH_START_SEASON", "2016")),
+        "start_season": int(os.getenv("AUTO_REFRESH_START_SEASON", str(DEFAULT_START_SEASON))),
         "end_season": end_season,
         "recent_seasons": int(os.getenv("AUTO_REFRESH_RECENT_SEASONS", "2")),
         "interval_minutes": int(os.getenv("AUTO_REFRESH_INTERVAL_MINUTES", "360")),
@@ -408,11 +471,18 @@ def _save_match(session, fixture: dict, league_id: int, season: int):
     session.commit()
 
 
-def import_league_seasons_by_id(league_id: int, seasons: List[int] = list(range(2016, 2027))):
+def _configured_season_range() -> list[int]:
+    config = get_auto_refresh_config()
+    return list(range(config["start_season"], config["end_season"] + 1))
+
+
+def import_league_seasons_by_id(league_id: int, seasons: List[int] | None = None):
     """Import fixtures, teams, standings for given `league_id` across given seasons.
 
     This function is defensive and will skip items when API response differs.
     """
+    seasons = seasons or _configured_season_range()
+    register_league_seasons([league_id], seasons, source="import")
     session = SessionLocal()
     try:
         for season in seasons:
@@ -500,10 +570,21 @@ def import_league_seasons_by_id(league_id: int, seasons: List[int] = list(range(
 
 def _active_season_for_league(session, league_id: int, fallback_season: int) -> int:
     season = session.execute(
-        text("SELECT MAX(season) FROM matches WHERE league_id = :league_id"),
+        text(
+            """
+            SELECT MAX(season) FROM (
+                SELECT season FROM league_seasons WHERE league_id = :league_id
+                UNION
+                SELECT season FROM matches WHERE league_id = :league_id
+            )
+            """
+        ),
         {"league_id": league_id},
     ).scalar_one_or_none()
-    return int(season) if season is not None else fallback_season
+    stored_season = int(season) if season is not None else None
+    if stored_season is None:
+        return fallback_season
+    return max(stored_season, fallback_season)
 
 
 def _refresh_league_season(session, league_id: int, season: int, pause: float, max_retries: int):
@@ -623,6 +704,7 @@ def refresh_current_competitions_on_connection() -> dict:
     if not config["enabled"] or not config["current_enabled"]:
         return {"ran": False, "reason": "Mise à jour des championnats en cours désactivée.", "config": config}
 
+    register_league_seasons(config["league_ids"], [config["end_season"]], source="current_refresh")
     session = SessionLocal()
     refreshed = []
     try:
@@ -652,14 +734,15 @@ def refresh_current_competitions_on_connection() -> dict:
     }
 
 
-def import_multiple_leagues(league_ids: List[int], seasons: List[int] = list(range(2016, 2027))):
+def import_multiple_leagues(league_ids: List[int], seasons: List[int] | None = None):
+    seasons = seasons or _configured_season_range()
     for lid in league_ids:
         import_league_seasons_by_id(lid, seasons=seasons)
 
 
 def import_leagues_cautious(
     league_ids: List[int],
-    seasons: List[int] = list(range(2016, 2027)),
+    seasons: List[int] | None = None,
     pause: float = 1.5,
     max_retries: int = 5,
     force_refresh_seasons: List[int] | None = None,
@@ -669,6 +752,8 @@ def import_leagues_cautious(
     - `pause`: base seconds between API calls
     - `max_retries`: number of retries on 429 or transient errors
     """
+    seasons = seasons or _configured_season_range()
+    register_league_seasons(league_ids, seasons, source="import")
     session = SessionLocal()
     force_refresh_seasons = set(force_refresh_seasons or [])
     try:

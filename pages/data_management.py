@@ -48,6 +48,7 @@ def show():
 
     ui.section_label("Importer / mettre à jour")
     st.info("Cet écran sert à peupler la base SQLite et à rafraîchir les indicateurs du tableau de bord.")
+    max_season = max(2026, import_service.get_auto_refresh_config()["end_season"])
 
     with st.container(border=True):
         selected_presets = st.multiselect(
@@ -58,8 +59,8 @@ def show():
         )
 
         col1, col2, col3 = st.columns(3)
-        start_season = col1.number_input("Saison de début", min_value=2016, max_value=2026, value=2016, step=1)
-        end_season = col2.number_input("Saison de fin", min_value=2016, max_value=2026, value=2026, step=1)
+        start_season = col1.number_input("Saison de début", min_value=2016, max_value=max_season, value=2016, step=1)
+        end_season = col2.number_input("Saison de fin", min_value=2016, max_value=max_season, value=max_season, step=1)
         pause = col3.number_input("Pause entre requêtes (s)", min_value=0.5, max_value=10.0, value=2.0, step=0.5)
 
         max_retries = st.slider("Nombre maximal de tentatives", min_value=1, max_value=10, value=6)

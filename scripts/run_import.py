@@ -19,8 +19,9 @@ from services import import_service
 
 if __name__ == '__main__':
     import_service.init_db()
-    leagues = [61, 39, 140, 135, 78]
-    seasons = list(range(2016, 2027))
+    config = import_service.get_auto_refresh_config()
+    leagues = config["league_ids"]
+    seasons = list(range(config["start_season"], config["end_season"] + 1))
     # cautious mode: longer pause to reduce 429s
     import_service.import_leagues_cautious(leagues, seasons=seasons, pause=2.0, max_retries=6)
     print('Import run completed')

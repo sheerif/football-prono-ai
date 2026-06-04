@@ -16,6 +16,20 @@ def _load_matches() -> pd.DataFrame:
         return pd.DataFrame(columns=["fixture_id", "league_id", "season", "date", "home_team_id", "away_team_id", "home_goals", "away_goals", "winner", "status"])
 
 
+def _load_league_seasons() -> pd.DataFrame:
+    try:
+        return pd.read_sql("SELECT league_id, season FROM league_seasons", engine)
+    except Exception:
+        return pd.DataFrame(columns=["league_id", "season"])
+
+
+def _season_scope(seasons) -> str:
+    values = sorted({int(season) for season in seasons if pd.notna(season)})
+    if not values:
+        return "Aucune"
+    return f"{values[0]} à {values[-1]}" if len(values) > 1 else str(values[0])
+
+
 def _compute_kpis(matches_df: pd.DataFrame) -> dict:
     total_matches = len(matches_df)
     completed = matches_df.dropna(subset=["home_goals", "away_goals"]) if not matches_df.empty else matches_df
@@ -57,31 +71,42 @@ def _compute_kpis(matches_df: pd.DataFrame) -> dict:
     }
 
 
-def _top_leagues_table(matches_df: pd.DataFrame) -> pd.DataFrame:
-    if matches_df.empty:
+def _top_leagues_table(matches_df: pd.DataFrame, league_seasons_df: pd.DataFrame) -> pd.DataFrame:
+    if matches_df.empty and league_seasons_df.empty:
         return pd.DataFrame(columns=["Championnat", "Pays", "Saisons", "Matchs importés", "Matchs joués"])
     try:
         leagues = pd.read_sql("SELECT id, name, country FROM leagues", engine)
     except Exception:
         leagues = pd.DataFrame(columns=["id", "name", "country"])
 
-    grouped = (
-        matches_df.assign(match_joue=matches_df["home_goals"].notna() & matches_df["away_goals"].notna())
-        .groupby("league_id")
-        .agg(
-            matchs_importes=("fixture_id", "count"),
-            matchs_joues=("match_joue", "sum"),
-            saison_min=("season", "min"),
-            saison_max=("season", "max"),
+    if matches_df.empty:
+        match_counts = pd.DataFrame(columns=["league_id", "matchs_importes", "matchs_joues"])
+    else:
+        match_counts = (
+            matches_df.assign(match_joue=matches_df["home_goals"].notna() & matches_df["away_goals"].notna())
+            .groupby("league_id")
+            .agg(matchs_importes=("fixture_id", "count"), matchs_joues=("match_joue", "sum"))
+            .reset_index()
         )
-        .reset_index()
-    )
+    if league_seasons_df.empty:
+        season_counts = (
+            matches_df.groupby("league_id")
+            .agg(saison_min=("season", "min"), saison_max=("season", "max"))
+            .reset_index()
+        )
+    else:
+        season_counts = (
+            league_seasons_df.groupby("league_id")
+            .agg(saison_min=("season", "min"), saison_max=("season", "max"))
+            .reset_index()
+        )
+    grouped = season_counts.merge(match_counts, on="league_id", how="left")
     grouped = grouped.merge(leagues, left_on="league_id", right_on="id", how="left")
     grouped["Championnat"] = grouped["name"].fillna(grouped["league_id"].apply(lambda value: f"Championnat {value}"))
     grouped["Pays"] = grouped["country"].fillna("Pays inconnu").replace("", "Pays inconnu")
     grouped["Saisons"] = grouped.apply(lambda row: f"{int(row.saison_min)} à {int(row.saison_max)}", axis=1)
-    grouped["Matchs importés"] = grouped["matchs_importes"].astype(int)
-    grouped["Matchs joués"] = grouped["matchs_joues"].astype(int)
+    grouped["Matchs importés"] = grouped["matchs_importes"].fillna(0).astype(int)
+    grouped["Matchs joués"] = grouped["matchs_joues"].fillna(0).astype(int)
     return grouped.sort_values("Matchs importés", ascending=False).head(10)[
         ["Championnat", "Pays", "Saisons", "Matchs importés", "Matchs joués"]
     ]
@@ -95,20 +120,19 @@ def _quick_read_sentence(kpis: dict) -> str:
     )
 
 
-def _scope_table(matches_df: pd.DataFrame) -> pd.DataFrame:
+def _scope_table(matches_df: pd.DataFrame, league_seasons_df: pd.DataFrame) -> pd.DataFrame:
     completed = matches_df.dropna(subset=["home_goals", "away_goals"]) if not matches_df.empty else matches_df
-    if matches_df.empty:
-        seasons = "Aucune"
-        league_count = 0
+    if league_seasons_df.empty:
+        seasons = _season_scope(matches_df["season"]) if not matches_df.empty else "Aucune"
+        league_count = matches_df["league_id"].nunique() if not matches_df.empty else 0
     else:
-        seasons_list = sorted(matches_df["season"].dropna().astype(int).unique().tolist())
-        seasons = f"{seasons_list[0]} à {seasons_list[-1]}" if seasons_list else "Aucune"
-        league_count = matches_df["league_id"].nunique()
+        seasons = _season_scope(league_seasons_df["season"])
+        league_count = league_seasons_df["league_id"].nunique()
     return pd.DataFrame(
         [
             {"Information": "Ce que montre le tableau de bord", "Détail": "Une synthèse globale des matchs importés dans la base SQLite."},
             {"Information": "Période couverte", "Détail": seasons},
-            {"Information": "Championnats présents dans les matchs", "Détail": str(league_count)},
+            {"Information": "Championnats suivis", "Détail": str(league_count)},
             {"Information": "Matchs terminés utilisés pour les pourcentages", "Détail": str(len(completed))},
             {"Information": "Accès API", "Détail": import_service.get_api_access_message()},
         ]
@@ -121,7 +145,7 @@ def _indicator_glossary() -> pd.DataFrame:
             {"Indicateur": "Championnats", "Définition": "Nombre de championnats enregistrés dans la base."},
             {"Indicateur": "Équipes", "Définition": "Nombre d’équipes enregistrées dans la base."},
             {"Indicateur": "Matchs", "Définition": "Nombre total de matchs importés, terminés ou non."},
-            {"Indicateur": "Saisons", "Définition": "Nombre de saisons distinctes présentes dans les matchs."},
+            {"Indicateur": "Saisons", "Définition": "Nombre de saisons suivies dans la base, même si une saison en cours n’a pas encore de matchs importés."},
             {"Indicateur": "Matchs joués", "Définition": "Matchs avec un score domicile et extérieur disponible."},
             {"Indicateur": "Buts totaux", "Définition": "Somme des buts marqués sur les matchs joués."},
             {"Indicateur": "Moyenne buts / match", "Définition": "Buts totaux divisés par le nombre de matchs joués."},
@@ -134,21 +158,26 @@ def _indicator_glossary() -> pd.DataFrame:
 
 def show():
     matches_df = _load_matches()
+    league_seasons_df = _load_league_seasons()
     kpis = _compute_kpis(matches_df)
 
     with Session(bind=engine) as session:
         leagues_count = session.query(models.League).count()
         teams_count = session.query(models.Team).count()
         matches_count = session.query(models.Match).count()
-        seasons = session.query(models.Match.season).distinct().count()
+    seasons = league_seasons_df["season"].nunique() if not league_seasons_df.empty else (
+        matches_df["season"].nunique() if not matches_df.empty else 0
+    )
+
+    if league_seasons_df.empty:
+        season_scope = _season_scope(matches_df["season"]) if not matches_df.empty else "Aucune"
+        league_scope = str(matches_df["league_id"].nunique()) if not matches_df.empty else "0"
+    else:
+        season_scope = _season_scope(league_seasons_df["season"])
+        league_scope = str(league_seasons_df["league_id"].nunique())
 
     if matches_df.empty:
-        season_scope = "Aucune"
-        league_scope = "0"
-    else:
-        seasons_list = sorted(matches_df["season"].dropna().astype(int).unique().tolist())
-        season_scope = f"{seasons_list[0]} à {seasons_list[-1]}" if seasons_list else "Aucune"
-        league_scope = str(matches_df["league_id"].nunique())
+        st.warning("Aucune donnée disponible. Ouvrez 'Traitement des données' pour lancer l’import.")
 
     ui.dashboard_hero(
         "Football Prono AI",
@@ -160,9 +189,6 @@ def show():
             ("Saisons", str(seasons)),
         ],
     )
-
-    if matches_df.empty:
-        st.warning("Aucune donnée disponible. Ouvrez 'Traitement des données' pour lancer l’import.")
 
     ui.dashboard_band(
         _quick_read_sentence(kpis),
@@ -243,7 +269,7 @@ def show():
     info_cols[1].metric("Matchs nuls", f"{kpis['draw_rate']} %")
     info_cols[2].metric("Victoires à l’extérieur", f"{kpis['away_win_rate']} %")
 
-    top_leagues = _top_leagues_table(matches_df)
+    top_leagues = _top_leagues_table(matches_df, league_seasons_df)
     if not top_leagues.empty:
         st.markdown("### Championnats les plus alimentés")
         st.caption("Ce tableau montre les championnats qui contiennent le plus de matchs dans la base, avec les saisons couvertes.")

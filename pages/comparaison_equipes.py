@@ -16,21 +16,7 @@ def _fetch_leagues():
 
 
 def _fetch_seasons(league_id: int):
-    try:
-        df = pd.read_sql(
-            text("SELECT DISTINCT season FROM matches WHERE league_id = :lid ORDER BY season DESC"),
-            engine,
-            params={"lid": league_id},
-        )
-        seasons = []
-        for s in df["season"].tolist():
-            try:
-                seasons.append(int(s))
-            except Exception:
-                seasons.append(s)
-        return sorted(seasons, reverse=True)
-    except Exception:
-        return []
+    return prediction_helpers.fetch_seasons(league_id)
 
 
 def _season_window(end_season: int, window: int = 10):

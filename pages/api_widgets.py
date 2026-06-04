@@ -6,6 +6,7 @@ import streamlit.components.v1 as components
 from dotenv import load_dotenv
 
 from components import ui
+from services import prediction_helpers
 
 
 load_dotenv()
@@ -42,6 +43,24 @@ THEMES = {
     "Dark": "dark",
     "Blue": "blue",
 }
+
+
+def _league_options() -> dict[str, int | None]:
+    leagues = prediction_helpers.fetch_leagues()
+    if leagues.empty:
+        return LEAGUES
+    options = {"Toutes les ligues": None}
+    for row in leagues.itertuples():
+        country = f" - {row.country}" if getattr(row, "country", None) else ""
+        options[f"{row.name}{country}"] = int(row.id)
+    return options
+
+
+def _season_options() -> list[int]:
+    seasons = sorted(prediction_helpers.configured_seasons(), reverse=True)
+    if seasons:
+        return seasons
+    return [2026]
 
 
 def _attr(name: str, value) -> str:
@@ -156,6 +175,8 @@ def show():
     )
 
     left, right = st.columns([1, 1])
+    league_options = _league_options()
+    season_options = _season_options()
 
     with left:
         with st.container(border=True):
@@ -170,11 +191,11 @@ def show():
 
             cols = st.columns(3)
             widget_label = cols[0].selectbox("Widget", list(WIDGETS.keys()))
-            league_label = cols[1].selectbox("Championnat", list(LEAGUES.keys()), index=1)
-            season = cols[2].number_input("Saison", min_value=2016, max_value=2026, value=2025, step=1)
+            league_label = cols[1].selectbox("Championnat", list(league_options.keys()), index=1 if len(league_options) > 1 else 0)
+            season = cols[2].selectbox("Saison", options=season_options, index=0)
 
             widget_type = WIDGETS[widget_label]
-            league_id = LEAGUES[league_label]
+            league_id = league_options[league_label]
 
             timezone = st.text_input("Timezone", value="Europe/Paris")
 
