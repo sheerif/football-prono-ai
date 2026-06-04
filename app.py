@@ -1,5 +1,9 @@
 import streamlit as st
 import datetime
+import os
+
+os.environ["AUTO_REFRESH_END_SEASON"] = "2026"
+
 from services import import_service
 from components import auth, sidebar, ui
 from pages import dashboard, data_management, update_logs, api_widgets, analyse_match, comparaison_equipes, prediction_ia, top_pronostics
