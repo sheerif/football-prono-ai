@@ -256,12 +256,12 @@ def show():
 
     chart_cols = st.columns(2)
     if fig_results is not None:
-        chart_cols[0].plotly_chart(fig_results, use_container_width=True)
+        chart_cols[0].plotly_chart(fig_results, width="stretch")
     if fig_matches is not None:
-        chart_cols[1].plotly_chart(fig_matches, use_container_width=True)
+        chart_cols[1].plotly_chart(fig_matches, width="stretch")
 
     if fig_goals is not None:
-        st.plotly_chart(fig_goals, use_container_width=True)
+        st.plotly_chart(fig_goals, width="stretch")
 
     ui.section_label("Tendances résultat")
     info_cols = st.columns(3)
@@ -273,10 +273,10 @@ def show():
     if not top_leagues.empty:
         st.markdown("### Championnats les plus alimentés")
         st.caption("Ce tableau montre les championnats qui contiennent le plus de matchs dans la base, avec les saisons couvertes.")
-        st.dataframe(top_leagues, use_container_width=True, hide_index=True)
+        st.dataframe(top_leagues, width="stretch", hide_index=True)
 
     with st.expander("Voir les définitions des indicateurs"):
-        st.dataframe(_indicator_glossary(), hide_index=True, use_container_width=True)
+        st.dataframe(_indicator_glossary(), hide_index=True, width="stretch")
 
     st.caption("Les indicateurs sont calculés à partir des matchs présents dans SQLite. Si les données sont vides, allez dans 'Traitement des données'.")
 
