@@ -26,7 +26,7 @@ Créer une application capable de proposer des pronostics de football à l’aid
 
 ### 5) Risques principaux
 - Qualité et disponibilité des données sportives.
-- Fuite de données temporelles dans l’entraînement.
+- Fuite de données temporelles (utilisation de données futures dans l’entraînement).
 - Surapprentissage sur des saisons spécifiques.
 - Dégradation de performance en production sans monitoring.
 
