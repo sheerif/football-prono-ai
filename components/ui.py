@@ -191,8 +191,9 @@ def inject_app_style():
             border-radius: 8px;
             border: 1px solid rgba(22, 32, 27, 0.08);
         }
+        /* Hide Streamlit built-in page navigation (keep our custom menu) */
         div[data-testid="stSidebarNav"] {
-            display: block !important;
+            display: none !important;
         }
 
         /* Force sidebar expanded and visible (override client-side collapse) */
