@@ -4,6 +4,7 @@ from database.database import engine
 from components import ui
 from services import stats_service, prediction_service
 from services import prediction_helpers
+from services.season_format import season_period, season_range
 from sqlalchemy import text
 
 LEAGUE_PRESETS = {
@@ -155,7 +156,7 @@ def _team_matches_history_table(matches_df: pd.DataFrame, team_id: int, team_opt
         (matches_df["home_team_id"] == team_id) | (matches_df["away_team_id"] == team_id)
     ].copy()
     if team_matches.empty:
-        return pd.DataFrame(columns=["Horodatage", "Saison", "Lieu", "Adversaire", "Score", "Résultat", "Statut"])
+        return pd.DataFrame(columns=["Horodatage", "Saison sportive", "Lieu", "Adversaire", "Score", "Résultat", "Statut"])
 
     rows = []
     for _, match in team_matches.sort_values(["date", "season"], ascending=[False, False]).iterrows():
@@ -168,7 +169,7 @@ def _team_matches_history_table(matches_df: pd.DataFrame, team_id: int, team_opt
         rows.append(
             {
                 "Horodatage": _format_match_datetime(match.get("date")),
-                "Saison": int(match.get("season")) if not pd.isna(match.get("season")) else "",
+                "Saison sportive": season_period(match.get("season")),
                 "Lieu": "Domicile" if is_home else "Extérieur",
                 "Adversaire": team_options.get(int(opponent_id), str(opponent_id)),
                 "Score": _score_label(home_goals, away_goals),
@@ -185,7 +186,7 @@ def _h2h_history_table(matches_df: pd.DataFrame, home_team: int, away_team: int,
         | ((matches_df["home_team_id"] == away_team) & (matches_df["away_team_id"] == home_team))
     ].copy()
     if h2h.empty:
-        return pd.DataFrame(columns=["Horodatage", "Saison", "Domicile", "Extérieur", "Score", "Vainqueur", "Statut"])
+        return pd.DataFrame(columns=["Horodatage", "Saison sportive", "Domicile", "Extérieur", "Score", "Vainqueur", "Statut"])
 
     rows = []
     for _, match in h2h.sort_values(["date", "season"], ascending=[False, False]).iterrows():
@@ -202,7 +203,7 @@ def _h2h_history_table(matches_df: pd.DataFrame, home_team: int, away_team: int,
         rows.append(
             {
                 "Horodatage": _format_match_datetime(match.get("date")),
-                "Saison": int(match.get("season")) if not pd.isna(match.get("season")) else "",
+                "Saison sportive": season_period(match.get("season")),
                 "Domicile": home_name,
                 "Extérieur": away_name,
                 "Score": _score_label(match.get("home_goals"), match.get("away_goals")),
@@ -221,7 +222,7 @@ def _build_h2h_report(h2h_df: pd.DataFrame, home_team: int, away_team: int, home
     }
 
     if h2h_df.empty:
-        return pd.DataFrame(columns=["Saison", "Horodatage", "Domicile", "Extérieur", "Score", "Vainqueur"]), totals
+        return pd.DataFrame(columns=["Saison sportive", "Horodatage", "Domicile", "Extérieur", "Score", "Vainqueur"]), totals
 
     def _format_timestamp(value):
         timestamp = pd.to_datetime(value, errors="coerce")
@@ -258,7 +259,7 @@ def _build_h2h_report(h2h_df: pd.DataFrame, home_team: int, away_team: int, home
 
         rows.append(
             {
-                "Saison": match.get("season"),
+                "Saison sportive": season_period(match.get("season")),
                 "Horodatage": _format_timestamp(match.get("date")),
                 "Domicile": home_name if match["home_team_id"] == home_team else away_name,
                 "Extérieur": away_name if match["away_team_id"] == away_team else home_name,
@@ -292,14 +293,24 @@ def show():
     # ensure defaults exist in options (types already coerced)
     default_window = [s for s in default_window if s in seasons]
     with st.container(border=True):
-        selected_seasons = st.multiselect("Saisons", options=season_options, default=default_window, key="analyse_seasons")
+        selected_seasons = st.multiselect(
+            "Saisons sportives",
+            options=season_options,
+            default=default_window,
+            format_func=season_period,
+            key="analyse_seasons",
+        )
     if not selected_seasons:
-        seasons_window = default_window
+        st.warning("Veuillez sélectionner une ou plusieurs saisons.")
+        return
     else:
         seasons_window, missing_seasons = prediction_helpers.selected_season_status(selected_seasons, seasons)
         seasons_window = sorted(seasons_window, reverse=True)
         if missing_seasons:
             st.warning(prediction_helpers.missing_seasons_message(missing_seasons, seasons_window))
+        if not seasons_window:
+            st.warning("Aucune saison sélectionnée n'est disponible dans la base pour ce championnat.")
+            return
 
     teams_df = _fetch_teams(league_id, seasons_window)
     if teams_df.empty:
@@ -333,7 +344,7 @@ def show():
         away_view = _team_summary_metrics(team_options[away_team], away_stats, away_form)
 
         st.subheader("Résumé du match")
-        st.caption(f"{league_map[league_id]} · Analyse sur {seasons_window[0]} → {seasons_window[-1]} (saisons sélectionnées)")
+        st.caption(f"{league_map[league_id]} · Analyse sur {season_range(seasons_window)} (saisons sportives sélectionnées)")
         st.info(f"{home_view['team_name']} reçoit {away_view['team_name']}")
 
         left, right = st.columns(2)
@@ -373,9 +384,9 @@ def show():
         form_cols[1].write(f"**{away_view['team_name']}**")
         form_cols[1].write(away_view['form_text'])
 
-        st.subheader("Matchs existants dans les saisons sélectionnées")
+        st.subheader("Matchs existants dans les saisons sportives sélectionnées")
         st.caption(
-            "Ces tableaux affichent tous les matchs présents dans la base pour les saisons sélectionnées, avec leur horodatage. "
+            "Ces tableaux affichent tous les matchs présents dans la base pour les saisons sportives sélectionnées, avec leur horodatage. "
             "Les matchs sans score sont visibles mais ne sont pas comptés dans les statistiques de forme."
         )
         home_history, away_history, h2h_history = st.tabs(
@@ -384,19 +395,19 @@ def show():
         with home_history:
             home_history_table = _team_matches_history_table(matches_df, home_team, team_options)
             if home_history_table.empty:
-                st.info(f"Aucun match trouvé pour {home_view['team_name']} dans les saisons sélectionnées.")
+                st.info(f"Aucun match trouvé pour {home_view['team_name']} dans les saisons sportives sélectionnées.")
             else:
                 st.dataframe(home_history_table, width="stretch", hide_index=True)
         with away_history:
             away_history_table = _team_matches_history_table(matches_df, away_team, team_options)
             if away_history_table.empty:
-                st.info(f"Aucun match trouvé pour {away_view['team_name']} dans les saisons sélectionnées.")
+                st.info(f"Aucun match trouvé pour {away_view['team_name']} dans les saisons sportives sélectionnées.")
             else:
                 st.dataframe(away_history_table, width="stretch", hide_index=True)
         with h2h_history:
             h2h_history_df = _h2h_history_table(matches_df, home_team, away_team, team_options)
             if h2h_history_df.empty:
-                st.info("Aucune confrontation directe trouvée dans les saisons sélectionnées.")
+                st.info("Aucune confrontation directe trouvée dans les saisons sportives sélectionnées.")
             else:
                 st.dataframe(h2h_history_df, width="stretch", hide_index=True)
 
@@ -496,15 +507,27 @@ def show():
             st.write(f"- {reason}")
 
         st.markdown("### Scores probables")
-        probable_scores = ["2-0", "2-1", "1-1", "1-0"]
-        st.write(", ".join(probable_scores))
+        score_prediction = prediction_service.predict_scorelines(
+            matches_df,
+            home_team,
+            away_team,
+            home_form_score=home_form,
+            away_form_score=away_form,
+            top_n=6,
+        )
+        expected_cols = st.columns(2)
+        expected_cols[0].metric(f"Buts attendus {home_view['team_name']}", score_prediction["expected_home_goals"])
+        expected_cols[1].metric(f"Buts attendus {away_view['team_name']}", score_prediction["expected_away_goals"])
+        if score_prediction["scores"]:
+            st.dataframe(pd.DataFrame(score_prediction["scores"]), width="stretch", hide_index=True)
+            best_score = score_prediction["scores"][0]
+            st.success(f"Score le plus probable: {best_score['Score']} ({best_score['Probabilité']} %)")
+            st.caption(score_prediction["method"])
+        else:
+            st.info(score_prediction["method"])
 
         st.caption("Le modèle combine la forme récente, le niveau offensif/défensif et l’historique direct pour produire une estimation probabiliste.")
 
  
 if __name__ == "__main__":
-    try:
-        st.set_page_config(page_title="Analyse de match", layout="wide")
-    except Exception:
-        pass
-    show()
+    ui.run_direct_page("Analyse match", show)

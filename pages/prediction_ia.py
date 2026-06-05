@@ -3,6 +3,7 @@ import streamlit as st
 
 from components import ui
 from services import prediction_helpers
+from services.season_format import season_period
 
 
 def _stats_table(stats: dict) -> pd.DataFrame:
@@ -91,7 +92,7 @@ def _team_matches_table(matches_df: pd.DataFrame, team_id: int, team_options: di
         & matches_df["away_goals"].notna()
     ].copy()
     if team_matches.empty:
-        return pd.DataFrame(columns=["Horodatage", "Saison", "Lieu", "Adversaire", "Score", "Résultat", "Statut"])
+        return pd.DataFrame(columns=["Horodatage", "Saison sportive", "Lieu", "Adversaire", "Score", "Résultat", "Statut"])
 
     team_matches = team_matches.sort_values(["date", "season"], ascending=[False, False])
     for _, match in team_matches.iterrows():
@@ -116,7 +117,7 @@ def _team_matches_table(matches_df: pd.DataFrame, team_id: int, team_options: di
         rows.append(
             {
                 "Horodatage": _format_datetime(match.get("date")),
-                "Saison": int(match.get("season")) if not pd.isna(match.get("season")) else "",
+                "Saison sportive": season_period(match.get("season")),
                 "Lieu": "Domicile" if is_home else "Extérieur",
                 "Adversaire": opponent,
                 "Score": score,
@@ -134,7 +135,7 @@ def _head_to_head_table(matches_df: pd.DataFrame, home_team: int, away_team: int
     ].copy()
     h2h = h2h[h2h["home_goals"].notna() & h2h["away_goals"].notna()]
     if h2h.empty:
-        return pd.DataFrame(columns=["Horodatage", "Saison", "Domicile", "Extérieur", "Score", "Vainqueur", "Statut"])
+        return pd.DataFrame(columns=["Horodatage", "Saison sportive", "Domicile", "Extérieur", "Score", "Vainqueur", "Statut"])
 
     rows = []
     for _, match in h2h.sort_values(["date", "season"], ascending=[False, False]).iterrows():
@@ -152,7 +153,7 @@ def _head_to_head_table(matches_df: pd.DataFrame, home_team: int, away_team: int
         rows.append(
             {
                 "Horodatage": _format_datetime(match.get("date")),
-                "Saison": int(match.get("season")) if not pd.isna(match.get("season")) else "",
+                "Saison sportive": season_period(match.get("season")),
                 "Domicile": home_name,
                 "Extérieur": away_name,
                 "Score": score,
@@ -168,7 +169,7 @@ def _match_context_table(league_name: str, selected_seasons, matches_df: pd.Data
     return pd.DataFrame(
         [
             {"Information": "Championnat analysé", "Détail": league_name},
-            {"Information": "Saisons utilisées", "Détail": ", ".join(str(season) for season in selected_seasons)},
+            {"Information": "Saisons sportives utilisées", "Détail": ", ".join(season_period(season) for season in selected_seasons)},
             {"Information": "Matchs du championnat dans la période", "Détail": str(len(matches_df))},
             {"Information": "Matchs terminés utilisés pour les statistiques", "Détail": str(len(completed))},
             {"Information": "Match demandé", "Détail": f"{home_name} reçoit {away_name}"},
@@ -286,7 +287,12 @@ def show():
         available_seasons = prediction_helpers.fetch_seasons(league_id)
         season_options = sorted(prediction_helpers.configured_seasons(), reverse=True)
         default_seasons = available_seasons[:5]
-        selected_seasons = st.multiselect("Saisons", options=season_options, default=default_seasons)
+        selected_seasons = st.multiselect(
+            "Saisons sportives",
+            options=season_options,
+            default=default_seasons,
+            format_func=season_period,
+        )
 
     seasons_with_data, seasons_without_data = prediction_helpers.selected_season_status(selected_seasons, available_seasons)
     if seasons_without_data:
@@ -368,7 +374,7 @@ def show():
 
         ui.section_label("Matchs joués analysés avec horodatage")
         st.caption(
-            "Ces tableaux listent les matchs terminés, avec score, présents dans la base pour les saisons sélectionnées. "
+            "Ces tableaux listent les matchs terminés, avec score, présents dans la base pour les saisons sportives sélectionnées. "
             "Ce sont ces rencontres qui alimentent les statistiques ci-dessus."
         )
         home_matches, away_matches, h2h_matches = st.tabs([home_name, away_name, "Confrontations directes"])
@@ -387,7 +393,7 @@ def show():
         with h2h_matches:
             h2h_table = _head_to_head_table(matches_df, home_team, away_team, team_options)
             if h2h_table.empty:
-                st.info("Aucune confrontation directe jouée dans les saisons sélectionnées.")
+                st.info("Aucune confrontation directe jouée dans les saisons sportives sélectionnées.")
             else:
                 st.dataframe(h2h_table, hide_index=True, width="stretch")
 

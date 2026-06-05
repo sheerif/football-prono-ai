@@ -1,5 +1,7 @@
 import streamlit as st
 
+from services.season_format import season_period
+
 
 def inject_app_style():
     st.markdown(
@@ -190,7 +192,24 @@ def inject_app_style():
             border: 1px solid rgba(22, 32, 27, 0.08);
         }
         div[data-testid="stSidebarNav"] {
-            display: none;
+            display: block !important;
+        }
+
+        /* Force sidebar expanded and visible (override client-side collapse) */
+        [data-testid="stSidebar"] {
+            width: 260px !important;
+            min-width: 260px !important;
+            transform: none !important;
+        }
+        [data-testid="stSidebar"] > div,
+        [data-testid="stSidebarContent"] {
+            display: block !important;
+            opacity: 1 !important;
+            visibility: visible !important;
+            transform: none !important;
+        }
+        [data-testid="stSidebarNavItems"] {
+            display: block !important;
         }
         @media (max-width: 760px) {
             .block-container {
@@ -285,7 +304,7 @@ def season_summary(title: str, subtitle: str, cards: list[tuple[str, str]], rows
 
         table_rows = [
             {
-                "Saison": row.get("season", ""),
+                "Saison sportive": season_period(row.get("season")),
                 "Matchs terminés": row.get("matches", 0),
                 "Buts / match": row.get("avg_goals", ""),
             }
@@ -299,4 +318,33 @@ def run_direct_page(title: str, show_func):
         st.set_page_config(page_title=title, layout="wide")
     except Exception:
         pass
+
+    from components import auth, sidebar
+    from services import import_service
+
+    inject_app_style()
+
+    if not auth.is_authenticated():
+        auth.login_page()
+        st.stop()
+
+    import_service.init_db()
+
+    current_nav = {
+        "Football Prono AI": "Tableau de bord",
+        "Widgets Live": "Widgets Live",
+        "Traitement des données": "Traitement des données",
+        "Logs des mises à jour": "Logs des MAJ",
+        "Analyse match": "Analyse match",
+        "Comparaison équipes": "Comparaison équipes",
+        "Prédiction IA": "Prédiction IA",
+        "Meilleurs pronostics": "Meilleurs pronostics",
+    }.get(title, "Tableau de bord")
+
+    sidebar.render_app_rail(current_nav)
+
+    with st.sidebar:
+        st.caption(f"Connecté: {st.session_state.get('auth_user', 'utilisateur')}")
+        auth.logout_button()
+
     show_func()

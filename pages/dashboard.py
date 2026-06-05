@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from components import charts
 from components import ui
 from services import import_service
+from services.season_format import season_range
 
 
 def _load_matches() -> pd.DataFrame:
@@ -24,10 +25,7 @@ def _load_league_seasons() -> pd.DataFrame:
 
 
 def _season_scope(seasons) -> str:
-    values = sorted({int(season) for season in seasons if pd.notna(season)})
-    if not values:
-        return "Aucune"
-    return f"{values[0]} à {values[-1]}" if len(values) > 1 else str(values[0])
+    return season_range(seasons)
 
 
 def _compute_kpis(matches_df: pd.DataFrame) -> dict:
@@ -73,7 +71,7 @@ def _compute_kpis(matches_df: pd.DataFrame) -> dict:
 
 def _top_leagues_table(matches_df: pd.DataFrame, league_seasons_df: pd.DataFrame) -> pd.DataFrame:
     if matches_df.empty and league_seasons_df.empty:
-        return pd.DataFrame(columns=["Championnat", "Pays", "Saisons", "Matchs importés", "Matchs joués"])
+        return pd.DataFrame(columns=["Championnat", "Pays", "Saisons sportives", "Matchs importés", "Matchs joués"])
     try:
         leagues = pd.read_sql("SELECT id, name, country FROM leagues", engine)
     except Exception:
@@ -104,11 +102,11 @@ def _top_leagues_table(matches_df: pd.DataFrame, league_seasons_df: pd.DataFrame
     grouped = grouped.merge(leagues, left_on="league_id", right_on="id", how="left")
     grouped["Championnat"] = grouped["name"].fillna(grouped["league_id"].apply(lambda value: f"Championnat {value}"))
     grouped["Pays"] = grouped["country"].fillna("Pays inconnu").replace("", "Pays inconnu")
-    grouped["Saisons"] = grouped.apply(lambda row: f"{int(row.saison_min)} à {int(row.saison_max)}", axis=1)
+    grouped["Saisons sportives"] = grouped.apply(lambda row: season_range([row.saison_min, row.saison_max]), axis=1)
     grouped["Matchs importés"] = grouped["matchs_importes"].fillna(0).astype(int)
     grouped["Matchs joués"] = grouped["matchs_joues"].fillna(0).astype(int)
     return grouped.sort_values("Matchs importés", ascending=False).head(10)[
-        ["Championnat", "Pays", "Saisons", "Matchs importés", "Matchs joués"]
+        ["Championnat", "Pays", "Saisons sportives", "Matchs importés", "Matchs joués"]
     ]
 
 
@@ -131,7 +129,7 @@ def _scope_table(matches_df: pd.DataFrame, league_seasons_df: pd.DataFrame) -> p
     return pd.DataFrame(
         [
             {"Information": "Ce que montre le tableau de bord", "Détail": "Une synthèse globale des matchs importés dans la base SQLite."},
-            {"Information": "Période couverte", "Détail": seasons},
+            {"Information": "Saisons sportives couvertes", "Détail": seasons},
             {"Information": "Championnats suivis", "Détail": str(league_count)},
             {"Information": "Matchs terminés utilisés pour les pourcentages", "Détail": str(len(completed))},
             {"Information": "Accès API", "Détail": import_service.get_api_access_message()},
@@ -145,7 +143,7 @@ def _indicator_glossary() -> pd.DataFrame:
             {"Indicateur": "Championnats", "Définition": "Nombre de championnats enregistrés dans la base."},
             {"Indicateur": "Équipes", "Définition": "Nombre d’équipes enregistrées dans la base."},
             {"Indicateur": "Matchs", "Définition": "Nombre total de matchs importés, terminés ou non."},
-            {"Indicateur": "Saisons", "Définition": "Nombre de saisons suivies dans la base, même si une saison en cours n’a pas encore de matchs importés."},
+            {"Indicateur": "Saisons sportives", "Définition": "Nombre de saisons sportives suivies dans la base, même si une saison en cours n’a pas encore de matchs importés."},
             {"Indicateur": "Matchs joués", "Définition": "Matchs avec un score domicile et extérieur disponible."},
             {"Indicateur": "Buts totaux", "Définition": "Somme des buts marqués sur les matchs joués."},
             {"Indicateur": "Moyenne buts / match", "Définition": "Buts totaux divisés par le nombre de matchs joués."},
@@ -186,14 +184,14 @@ def show():
             ("Championnats", f"{leagues_count:,}".replace(",", " ")),
             ("Équipes", f"{teams_count:,}".replace(",", " ")),
             ("Matchs", f"{matches_count:,}".replace(",", " ")),
-            ("Saisons", str(seasons)),
+            ("Saisons sportives", str(seasons)),
         ],
     )
 
     ui.dashboard_band(
         _quick_read_sentence(kpis),
         [
-            ("Période", season_scope),
+            ("Saisons sportives", season_scope),
             ("Championnats actifs", league_scope),
             ("Matchs terminés", f"{kpis['completed_count']:,}".replace(",", " ")),
             ("Accès API", import_service.get_api_access_message()),

@@ -10,6 +10,7 @@ import time
 import requests
 from sqlalchemy import text
 from requests.exceptions import HTTPError
+from services.season_format import season_range
 
 logger = logging.getLogger(__name__)
 client = ApiFootballClient()
@@ -965,12 +966,12 @@ def get_api_access_message() -> str:
         accessible = audit.get("accessible", [])
         unavailable = audit.get("unavailable", [])
         if not unavailable:
-            return f"Saisons accessibles via l’API: {accessible[0]} à {accessible[-1]}." if accessible else "Aucune saison accessible détectée."
+            return f"Saisons sportives accessibles via l’API: {season_range(accessible)}." if accessible else "Aucune saison sportive accessible détectée."
         if accessible:
             return (
-                f"Saisons accessibles via le plan API actuel: {accessible[0]} à {accessible[-1]}. "
-                f"{len(unavailable)} saison(s) configurée(s) sont refusées par l’API."
+                f"Saisons sportives accessibles via le plan API actuel: {season_range(accessible)}. "
+                f"{len(unavailable)} saison(s) sportive(s) configurée(s) sont refusées par l’API."
             )
-        return "Le plan API actuel refuse toutes les saisons configurées."
+        return "Le plan API actuel refuse toutes les saisons sportives configurées."
     except Exception:
         return raw

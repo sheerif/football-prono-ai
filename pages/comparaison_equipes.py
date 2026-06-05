@@ -6,6 +6,7 @@ from components import charts
 from components import ui
 from database.database import engine
 from services import prediction_helpers, stats_service
+from services.season_format import season_list, season_period, season_range
 
 
 def _fetch_leagues():
@@ -160,8 +161,8 @@ def _build_h2h_report(h2h_df: pd.DataFrame, team_a: int, team_b: int, name_a: st
             totals[team_b]["draws"] += 1
 
         rows.append({
-            "Saison": row.get("season"),
-                "Horodatage": _format_timestamp(row.get("date")),
+            "Saison sportive": season_period(row.get("season")),
+            "Horodatage": _format_timestamp(row.get("date")),
             "Domicile": name_a if row["home_team_id"] == team_a else name_b,
             "Extérieur": name_b if row["away_team_id"] == team_b else name_a,
             "Score": f"{goals_a}-{goals_b}",
@@ -189,7 +190,7 @@ def show():
 
     seasons = _fetch_seasons(league_id)
     if not seasons:
-        st.warning("Aucune saison disponible pour ce championnat.")
+        st.warning("Aucune saison sportive disponible pour ce championnat.")
         return
     season_options = sorted(prediction_helpers.configured_seasons(), reverse=True)
     # allow selecting multiple seasons; default = last seasons with local data
@@ -198,7 +199,13 @@ def show():
     # ensure defaults exist in options
     default_window = [s for s in default_window if s in seasons]
     with st.container(border=True):
-        selected_seasons = st.multiselect("Saisons", options=season_options, default=default_window, key="compare_seasons")
+        selected_seasons = st.multiselect(
+            "Saisons sportives",
+            options=season_options,
+            default=default_window,
+            format_func=season_period,
+            key="compare_seasons",
+        )
     if not selected_seasons:
         seasons_window = default_window
     else:
@@ -209,7 +216,7 @@ def show():
 
     teams_df = _fetch_teams_window(league_id, seasons_window)
     if teams_df.empty:
-        st.warning("Aucune équipe disponible pour cette saison.")
+        st.warning("Aucune équipe disponible pour cette saison sportive.")
         return
 
     team_options = {row.id: row.name for row in teams_df.itertuples()}
@@ -298,7 +305,7 @@ def show():
             summary_cols[4].metric(f"Défaites {team_options[team_b]}", h2h_totals[team_b]["losses"])
             summary_cols[5].metric("Nuls", h2h_totals[team_a]["draws"])
 
-            st.caption(f"Analyse des face-à-face sur {seasons_window[0]} → {seasons_window[-1]} : chaque ligne indique le vainqueur du match.")
+            st.caption(f"Analyse des face-à-face sur {season_range(seasons_window)} : chaque ligne indique le vainqueur du match.")
             st.dataframe(h2h_table, width="stretch", hide_index=True)
 
         # Global info for selected seasons (league-wide)
@@ -334,11 +341,11 @@ def show():
                 }
                 for _, row in per_season.iterrows()
             ]
-            season_label = ", ".join(str(season) for season in sorted(seasons_window, reverse=True))
+            season_label = season_list(seasons_window)
             ui.season_summary(
                 "Bilan du championnat",
                 (
-                    f"{league_map[league_id]} - saisons: {season_label}. "
+                    f"{league_map[league_id]} - saisons sportives: {season_label}. "
                     "Uniquement les matchs terminés avec un score renseigné."
                 ),
                 [
@@ -384,7 +391,7 @@ def show():
                 except Exception:
                     tsf = m.get('date')
                 rows.append({
-                    'Saison': m.get('season'),
+                    'Saison sportive': season_period(m.get('season')),
                     'Horodatage': tsf,
                     'Domicile': names_map.get(int(m['home_team_id']), str(m['home_team_id'])),
                     'Extérieur': names_map.get(int(m['away_team_id']), str(m['away_team_id'])),

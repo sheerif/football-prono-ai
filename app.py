@@ -34,7 +34,9 @@ if "connection_started_at" not in st.session_state:
 	st.session_state["connection_started_at"] = datetime.datetime.now(datetime.UTC).replace(tzinfo=None).isoformat()
 	st.session_state["connection_log_id"] = import_service.record_connection(st.session_state["connection_started_at"])
 
-nav = sidebar.render_sidebar()
+sidebar.render_app_rail("Tableau de bord")
+
+dashboard.show()
 
 with st.sidebar:
 	st.caption(f"Connecté: {st.session_state.get('auth_user', 'utilisateur')}")
@@ -71,22 +73,3 @@ with st.sidebar:
 	st.caption(f"Dernière MAJ en cours: {import_service.get_last_current_refresh_label()}")
 	st.caption(f"Dernière MAJ historique: {import_service.get_last_auto_refresh_label()}")
 	st.caption(import_service.get_api_access_message())
-
-if nav == "Tableau de bord":
-	dashboard.show()
-elif nav == "Widgets Live":
-	api_widgets.show()
-elif nav == "Traitement des données":
-	data_management.show()
-elif nav == "Logs des MAJ":
-	update_logs.show()
-elif nav == "Analyse match":
-	analyse_match.show()
-elif nav == "Comparaison équipes":
-	comparaison_equipes.show()
-elif nav == "Prédiction IA":
-	prediction_ia.show()
-elif nav == "Meilleurs pronostics":
-	top_pronostics.show()
-else:
-	dashboard.show()

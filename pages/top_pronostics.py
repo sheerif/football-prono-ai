@@ -5,6 +5,7 @@ import streamlit as st
 
 from components import ui
 from services import prediction_helpers
+from services.season_format import season_period
 
 
 def _glossary_table() -> pd.DataFrame:
@@ -100,7 +101,12 @@ def show():
         league_id = st.selectbox("Championnat", options=list(league_map.keys()), format_func=lambda key: league_map[key])
         available_seasons = prediction_helpers.fetch_seasons(league_id)
         season_options = sorted(prediction_helpers.configured_seasons(), reverse=True)
-        selected_seasons = st.multiselect("Saisons", options=season_options, default=available_seasons[:3])
+        selected_seasons = st.multiselect(
+            "Saisons sportives",
+            options=season_options,
+            default=available_seasons[:3],
+            format_func=season_period,
+        )
         top_limit = st.segmented_control("Volume", options=[10, 20, 50], default=20)
 
     seasons_with_data, seasons_without_data = prediction_helpers.selected_season_status(selected_seasons, available_seasons)

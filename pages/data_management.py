@@ -4,6 +4,7 @@ import streamlit as st
 from components import ui
 from database.database import engine
 from services import import_service
+from services.season_format import season_period, season_range
 
 
 LEAGUE_PRESETS = {
@@ -35,7 +36,7 @@ def _summary_counts() -> dict[str, int]:
 def show():
     ui.page_hero(
         "Traitement des données",
-        "Importez ou mettez à jour les championnats, saisons, équipes et standings utilisés par les analyses.",
+        "Importez ou mettez à jour les championnats, saisons sportives, équipes et standings utilisés par les analyses.",
     )
 
     counts = _summary_counts()
@@ -59,9 +60,10 @@ def show():
         )
 
         col1, col2, col3 = st.columns(3)
-        start_season = col1.number_input("Saison de début", min_value=2016, max_value=max_season, value=2016, step=1)
-        end_season = col2.number_input("Saison de fin", min_value=2016, max_value=max_season, value=max_season, step=1)
+        start_season = col1.number_input("Saison sportive de début", min_value=2016, max_value=max_season, value=2016, step=1)
+        end_season = col2.number_input("Saison sportive de fin", min_value=2016, max_value=max_season, value=max_season, step=1)
         pause = col3.number_input("Pause entre requêtes (s)", min_value=0.5, max_value=10.0, value=2.0, step=0.5)
+        st.caption(f"Période sélectionnée: {season_period(start_season)} à {season_period(end_season)}")
 
         max_retries = st.slider("Nombre maximal de tentatives", min_value=1, max_value=10, value=6)
 
@@ -78,7 +80,7 @@ def show():
 
     if launch or quick_import_l1 or quick_import_6:
         if start_season > end_season:
-            st.error("La saison de début doit être inférieure ou égale à la saison de fin.")
+            st.error("La saison sportive de début doit être inférieure ou égale à la saison sportive de fin.")
             return
 
         league_ids = [LEAGUE_PRESETS[label] for label in selected_presets]
@@ -93,7 +95,7 @@ def show():
             status.write("Initialisation de la base...")
             import_service.init_db()
 
-            status.write(f"Import de {len(league_ids)} championnat(s) sur {len(seasons)} saison(s)...")
+            status.write(f"Import de {len(league_ids)} championnat(s) sur {len(seasons)} saison(s) sportive(s): {season_range(seasons)}...")
             import_service.import_leagues_cautious(
                 league_ids,
                 seasons=seasons,

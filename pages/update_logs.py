@@ -6,6 +6,7 @@ import streamlit as st
 from components import ui
 from database.database import engine
 from services import import_service
+from services.season_format import season_period
 
 
 LEAGUE_FALLBACK_NAMES = {
@@ -40,6 +41,8 @@ def _compact_json(value):
         if parsed is None:
             return "Non applicable"
         if isinstance(parsed, list):
+            if all(isinstance(item, int) or str(item).isdigit() for item in parsed):
+                return ", ".join(season_period(item) for item in parsed)
             return ", ".join(str(item) for item in parsed)
         if isinstance(parsed, dict):
             return json.dumps(parsed, ensure_ascii=False)
@@ -77,7 +80,7 @@ def _format_leagues(value, names: dict[int, str]) -> str:
             if isinstance(item, dict):
                 league = _league_label(item.get("league_id"), names)
                 season = item.get("season")
-                labels.append(f"{league} - {season}" if season else league)
+                labels.append(f"{league} - {season_period(season)}" if season else league)
             else:
                 labels.append(_league_label(item, names))
         return ", ".join(labels) if labels else "Non applicable"
@@ -85,7 +88,7 @@ def _format_leagues(value, names: dict[int, str]) -> str:
         if "league_id" in parsed:
             league = _league_label(parsed.get("league_id"), names)
             season = parsed.get("season")
-            return f"{league} - {season}" if season else league
+            return f"{league} - {season_period(season)}" if season else league
         return json.dumps(parsed, ensure_ascii=False)
     return str(parsed)
 
@@ -112,8 +115,8 @@ def _load_update_logs() -> pd.DataFrame:
     logs["Statut"] = logs["status"]
     logs["Raison"] = logs["reason"].fillna("")
     logs["Ligues / championnats"] = logs["leagues"].apply(lambda value: _format_leagues(value, league_names))
-    logs["Saisons"] = logs["seasons"].apply(_compact_json)
-    logs["Saisons forcées"] = logs["forced_seasons"].apply(_compact_json)
+    logs["Saisons sportives"] = logs["seasons"].apply(_compact_json)
+    logs["Saisons sportives forcées"] = logs["forced_seasons"].apply(_compact_json)
     logs["Erreur"] = logs["error"].fillna("")
     return logs
 
@@ -201,8 +204,10 @@ def show():
                     "duration_seconds": selected_row["duration_seconds"],
                     "reason": selected_row["reason"],
                     "leagues": _parse_json_or_none(selected_row["leagues"]),
-                    "seasons": _parse_json_or_none(selected_row["seasons"]),
-                    "forced_seasons": _parse_json_or_none(selected_row["forced_seasons"]),
+                    "saisons_sportives": selected_row["Saisons sportives"],
+                    "saisons_sportives_forcees": selected_row["Saisons sportives forcées"],
+                    "seasons_api_raw": _parse_json_or_none(selected_row["seasons"]),
+                    "forced_seasons_api_raw": _parse_json_or_none(selected_row["forced_seasons"]),
                     "details": _parse_json_or_none(selected_row["details"]),
                     "error": selected_row["error"],
                 }

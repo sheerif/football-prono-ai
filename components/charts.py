@@ -1,6 +1,8 @@
 import plotly.express as px
 import plotly.graph_objects as go
 
+from services.season_format import season_period
+
 
 CHART_COLORS = ["#126447", "#d8a528", "#c94b3f", "#4d7c8a", "#7a5c96", "#8a6f3e"]
 
@@ -51,16 +53,17 @@ def bar_matches_by_season(df):
     if df.empty or "season" not in df.columns:
         return None
     agg = df.groupby("season", dropna=True).size().reset_index(name="matches")
+    agg["season_label"] = agg["season"].apply(season_period)
     fig = px.bar(
         agg,
-        x="season",
+        x="season_label",
         y="matches",
-        title="Nombre de matchs par saison",
-        labels={"season": "Saison", "matches": "Matchs"},
+        title="Nombre de matchs par saison sportive",
+        labels={"season_label": "Saison sportive", "matches": "Matchs"},
         color_discrete_sequence=["#126447"],
     )
     fig.update_traces(marker_line_width=0, opacity=0.92)
-    return _apply_chart_theme(fig, "Nombre de matchs par saison")
+    return _apply_chart_theme(fig, "Nombre de matchs par saison sportive")
 
 
 def line_goals_by_season(df):
@@ -68,10 +71,11 @@ def line_goals_by_season(df):
         return None
     agg = df.groupby("season", dropna=True)[["home_goals", "away_goals"]].sum(numeric_only=True).reset_index()
     agg["total_goals"] = agg["home_goals"].fillna(0) + agg["away_goals"].fillna(0)
+    agg["season_label"] = agg["season"].apply(season_period)
     fig = go.Figure()
     fig.add_trace(
         go.Scatter(
-            x=agg["season"],
+            x=agg["season_label"],
             y=agg["total_goals"],
             mode="lines+markers",
             name="Buts totaux",
@@ -79,8 +83,8 @@ def line_goals_by_season(df):
             marker={"size": 8, "color": "#126447", "line": {"color": "#ffffff", "width": 2}},
         )
     )
-    fig.update_layout(xaxis_title="Saison", yaxis_title="Buts")
-    return _apply_chart_theme(fig, "Evolution des buts par saison")
+    fig.update_layout(xaxis_title="Saison sportive", yaxis_title="Buts")
+    return _apply_chart_theme(fig, "Evolution des buts par saison sportive")
 
 
 def pie_results(results_df):

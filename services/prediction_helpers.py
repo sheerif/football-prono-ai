@@ -3,6 +3,7 @@ from sqlalchemy import text
 
 from database.database import engine
 from services import import_service, prediction_service, stats_service
+from services.season_format import season_list
 
 
 def fetch_leagues():
@@ -59,37 +60,25 @@ def selected_season_status(selected_seasons, available_seasons):
 
 
 def _format_season_list(seasons) -> str:
-    values = sorted({int(season) for season in seasons})
-    if not values:
-        return "aucune"
-    ranges = []
-    start = previous = values[0]
-    for season in values[1:]:
-        if season == previous + 1:
-            previous = season
-            continue
-        ranges.append(f"{start}" if start == previous else f"{start} à {previous}")
-        start = previous = season
-    ranges.append(f"{start}" if start == previous else f"{start} à {previous}")
-    return ", ".join(ranges)
+    return season_list(seasons, reverse=False)
 
 
 def missing_seasons_message(missing_seasons, used_seasons=None):
     seasons = _format_season_list(missing_seasons)
     message = (
-        f"Saison non présente dans la base: {seasons}. Elle est ignorée pour ce calcul. "
+        f"Saison sportive non présente dans la base: {seasons}. Elle est ignorée pour ce calcul. "
     )
     if used_seasons:
         used = _format_season_list(used_seasons)
-        message += f"Saisons utilisées: {used}. "
-    message += "Lancez un import manuel si vous voulez ajouter cette saison."
+        message += f"Saisons sportives utilisées: {used}. "
+    message += "Lancez un import manuel si vous voulez ajouter cette saison sportive."
     return message
 
 
 def teams_available_message(team_count: int, seasons) -> str:
-    seasons_label = ", ".join(str(season) for season in seasons) if seasons else "aucune saison"
+    seasons_label = season_list(seasons)
     return (
-        f"{team_count} équipe(s) disponible(s) pour les saisons utilisées: {seasons_label}. "
+        f"{team_count} équipe(s) disponible(s) pour les saisons sportives utilisées: {seasons_label}. "
         "La liste contient les équipes qui ont au moins un match enregistré dans la base pour cette sélection."
     )
 

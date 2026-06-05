@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 
 from components import ui
 from services import prediction_helpers
+from services.season_format import season_period
 
 
 load_dotenv()
@@ -192,7 +193,12 @@ def show():
             cols = st.columns(3)
             widget_label = cols[0].selectbox("Widget", list(WIDGETS.keys()))
             league_label = cols[1].selectbox("Championnat", list(league_options.keys()), index=1 if len(league_options) > 1 else 0)
-            season = cols[2].selectbox("Saison", options=season_options, index=0)
+            season = cols[2].selectbox(
+                "Saison sportive",
+                options=season_options,
+                index=0,
+                format_func=season_period,
+            )
 
             widget_type = WIDGETS[widget_label]
             league_id = league_options[league_label]
