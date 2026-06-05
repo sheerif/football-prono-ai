@@ -22,31 +22,11 @@ def _clear_auth_state() -> None:
 
 
 def is_authenticated() -> bool:
-    try:
-        logout_requested = st.query_params.get("logout") == "1"
-    except Exception:
-        logout_requested = False
-    if logout_requested:
-        _clear_auth_state()
-        try:
-            st.query_params.clear()
-        except Exception:
-            pass
     return bool(st.session_state.get("authenticated")) and not bool(st.session_state.get("logged_out"))
 
 
 def handle_logout_query():
-    try:
-        logout_requested = st.query_params.get("logout") == "1"
-    except Exception:
-        logout_requested = False
-    if logout_requested:
-        _clear_auth_state()
-        try:
-            st.query_params.clear()
-        except Exception:
-            pass
-        st.rerun()
+    return None
 
 
 def logout_button():
