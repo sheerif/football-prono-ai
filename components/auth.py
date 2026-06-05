@@ -10,9 +10,15 @@ load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
 
 def _credentials() -> tuple[str, str]:
-    username = os.getenv("APP_USERNAME", "admin")
-    password = os.getenv("APP_PASSWORD", "admin")
+    username = os.getenv("APP_USERNAME") or st.secrets.get("APP_USERNAME", "admin")
+    password = os.getenv("APP_PASSWORD") or st.secrets.get("APP_PASSWORD", "admin")
     return username, password
+
+
+def _clear_auth_state() -> None:
+    st.session_state["logged_out"] = True
+    st.session_state.pop("authenticated", None)
+    st.session_state.pop("auth_user", None)
 
 
 def is_authenticated() -> bool:
@@ -21,14 +27,12 @@ def is_authenticated() -> bool:
     except Exception:
         logout_requested = False
     if logout_requested:
-        st.session_state["logged_out"] = True
-        st.session_state.pop("authenticated", None)
-        st.session_state.pop("auth_user", None)
+        _clear_auth_state()
         try:
             st.query_params.clear()
         except Exception:
             pass
-    return not bool(st.session_state.get("logged_out"))
+    return bool(st.session_state.get("authenticated")) and not bool(st.session_state.get("logged_out"))
 
 
 def handle_logout_query():
@@ -37,9 +41,7 @@ def handle_logout_query():
     except Exception:
         logout_requested = False
     if logout_requested:
-        st.session_state["logged_out"] = True
-        st.session_state.pop("authenticated", None)
-        st.session_state.pop("auth_user", None)
+        _clear_auth_state()
         try:
             st.query_params.clear()
         except Exception:
@@ -49,9 +51,7 @@ def handle_logout_query():
 
 def logout_button():
     if st.sidebar.button("Déconnexion", width="stretch"):
-        st.session_state["logged_out"] = True
-        st.session_state.pop("authenticated", None)
-        st.session_state.pop("auth_user", None)
+        _clear_auth_state()
         st.rerun()
 
 
@@ -68,10 +68,14 @@ def login_page() -> bool:
 
     if submitted:
         clean_username = username.strip()
-        st.session_state.pop("logged_out", None)
-        st.session_state["authenticated"] = True
-        st.session_state["auth_user"] = clean_username or "admin"
-        st.rerun()
+        valid_username = hmac.compare_digest(clean_username, str(expected_user))
+        valid_password = hmac.compare_digest(password, str(expected_password))
+        if valid_username and valid_password:
+            st.session_state.pop("logged_out", None)
+            st.session_state["authenticated"] = True
+            st.session_state["auth_user"] = clean_username
+            st.rerun()
+        st.error("Identifiant ou mot de passe incorrect.")
 
     with st.expander("Configuration"):
         st.caption("Les identifiants sont lus depuis `.env`.")
