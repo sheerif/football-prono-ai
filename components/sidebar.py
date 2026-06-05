@@ -79,11 +79,55 @@ def render_sidebar(current: str = "Tableau de bord"):
         unsafe_allow_html=True,
     )
     st.sidebar.markdown("---")
-    return st.sidebar.radio(
-        "Navigation",
-        NAV_ITEMS,
-        index=current_index,
+
+    # Custom navigation buttons (accessible + styled)
+    selected = current
+
+    # Small CSS to style the buttons and active state consistently
+    st.sidebar.markdown(
+        """
+        <style>
+        [data-testid="stSidebar"] .stButton > button {
+            justify-content: center;
+            width: 100%;
+            min-height: 2.6rem;
+            border: 0;
+            border-radius: 10px;
+            background: linear-gradient(180deg, rgba(255,255,255,0.96), rgba(250,252,247,0.92));
+            color: #16201b;
+            font-weight: 700;
+            margin: 0.45rem 0;
+            box-shadow: 0 10px 24px rgba(18, 100, 71, 0.06);
+        }
+        [data-testid="stSidebar"] .stButton > button:hover {
+            transform: translateY(-1px);
+        }
+        .app-rail-current {
+            display: block;
+            padding: 0.58rem 0.7rem;
+            margin: 0.15rem 0;
+            border-radius: 10px;
+            color: #126447;
+            background: rgba(18, 100, 71, 0.10);
+            box-shadow: inset 4px 0 0 #126447;
+            font-size: 0.95rem;
+            font-weight: 800;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
     )
+
+    with st.sidebar:
+        # Render buttons and current item
+        for item in NAV_ITEMS:
+            if item == current:
+                st.markdown(f'<div class="app-rail-current">{item}</div>', unsafe_allow_html=True)
+            else:
+                if st.button(item, key=f"nav_{item}"):
+                    selected = item
+
+        return selected
 
 
 def switch_to_nav(nav: str):
