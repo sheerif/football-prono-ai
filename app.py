@@ -4,7 +4,7 @@ import os
 
 os.environ["AUTO_REFRESH_END_SEASON"] = "2026"
 
-from services import import_service
+from services import import_service, schema_guard
 
 
 def _force_2026_active_season(session, league_id: int, fallback_season: int) -> int:
@@ -29,6 +29,7 @@ def _init_db_once():
 
 
 _init_db_once()
+schema_guard.ensure_match_score_columns()
 
 if "connection_started_at" not in st.session_state:
 	st.session_state["connection_started_at"] = datetime.datetime.now(datetime.UTC).replace(tzinfo=None).isoformat()
