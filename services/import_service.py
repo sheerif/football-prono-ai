@@ -41,6 +41,17 @@ def init_db():
 
 def _ensure_schema_columns():
     with engine.begin() as conn:
+        match_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(matches)")).fetchall()}
+        missing_match_columns = {
+            "home_goals": "INTEGER",
+            "away_goals": "INTEGER",
+            "winner": "TEXT",
+            "status": "TEXT",
+        }
+        for column_name, column_type in missing_match_columns.items():
+            if column_name not in match_columns:
+                conn.execute(text(f"ALTER TABLE matches ADD COLUMN {column_name} {column_type}"))
+
         standing_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(standings)")).fetchall()}
         if "league_id" not in standing_columns:
             conn.execute(text("ALTER TABLE standings ADD COLUMN league_id INTEGER"))

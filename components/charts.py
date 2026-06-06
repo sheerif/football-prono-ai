@@ -67,10 +67,13 @@ def bar_matches_by_season(df):
 
 
 def line_goals_by_season(df):
-    if df.empty or "season" not in df.columns:
+    required_columns = {"season", "home_goals", "away_goals"}
+    if df.empty or not required_columns.issubset(df.columns):
         return None
     agg = df.groupby("season", dropna=True)[["home_goals", "away_goals"]].sum(numeric_only=True).reset_index()
     agg["total_goals"] = agg["home_goals"].fillna(0) + agg["away_goals"].fillna(0)
+    if agg.empty or agg["total_goals"].sum() == 0:
+        return None
     agg["season_label"] = agg["season"].apply(season_period)
     fig = go.Figure()
     fig.add_trace(
