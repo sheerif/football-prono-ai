@@ -1,3 +1,5 @@
+import datetime
+
 import pandas as pd
 import streamlit as st
 
@@ -89,7 +91,7 @@ def show():
         st.info("Traitement en cours. Ne rechargez pas la page pendant l’import.")
         progress = st.progress(0)
         status = st.empty()
-        started_at = import_service.datetime.datetime.utcnow().isoformat()
+        started_at = datetime.datetime.now(datetime.UTC).replace(tzinfo=None).isoformat()
 
         try:
             status.write("Initialisation de la base...")
@@ -151,4 +153,3 @@ def show():
 
 if __name__ == "__main__":
     ui.run_direct_page("Traitement des données", show)
- 
