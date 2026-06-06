@@ -293,4 +293,3 @@ def show():
 
 if __name__ == "__main__":
     ui.run_direct_page("Football Prono AI", show)
- 

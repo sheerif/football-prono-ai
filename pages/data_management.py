@@ -153,4 +153,3 @@ def show():
 
 if __name__ == "__main__":
     ui.run_direct_page("Traitement des données", show)
- 
