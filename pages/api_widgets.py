@@ -2,7 +2,6 @@ import html
 import os
 
 import streamlit as st
-import streamlit.components.v1 as components
 from dotenv import load_dotenv
 
 from components import ui
@@ -242,7 +241,7 @@ def show():
             st.code(code, language="html")
             st.caption("Incluez la configuration une seule fois par page si vous copiez plusieurs widgets.")
         with preview_tab:
-            components.html(_preview_html(code), height=760, scrolling=True)
+            st.iframe(_preview_html(code), height=760)
 
 
 if __name__ == "__main__":
