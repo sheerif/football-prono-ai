@@ -10,11 +10,23 @@ from services import import_service
 from services.season_format import season_range
 
 
+MATCH_COLUMNS = ["fixture_id", "league_id", "season", "date", "home_team_id", "away_team_id", "home_goals", "away_goals", "winner", "status"]
+
+
+def _normalize_matches_df(df: pd.DataFrame) -> pd.DataFrame:
+    for column in MATCH_COLUMNS:
+        if column not in df.columns:
+            df[column] = pd.NA
+    for column in ["home_goals", "away_goals"]:
+        df[column] = pd.to_numeric(df[column], errors="coerce")
+    return df
+
+
 def _load_matches() -> pd.DataFrame:
     try:
-        return pd.read_sql("SELECT * FROM matches", engine)
+        return _normalize_matches_df(pd.read_sql("SELECT * FROM matches", engine))
     except Exception:
-        return pd.DataFrame(columns=["fixture_id", "league_id", "season", "date", "home_team_id", "away_team_id", "home_goals", "away_goals", "winner", "status"])
+        return pd.DataFrame(columns=MATCH_COLUMNS)
 
 
 def _load_league_seasons() -> pd.DataFrame:
@@ -281,4 +293,3 @@ def show():
 
 if __name__ == "__main__":
     ui.run_direct_page("Football Prono AI", show)
- 
