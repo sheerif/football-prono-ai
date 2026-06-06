@@ -23,6 +23,10 @@ if not logging.getLogger().handlers:
     logging.basicConfig(level=logging.INFO)
 
 
+def utc_now() -> datetime.datetime:
+    return datetime.datetime.now(datetime.UTC).replace(tzinfo=None)
+
+
 def init_db():
     """Create database tables."""
     models.Base.metadata.create_all(bind=engine)
@@ -141,7 +145,7 @@ def _ensure_league_seasons_table():
 
 def register_league_seasons(league_ids, seasons, source: str = "import"):
     _ensure_league_seasons_table()
-    now = datetime.datetime.utcnow().isoformat()
+    now = utc_now().isoformat()
     rows = [
         {"league_id": int(league_id), "season": int(season), "source": source, "updated_at": now}
         for league_id in league_ids
@@ -184,7 +188,7 @@ def record_update_log(
     error: str | None = None,
 ) -> int:
     _ensure_update_log_table()
-    finished_at = finished_at or datetime.datetime.utcnow().isoformat()
+    finished_at = finished_at or utc_now().isoformat()
     started_at = started_at or finished_at
     duration_seconds = None
     try:
@@ -233,7 +237,7 @@ def record_update_result(event_type: str, started_at: str, result: dict, error: 
         event_type=event_type,
         status=status,
         started_at=started_at,
-        finished_at=result.get("refreshed_at") or datetime.datetime.utcnow().isoformat(),
+        finished_at=result.get("refreshed_at") or utc_now().isoformat(),
         reason=result.get("reason"),
         leagues=leagues,
         seasons=result.get("seasons"),
@@ -252,7 +256,7 @@ def _get_sync_value(key: str):
 
 def _set_sync_value(key: str, value: str):
     _ensure_sync_state_table()
-    now = datetime.datetime.utcnow().isoformat()
+    now = utc_now().isoformat()
     with engine.begin() as conn:
         conn.execute(
             text(
@@ -308,7 +312,7 @@ def get_auto_refresh_config() -> dict:
     if configured_end_season:
         end_season = max(int(configured_end_season), DEFAULT_END_SEASON)
     else:
-        current_year = datetime.datetime.utcnow().year
+        current_year = utc_now().year
         try:
             with engine.begin() as conn:
                 stored_end_season = conn.execute(
@@ -347,7 +351,7 @@ def _last_refresh_is_recent(interval_minutes: int) -> bool:
         last = datetime.datetime.fromisoformat(raw)
     except Exception:
         return False
-    age = datetime.datetime.utcnow() - last
+    age = utc_now() - last
     return age.total_seconds() < interval_minutes * 60
 
 
@@ -735,7 +739,7 @@ def refresh_current_competitions_on_connection() -> dict:
     finally:
         session.close()
 
-    now = datetime.datetime.utcnow().isoformat()
+    now = utc_now().isoformat()
     _set_sync_value("last_current_refresh_utc", now)
     return {
         "ran": True,
@@ -913,7 +917,7 @@ def auto_refresh_if_due(force: bool = False) -> dict:
     audit = audit_configured_season_access(config)
     seasons = audit["accessible"]
     if not seasons:
-        _set_sync_value("last_auto_refresh_utc", datetime.datetime.utcnow().isoformat())
+        _set_sync_value("last_auto_refresh_utc", utc_now().isoformat())
         return {
             "ran": False,
             "reason": "Aucune saison configurée n’est accessible avec le plan API actuel.",
@@ -930,7 +934,7 @@ def auto_refresh_if_due(force: bool = False) -> dict:
         max_retries=config["max_retries"],
         force_refresh_seasons=force_refresh_seasons,
     )
-    now = datetime.datetime.utcnow().isoformat()
+    now = utc_now().isoformat()
     _set_sync_value("last_auto_refresh_utc", now)
     return {
         "ran": True,
