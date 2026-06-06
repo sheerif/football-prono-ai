@@ -321,7 +321,7 @@ def run_direct_page(title: str, show_func):
         pass
 
     from components import auth, sidebar
-    from services import import_service
+    from services import import_service, schema_guard
 
     inject_app_style()
 
@@ -330,6 +330,7 @@ def run_direct_page(title: str, show_func):
         st.stop()
 
     import_service.init_db()
+    schema_guard.ensure_match_score_columns()
 
     current_nav = {
         "Football Prono AI": "Tableau de bord",
