@@ -1,3 +1,4 @@
+import hashlib
 import hmac
 import os
 from pathlib import Path
@@ -8,6 +9,9 @@ from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
+AUTH_USER_PARAM = "prono_user"
+AUTH_TOKEN_PARAM = "prono_auth"
+
 
 def _credentials() -> tuple[str, str]:
     username = os.getenv("APP_USERNAME") or st.secrets.get("APP_USERNAME", "admin")
@@ -15,14 +19,64 @@ def _credentials() -> tuple[str, str]:
     return username, password
 
 
+def _auth_token(username: str, password: str) -> str:
+    secret = os.getenv("APP_AUTH_SECRET") or str(password)
+    return hmac.new(secret.encode("utf-8"), str(username).encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def _query_value(name: str) -> str:
+    try:
+        value = st.query_params.get(name, "")
+    except Exception:
+        return ""
+    if isinstance(value, list):
+        return str(value[0]) if value else ""
+    return str(value or "")
+
+
+def _save_auth_query(username: str, password: str) -> None:
+    try:
+        st.query_params[AUTH_USER_PARAM] = username
+        st.query_params[AUTH_TOKEN_PARAM] = _auth_token(username, password)
+    except Exception:
+        pass
+
+
+def _clear_auth_query() -> None:
+    try:
+        for key in [AUTH_USER_PARAM, AUTH_TOKEN_PARAM]:
+            if key in st.query_params:
+                del st.query_params[key]
+    except Exception:
+        pass
+
+
+def _restore_auth_from_query() -> bool:
+    expected_user, expected_password = _credentials()
+    username = _query_value(AUTH_USER_PARAM)
+    token = _query_value(AUTH_TOKEN_PARAM)
+    expected_token = _auth_token(str(expected_user), str(expected_password))
+    if username and token and hmac.compare_digest(username, str(expected_user)) and hmac.compare_digest(token, expected_token):
+        st.session_state.pop("logged_out", None)
+        st.session_state["authenticated"] = True
+        st.session_state["auth_user"] = username
+        return True
+    return False
+
+
 def _clear_auth_state() -> None:
     st.session_state["logged_out"] = True
     st.session_state.pop("authenticated", None)
     st.session_state.pop("auth_user", None)
+    _clear_auth_query()
 
 
 def is_authenticated() -> bool:
-    return bool(st.session_state.get("authenticated")) and not bool(st.session_state.get("logged_out"))
+    if bool(st.session_state.get("authenticated")) and not bool(st.session_state.get("logged_out")):
+        return True
+    if bool(st.session_state.get("logged_out")):
+        return False
+    return _restore_auth_from_query()
 
 
 def handle_logout_query():
@@ -48,12 +102,14 @@ def login_page() -> bool:
 
     if submitted:
         clean_username = username.strip()
+        clean_password = password.strip()
         valid_username = hmac.compare_digest(clean_username, str(expected_user))
-        valid_password = hmac.compare_digest(password, str(expected_password))
+        valid_password = hmac.compare_digest(clean_password, str(expected_password))
         if valid_username and valid_password:
             st.session_state.pop("logged_out", None)
             st.session_state["authenticated"] = True
             st.session_state["auth_user"] = clean_username
+            _save_auth_query(clean_username, str(expected_password))
             st.rerun()
         st.error("Identifiant ou mot de passe incorrect.")
 
