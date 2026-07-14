@@ -1,4 +1,5 @@
 import datetime
+import hashlib
 import json
 import pandas as pd
 import re
@@ -589,6 +590,175 @@ def _summary_sentence(home_name: str, away_name: str, prediction: dict, details:
     )
 
 
+def _clean_hash_value(value):
+    if value is None:
+        return ""
+    try:
+        if pd.isna(value):
+            return ""
+    except Exception:
+        pass
+    return str(value)
+
+
+def _context_signature(context_df: pd.DataFrame) -> dict:
+    if context_df.empty:
+        return {"count": 0}
+    completed = context_df.dropna(subset=["home_goals", "away_goals"])
+    if completed.empty:
+        return {"count": 0}
+    fixture_ids = pd.to_numeric(completed["fixture_id"], errors="coerce") if "fixture_id" in completed else pd.Series(dtype="float64")
+    return {
+        "count": int(len(completed)),
+        "last_date": _clean_hash_value(completed["date"].max()),
+        "fixture_sum": int(fixture_ids.fillna(0).sum()),
+        "home_goals_sum": int(pd.to_numeric(completed["home_goals"], errors="coerce").fillna(0).sum()),
+        "away_goals_sum": int(pd.to_numeric(completed["away_goals"], errors="coerce").fillna(0).sum()),
+    }
+
+
+def _preview_source_hash(match, context_df: pd.DataFrame) -> str:
+    payload = {
+        "fixture_id": int(match.fixture_id),
+        "league_id": int(match.league_id),
+        "season": _clean_hash_value(match.season),
+        "date": _clean_hash_value(match.date),
+        "home_team_id": int(match.home_team_id),
+        "away_team_id": int(match.away_team_id),
+        "home_name": _clean_hash_value(match.home_name),
+        "away_name": _clean_hash_value(match.away_name),
+        "league_name": _clean_hash_value(match.league_name),
+        "status": _clean_hash_value(match.status),
+        "api_round": _clean_hash_value(getattr(match, "api_round", "")),
+        "api_venue": _clean_hash_value(getattr(match, "api_venue", "")),
+        "api_city": _clean_hash_value(getattr(match, "api_city", "")),
+        "api_status_short": _clean_hash_value(getattr(match, "api_status_short", "")),
+        "api_home_logo": _clean_hash_value(getattr(match, "api_home_logo", "")),
+        "api_away_logo": _clean_hash_value(getattr(match, "api_away_logo", "")),
+        "context": _context_signature(context_df),
+    }
+    return hashlib.sha256(_json_dump(payload).encode("utf-8")).hexdigest()
+
+
+def _load_cached_previews(fixture_ids: list[int]) -> dict[int, dict]:
+    unique_ids = []
+    seen = set()
+    for fixture_id in fixture_ids:
+        value = int(fixture_id)
+        if value not in seen:
+            unique_ids.append(value)
+            seen.add(value)
+    if not unique_ids:
+        return {}
+
+    placeholders = ",".join([f":fixture_{index}" for index, _ in enumerate(unique_ids)])
+    params = {f"fixture_{index}": fixture_id for index, fixture_id in enumerate(unique_ids)}
+    try:
+        rows = pd.read_sql(
+            text(f"SELECT * FROM fixture_match_previews WHERE fixture_id IN ({placeholders})"),
+            engine,
+            params=params,
+        )
+    except Exception:
+        return {}
+
+    return {int(row.fixture_id): row._asdict() for row in rows.itertuples(index=False)}
+
+
+def _cached_preview_to_row(item: dict) -> dict:
+    return {
+        "fixture_id": int(item.get("fixture_id")),
+        "Date et heure": item.get("date_time") or "",
+        "Date": item.get("date_label") or "",
+        "Heure": item.get("time_label") or "",
+        "Saison sportive": item.get("season_label") or "",
+        "Championnat": item.get("league_name") or "",
+        "Journée": item.get("round_label") or "Journée non précisée",
+        "Round API": item.get("round_api") or "",
+        "Stade": item.get("venue") or "",
+        "Ville": item.get("city") or "",
+        "Logo domicile": item.get("home_logo") or "",
+        "Logo extérieur": item.get("away_logo") or "",
+        "Match": item.get("match_label") or "",
+        "Domicile": item.get("home_name") or "",
+        "Extérieur": item.get("away_name") or "",
+        "Statut": item.get("status") or "",
+        "Pronostic": item.get("pronostic") or "",
+        "Confiance": item.get("confidence") or "",
+        "Score probable": item.get("score_probable") or "",
+        "Résumé": item.get("summary") or "",
+    }
+
+
+def _save_match_preview(preview: dict, source_hash: str) -> None:
+    row = {
+        "fixture_id": int(preview["fixture_id"]),
+        "source_hash": source_hash,
+        "date_time": preview.get("Date et heure"),
+        "date_label": preview.get("Date"),
+        "time_label": preview.get("Heure"),
+        "season_label": preview.get("Saison sportive"),
+        "league_name": preview.get("Championnat"),
+        "round_label": preview.get("Journée"),
+        "round_api": preview.get("Round API"),
+        "venue": preview.get("Stade"),
+        "city": preview.get("Ville"),
+        "home_logo": preview.get("Logo domicile"),
+        "away_logo": preview.get("Logo extérieur"),
+        "match_label": preview.get("Match"),
+        "home_name": preview.get("Domicile"),
+        "away_name": preview.get("Extérieur"),
+        "status": preview.get("Statut"),
+        "pronostic": preview.get("Pronostic"),
+        "confidence": preview.get("Confiance"),
+        "score_probable": preview.get("Score probable"),
+        "summary": preview.get("Résumé"),
+        "updated_at": _utc_now_iso(),
+    }
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO fixture_match_previews (
+                    fixture_id, source_hash, date_time, date_label, time_label, season_label,
+                    league_name, round_label, round_api, venue, city, home_logo, away_logo,
+                    match_label, home_name, away_name, status, pronostic, confidence,
+                    score_probable, summary, updated_at
+                )
+                VALUES (
+                    :fixture_id, :source_hash, :date_time, :date_label, :time_label, :season_label,
+                    :league_name, :round_label, :round_api, :venue, :city, :home_logo, :away_logo,
+                    :match_label, :home_name, :away_name, :status, :pronostic, :confidence,
+                    :score_probable, :summary, :updated_at
+                )
+                ON CONFLICT(fixture_id) DO UPDATE SET
+                    source_hash = excluded.source_hash,
+                    date_time = excluded.date_time,
+                    date_label = excluded.date_label,
+                    time_label = excluded.time_label,
+                    season_label = excluded.season_label,
+                    league_name = excluded.league_name,
+                    round_label = excluded.round_label,
+                    round_api = excluded.round_api,
+                    venue = excluded.venue,
+                    city = excluded.city,
+                    home_logo = excluded.home_logo,
+                    away_logo = excluded.away_logo,
+                    match_label = excluded.match_label,
+                    home_name = excluded.home_name,
+                    away_name = excluded.away_name,
+                    status = excluded.status,
+                    pronostic = excluded.pronostic,
+                    confidence = excluded.confidence,
+                    score_probable = excluded.score_probable,
+                    summary = excluded.summary,
+                    updated_at = excluded.updated_at
+                """
+            ),
+            row,
+        )
+
+
 def _build_match_preview(match, context_df: pd.DataFrame) -> dict:
     home_name = str(match.home_name)
     away_name = str(match.away_name)
@@ -666,25 +836,47 @@ def _build_match_preview(match, context_df: pd.DataFrame) -> dict:
 
 
 def _build_previews(upcoming: pd.DataFrame, max_per_league: int, progress_callback=None) -> pd.DataFrame:
+    schema_guard.ensure_fixture_api_cache_tables()
     rows = []
     limited_groups = [
         (league_id, league_matches.sort_values("date").head(int(max_per_league)))
         for league_id, league_matches in upcoming.groupby("league_id", sort=False)
     ]
+    fixture_ids = [
+        int(match.fixture_id)
+        for _, limited_matches in limited_groups
+        for match in limited_matches.itertuples()
+    ]
+    cached_previews = _load_cached_previews(fixture_ids)
     total_matches = max(1, sum(len(league_matches) for _, league_matches in limited_groups))
     processed_matches = 0
+    reused_count = 0
+    generated_count = 0
     for league_id, limited_matches in limited_groups:
         context_cache = {}
         for match in limited_matches.itertuples():
             if progress_callback:
-                progress_callback(processed_matches, total_matches, f"Résumé: {match.home_name} - {match.away_name}")
+                progress_callback(processed_matches, total_matches, f"Lecture SQLite: {match.home_name} - {match.away_name}")
             context_key = (int(league_id), str(match.date))
             if context_key not in context_cache:
                 context_cache[context_key] = _load_prediction_context(int(league_id), match.date)
-            rows.append(_build_match_preview(match, context_cache[context_key]))
+            source_hash = _preview_source_hash(match, context_cache[context_key])
+            cached = cached_previews.get(int(match.fixture_id))
+            if cached and cached.get("source_hash") == source_hash:
+                rows.append(_cached_preview_to_row(cached))
+                reused_count += 1
+            else:
+                preview = _build_match_preview(match, context_cache[context_key])
+                _save_match_preview(preview, source_hash)
+                rows.append(preview)
+                generated_count += 1
             processed_matches += 1
     if progress_callback:
-        progress_callback(total_matches, total_matches, "Résumés générés")
+        progress_callback(
+            total_matches,
+            total_matches,
+            f"Résumés SQLite prêts: {reused_count} déjà en base, {generated_count} mis à jour",
+        )
     return pd.DataFrame(rows)
 
 
