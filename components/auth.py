@@ -59,6 +59,6 @@ def login_page() -> bool:
 
     with st.expander("Configuration"):
         st.caption("Les identifiants sont lus depuis `.env`.")
-        st.code("APP_USERNAME=admin\nAPP_PASSWORD=change-moi", language="bash")
+        st.code(f"APP_USERNAME={expected_user}\nAPP_PASSWORD={expected_password}", language="bash")
 
     return False
