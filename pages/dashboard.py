@@ -1,10 +1,7 @@
 import streamlit as st
 import pandas as pd
 from sqlalchemy import text
-from database import models
 from database.database import engine
-from sqlalchemy.orm import Session
-from components import charts
 from components import ui
 from services import import_service
 from services.season_format import season_range
@@ -81,6 +78,96 @@ def _compute_kpis(matches_df: pd.DataFrame) -> dict:
     }
 
 
+def _format_int(value) -> str:
+    try:
+        return f"{int(value):,}".replace(",", " ")
+    except Exception:
+        return "0"
+
+
+def _format_percent(value) -> str:
+    try:
+        return f"{float(value):.1f} %"
+    except Exception:
+        return "0.0 %"
+
+
+def _load_data_health() -> dict:
+    queries = {
+        "upcoming": """
+            SELECT COUNT(*)
+            FROM matches
+            WHERE date >= CURRENT_TIMESTAMP
+              AND home_goals IS NULL
+              AND away_goals IS NULL
+        """,
+        "fixture_details": "SELECT COUNT(*) FROM fixture_api_details",
+        "fixture_predictions": "SELECT COUNT(*) FROM fixture_api_predictions",
+        "preview_cache": "SELECT COUNT(*) FROM fixture_match_previews",
+    }
+    health = {}
+    with engine.begin() as conn:
+        for key, query in queries.items():
+            try:
+                health[key] = int(conn.execute(text(query)).scalar() or 0)
+            except Exception:
+                health[key] = 0
+    return health
+
+
+def _upcoming_by_league() -> pd.DataFrame:
+    try:
+        rows = pd.read_sql(
+            text(
+                """
+                SELECT
+                    COALESCE(l.name, 'Championnat ' || m.league_id) AS Championnat,
+                    COUNT(*) AS "Matchs à venir",
+                    MIN(m.date) AS "Prochain match"
+                FROM matches m
+                LEFT JOIN leagues l ON l.id = m.league_id
+                WHERE m.date >= CURRENT_TIMESTAMP
+                  AND m.home_goals IS NULL
+                  AND m.away_goals IS NULL
+                GROUP BY m.league_id, l.name
+                ORDER BY "Matchs à venir" DESC, "Prochain match"
+                LIMIT 8
+                """
+            ),
+            engine,
+        )
+    except Exception:
+        return pd.DataFrame(columns=["Championnat", "Matchs à venir", "Prochain match"])
+    if not rows.empty:
+        rows["Prochain match"] = pd.to_datetime(rows["Prochain match"], errors="coerce").dt.strftime("%d/%m/%Y %H:%M")
+        rows["Prochain match"] = rows["Prochain match"].fillna("Date inconnue")
+    return rows
+
+
+def _league_readiness_table(matches_df: pd.DataFrame, league_seasons_df: pd.DataFrame) -> pd.DataFrame:
+    table = _top_leagues_table(matches_df, league_seasons_df)
+    if table.empty:
+        return table
+    table = table.copy()
+    table["Taux joué"] = table.apply(
+        lambda row: _format_percent(row["Matchs joués"] / row["Matchs importés"] * 100) if row["Matchs importés"] else "0.0 %",
+        axis=1,
+    )
+    return table[["Championnat", "Saisons sportives", "Matchs importés", "Matchs joués", "Taux joué"]]
+
+
+def _next_action(health: dict, matches_df: pd.DataFrame) -> str:
+    if matches_df.empty:
+        return "Importer les championnats dans Mise à jour."
+    if health["upcoming"] == 0:
+        return "Lancer une mise à jour pour récupérer les prochains matchs."
+    if health["fixture_details"] < health["upcoming"]:
+        return "Ouvrir Matchs à venir pour compléter journées, logos et stades."
+    if health["fixture_predictions"] < health["upcoming"]:
+        return "Ouvrir une journée dans Matchs à venir pour synchroniser les conseils API."
+    return "La base est prête pour consulter les matchs à venir."
+
+
 def _top_leagues_table(matches_df: pd.DataFrame, league_seasons_df: pd.DataFrame) -> pd.DataFrame:
     if matches_df.empty and league_seasons_df.empty:
         return pd.DataFrame(columns=["Championnat", "Pays", "Saisons sportives", "Matchs importés", "Matchs joués"])
@@ -123,10 +210,20 @@ def _top_leagues_table(matches_df: pd.DataFrame, league_seasons_df: pd.DataFrame
 
 
 def _quick_read_sentence(kpis: dict) -> str:
+    if not kpis["completed_count"]:
+        return "Aucun match terminé n’est encore disponible pour calculer des tendances fiables."
+    dominant = max(
+        [
+            ("domicile", kpis["home_win_rate"]),
+            ("nul", kpis["draw_rate"]),
+            ("extérieur", kpis["away_win_rate"]),
+        ],
+        key=lambda item: item[1],
+    )
     return (
-        f"Sur {kpis['completed_count']} matchs joués, les équipes à domicile gagnent {kpis['home_win_rate']} % du temps, "
-        f"les matchs nuls représentent {kpis['draw_rate']} %, et les équipes à l’extérieur gagnent {kpis['away_win_rate']} %. "
-        f"La base affiche aussi {kpis['avg_goals']} buts par match en moyenne."
+        f"Tendance principale: avantage {dominant[0]} ({dominant[1]} %). "
+        f"Les deux équipes marquent dans {kpis['btts_rate']} % des matchs et le over 2,5 sort à {kpis['over_25_rate']} %. "
+        f"Moyenne globale: {kpis['avg_goals']} buts par match terminé."
     )
 
 
@@ -170,11 +267,9 @@ def show():
     matches_df = _load_matches()
     league_seasons_df = _load_league_seasons()
     kpis = _compute_kpis(matches_df)
+    health = _load_data_health()
 
-    with Session(bind=engine) as session:
-        leagues_count = session.query(models.League).count()
-        teams_count = session.query(models.Team).count()
-        matches_count = session.query(models.Match).count()
+    matches_count = len(matches_df)
     seasons = league_seasons_df["season"].nunique() if not league_seasons_df.empty else (
         matches_df["season"].nunique() if not matches_df.empty else 0
     )
@@ -191,11 +286,11 @@ def show():
 
     ui.dashboard_hero(
         "Prono insight",
-        "Cockpit de lecture pour repérer les tendances fortes, cadrer les pronostics et contrôler la qualité des données importées.",
+        "Vue rapide de la base, des matchs disponibles et des tendances utiles pour cadrer les pronostics.",
         [
-            ("Championnats", f"{leagues_count:,}".replace(",", " ")),
-            ("Équipes", f"{teams_count:,}".replace(",", " ")),
-            ("Matchs", f"{matches_count:,}".replace(",", " ")),
+            ("Matchs importés", _format_int(matches_count)),
+            ("Matchs à venir", _format_int(health["upcoming"])),
+            ("Conseils API", _format_int(health["fixture_predictions"])),
             ("Saisons sportives", str(seasons)),
         ],
     )
@@ -204,89 +299,78 @@ def show():
         _quick_read_sentence(kpis),
         [
             ("Saisons sportives", season_scope),
-            ("Championnats actifs", league_scope),
-            ("Matchs terminés", f"{kpis['completed_count']:,}".replace(",", " ")),
+            ("Championnats suivis", league_scope),
+            ("Prochaine action", _next_action(health, matches_df)),
             ("Accès API", import_service.get_api_access_message()),
         ],
     )
 
-    ui.section_label("Indicateurs clés")
+    ui.section_label("Etat de la base")
     ui.kpi_grid(
         [
             {
-                "label": "Matchs joués",
-                "value": f"{kpis['completed_count']:,}".replace(",", " "),
+                "label": "Matchs terminés",
+                "value": _format_int(kpis["completed_count"]),
                 "caption": "Matchs avec score complet",
                 "accent": "#126447",
             },
             {
-                "label": "Buts totaux",
-                "value": f"{kpis['goals_total']:,}".replace(",", " "),
-                "caption": "Somme domicile + extérieur",
+                "label": "Détails matchs",
+                "value": _format_int(health["fixture_details"]),
+                "caption": "Journées, stades et logos en cache",
                 "accent": "#d8a528",
             },
             {
-                "label": "Moyenne buts",
-                "value": kpis["avg_goals"],
-                "caption": "Buts par match terminé",
+                "label": "Résumés prêts",
+                "value": _format_int(health["preview_cache"]),
+                "caption": "Cartes déjà calculées en SQLite",
                 "accent": "#4d7c8a",
             },
+        ]
+    )
+
+    ui.section_label("Signaux pronostic")
+    ui.kpi_grid(
+        [
             {
                 "label": "Les deux marquent",
-                "value": f"{kpis['btts_rate']} %",
+                "value": _format_percent(kpis["btts_rate"]),
                 "caption": "Signal utile BTTS",
                 "accent": "#7a5c96",
             },
             {
                 "label": "Plus de 2,5 buts",
-                "value": f"{kpis['over_25_rate']} %",
+                "value": _format_percent(kpis["over_25_rate"]),
                 "caption": "Matchs à 3 buts ou plus",
                 "accent": "#c94b3f",
             },
             {
-                "label": "Clean sheet",
-                "value": f"{kpis['clean_sheet_rate']} %",
-                "caption": "Au moins une équipe à zéro",
+                "label": "Matchs nuls",
+                "value": _format_percent(kpis["draw_rate"]),
+                "caption": "Référence pour double chance",
                 "accent": "#8a6f3e",
             },
         ]
     )
 
-    ui.section_label("Répartition des résultats")
-    res_df = pd.DataFrame(
-        [
-            {"result": "Victoires domicile", "count": (matches_df.dropna(subset=["home_goals", "away_goals"])["home_goals"] > matches_df.dropna(subset=["home_goals", "away_goals"])["away_goals"]).sum() if not matches_df.empty else 0},
-            {"result": "Nuls", "count": (matches_df.dropna(subset=["home_goals", "away_goals"])["home_goals"] == matches_df.dropna(subset=["home_goals", "away_goals"])["away_goals"]).sum() if not matches_df.empty else 0},
-            {"result": "Victoires extérieur", "count": (matches_df.dropna(subset=["home_goals", "away_goals"])["home_goals"] < matches_df.dropna(subset=["home_goals", "away_goals"])["away_goals"]).sum() if not matches_df.empty else 0},
-        ]
-    )
-    fig_results = charts.pie_results(res_df)
-    fig_matches = charts.bar_matches_by_season(matches_df)
-    fig_goals = charts.line_goals_by_season(matches_df)
+    table_cols = st.columns([1, 1])
+    upcoming_table = _upcoming_by_league()
+    with table_cols[0].container(border=True):
+        st.markdown("### Prochains matchs")
+        st.caption("Championnat avec le plus de matchs à venir dans la base.")
+        if upcoming_table.empty:
+            st.info("Aucun match à venir enregistré.")
+        else:
+            st.dataframe(upcoming_table, width="stretch", hide_index=True)
 
-    chart_cols = st.columns(2)
-    if fig_results is not None:
-        chart_cols[0].plotly_chart(fig_results, width="stretch")
-    if fig_matches is not None:
-        chart_cols[1].plotly_chart(fig_matches, width="stretch")
-
-    if fig_goals is not None:
-        st.plotly_chart(fig_goals, width="stretch")
-
-    ui.section_label("Tendances résultat")
-    info_cols = st.columns(3)
-    info_cols[0].metric("Victoires à domicile", f"{kpis['home_win_rate']} %")
-    info_cols[1].metric("Matchs nuls", f"{kpis['draw_rate']} %")
-    info_cols[2].metric("Victoires à l’extérieur", f"{kpis['away_win_rate']} %")
-
-    top_leagues = _top_leagues_table(matches_df, league_seasons_df)
-    if not top_leagues.empty:
-        st.markdown("### Championnats les plus alimentés")
-        st.caption("Ce tableau montre les championnats qui contiennent le plus de matchs dans la base, avec les saisons couvertes.")
-        st.dataframe(top_leagues, width="stretch", hide_index=True)
-
-    with st.expander("Voir les définitions des indicateurs"):
-        st.dataframe(_indicator_glossary(), hide_index=True, width="stretch")
+    readiness_table = _league_readiness_table(matches_df, league_seasons_df)
+    with table_cols[1].container(border=True):
+        st.markdown("### Championnats suivis")
+        st.caption("Couverture des ligues les plus alimentées.")
+        if readiness_table.empty:
+            st.info("Aucun championnat alimenté.")
+        else:
+            st.dataframe(readiness_table, width="stretch", hide_index=True)
 
     st.caption("Les indicateurs sont calculés à partir des matchs présents dans SQLite. Si les données sont vides, allez dans 'Mise à jour'.")
 
