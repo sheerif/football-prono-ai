@@ -15,6 +15,7 @@ from services.season_format import season_period
 
 
 api_client = ApiFootballClient()
+PREVIEW_CACHE_VERSION = "score-outcome-v2"
 
 
 def _load_upcoming_matches(days_ahead: int, league_ids: list[int] | None = None) -> pd.DataFrame:
@@ -628,6 +629,34 @@ def _favorite_from_prediction(prediction: dict, home_name: str, away_name: str) 
     return code, label, float(probability)
 
 
+def _score_matches_outcome(score: dict, outcome_code: str) -> bool:
+    try:
+        home_goals = int(score.get("Buts domicile"))
+        away_goals = int(score.get("Buts extérieur"))
+    except Exception:
+        raw_score = str(score.get("Score") or "")
+        match = re.match(r"^\s*(\d+)\s*-\s*(\d+)\s*$", raw_score)
+        if not match:
+            return False
+        home_goals = int(match.group(1))
+        away_goals = int(match.group(2))
+
+    if outcome_code == "1":
+        return home_goals > away_goals
+    if outcome_code == "2":
+        return away_goals > home_goals
+    if outcome_code == "N":
+        return home_goals == away_goals
+    return False
+
+
+def _scores_for_outcome(scores: list[dict], outcome_code: str) -> list[dict]:
+    if not scores:
+        return []
+    compatible_score = next((score for score in scores if _score_matches_outcome(score, outcome_code)), None)
+    return [compatible_score or scores[0]]
+
+
 def _summary_sentence(home_name: str, away_name: str, prediction: dict, details: dict, scores: list[dict]) -> str:
     code, favorite, probability = _favorite_from_prediction(prediction, home_name, away_name)
     confidence = float(prediction.get("confidence") or probability)
@@ -681,6 +710,7 @@ def _context_signature(context_df: pd.DataFrame) -> dict:
 
 def _preview_source_hash(match, context_df: pd.DataFrame) -> str:
     payload = {
+        "cache_version": PREVIEW_CACHE_VERSION,
         "fixture_id": int(match.fixture_id),
         "league_id": int(match.league_id),
         "season": _clean_hash_value(match.season),
@@ -868,10 +898,10 @@ def _build_match_preview(match, context_df: pd.DataFrame) -> dict:
         away_team_id,
         home_form_score=details["home_form_score"] / 100,
         away_form_score=details["away_form_score"] / 100,
-        top_n=1,
+        top_n=12,
     )
-    scores = score_prediction.get("scores", [])
     code, favorite, probability = _favorite_from_prediction(prediction, home_name, away_name)
+    scores = _scores_for_outcome(score_prediction.get("scores", []), code)
     score_label = scores[0]["Score"] if scores else ""
     return {
         "fixture_id": int(match.fixture_id),
