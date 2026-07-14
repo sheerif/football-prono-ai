@@ -560,7 +560,10 @@ def _enrich_with_api_predictions(
         if not prediction:
             enriched.at[index, "Conseil API"] = "Indisponible"
             continue
-        enriched.at[index, "Conseil API"] = prediction.get("api_advice") or prediction.get("api_winner") or "Indisponible"
+        enriched.at[index, "Conseil API"] = _translate_api_advice(
+            prediction.get("api_advice"),
+            prediction.get("api_winner"),
+        )
         enriched.at[index, "Probas API 1/N/2"] = (
             f"{_format_probability(prediction.get('api_home_probability'))} / "
             f"{_format_probability(prediction.get('api_draw_probability'))} / "
@@ -987,6 +990,28 @@ def _api_probability_line(prediction: dict) -> str:
     )
 
 
+def _translate_api_advice(advice: str | None, winner: str | None = None) -> str:
+    text_value = _display_text(advice) or _display_text(winner) or "Non disponible"
+    replacements = [
+        (r"\bDouble chance\s*:\s*", "Double chance : "),
+        (r"\bCombo Double chance\s*:\s*", "Combiné double chance : "),
+        (r"\bCombo Winner\s*:\s*", "Combiné gagnant : "),
+        (r"\bWinner\s*:\s*", "Gagnant : "),
+        (r"\bDraw\b", "Match nul"),
+        (r"\bdraw\b", "match nul"),
+        (r"\bor\b", "ou"),
+        (r"\band\b", "et"),
+        (r"\bgoals\b", "buts"),
+        (r"\bgoal\b", "but"),
+        (r"\bNo predictions available\b", "Conseil indisponible"),
+    ]
+    translated = text_value
+    for pattern, replacement in replacements:
+        translated = re.sub(pattern, replacement, translated)
+    translated = re.sub(r"\s+", " ", translated).strip()
+    return translated[:1].upper() + translated[1:] if translated else "Non disponible"
+
+
 def _render_match_detail(row: pd.Series, force_api_refresh: bool = False):
     venue = _display_text(row.get("Stade"), "Stade non renseigné")
     city = _display_text(row.get("Ville"))
@@ -1015,7 +1040,7 @@ def _render_match_detail(row: pd.Series, force_api_refresh: bool = False):
 
     if api_prediction:
         st.markdown("#### Conseil API")
-        advice = api_prediction.get("api_advice") or api_prediction.get("api_winner") or "Non disponible"
+        advice = _translate_api_advice(api_prediction.get("api_advice"), api_prediction.get("api_winner"))
         st.write(f"**{advice}**")
         st.caption(f"Probabilités API 1/N/2: {_api_probability_line(api_prediction)}")
         if api_prediction.get("api_total_home") or api_prediction.get("api_total_away"):
@@ -1064,7 +1089,7 @@ def _render_match_card(row: pd.Series, force_api_refresh: bool = False):
         prediction = _load_cached_prediction(fixture_id)
         if prediction:
             st.markdown("**Conseil API**")
-            st.write(prediction.get("api_advice") or prediction.get("api_winner") or "Non disponible")
+            st.write(f"**{_translate_api_advice(prediction.get('api_advice'), prediction.get('api_winner'))}**")
             st.caption(f"Probabilités API 1/N/2: {_api_probability_line(prediction)}")
         else:
             st.caption("Conseil API non synchronisé.")
