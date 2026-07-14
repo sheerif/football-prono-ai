@@ -16,7 +16,7 @@ import_service._active_season_for_league = _force_2026_active_season
 from components import auth, sidebar, ui
 from pages import dashboard, data_management, api_widgets, matchs_a_venir, analyse_match, comparaison_equipes, prediction_ia, top_pronostics
 
-st.set_page_config(page_title="Football Prono AI", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="Prono insight", layout="wide", initial_sidebar_state="expanded")
 ui.inject_app_style()
 
 if not auth.is_authenticated():

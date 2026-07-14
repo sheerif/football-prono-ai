@@ -39,7 +39,7 @@ def login_page() -> bool:
     expected_user, expected_password = _credentials()
 
     st.markdown("## Connexion")
-    st.caption("Connectez-vous pour accéder au tableau de bord Football Prono AI.")
+    st.caption("Connectez-vous pour accéder au tableau de bord Prono insight.")
 
     with st.container(border=True):
         username = st.text_input("Identifiant", value="", placeholder="admin")

@@ -1,4 +1,4 @@
-# Football Prono AI
+# Prono insight
 
 Application Streamlit de pronostic IA football avec dashboard, imports API-Football, widgets API-Sports, analyses, predictions et logs de mises a jour persistants.
 

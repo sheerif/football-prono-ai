@@ -232,7 +232,7 @@ def inject_app_style():
 
 
 def render_page_navigation():
-    st.sidebar.title("Football Prono AI")
+    st.sidebar.title("Prono insight")
     st.sidebar.markdown("---")
     links = [
         ("app.py", "Tableau de bord"),
@@ -335,7 +335,7 @@ def run_direct_page(title: str, show_func):
     background_jobs.start_startup_updates_once()
 
     current_nav = {
-        "Football Prono AI": "Tableau de bord",
+        "Prono insight": "Tableau de bord",
         "Widgets Live": "Widgets Live",
         "Mise à jour": "Mise à jour",
         "Matchs à venir": "Matchs à venir",

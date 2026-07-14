@@ -190,7 +190,7 @@ def show():
         st.warning("Aucune donnée disponible. Ouvrez 'Mise à jour' pour lancer l’import.")
 
     ui.dashboard_hero(
-        "Football Prono AI",
+        "Prono insight",
         "Cockpit de lecture pour repérer les tendances fortes, cadrer les pronostics et contrôler la qualité des données importées.",
         [
             ("Championnats", f"{leagues_count:,}".replace(",", " ")),
@@ -292,4 +292,4 @@ def show():
 
 
 if __name__ == "__main__":
-    ui.run_direct_page("Football Prono AI", show)
+    ui.run_direct_page("Prono insight", show)

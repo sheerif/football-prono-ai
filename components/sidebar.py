@@ -32,9 +32,9 @@ def render_sidebar(current: str = "Tableau de bord"):
     st.sidebar.markdown(
         """
         <div class="sidebar-brand">
-            <div class="sidebar-mark">FP</div>
+            <div class="sidebar-mark">PI</div>
             <div>
-                <h2>Football Prono AI</h2>
+                <h2>Prono insight</h2>
                 <p>Analyse, signaux et prédictions</p>
             </div>
         </div>
@@ -224,9 +224,9 @@ def render_app_rail(current: str):
         st.markdown(
             """
             <div class="app-rail-brand">
-                <div class="app-rail-mark">FP</div>
+                <div class="app-rail-mark">PI</div>
                 <div>
-                    <div class="app-rail-title">Football Prono AI</div>
+                    <div class="app-rail-title">Prono insight</div>
                     <div class="app-rail-subtitle">Analyse, signaux et prédictions</div>
                 </div>
             </div>
