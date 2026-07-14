@@ -57,8 +57,4 @@ def login_page() -> bool:
             st.rerun()
         st.error("Identifiant ou mot de passe incorrect.")
 
-    with st.expander("Configuration"):
-        st.caption("Les identifiants sont lus depuis `.env`.")
-        st.code(f"APP_USERNAME={expected_user}\nAPP_PASSWORD={expected_password}", language="bash")
-
     return False
