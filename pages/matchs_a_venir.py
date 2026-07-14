@@ -127,6 +127,18 @@ def _format_probability(value) -> str:
         return "Non calculé"
 
 
+def _display_text(value, fallback: str = "") -> str:
+    if value is None:
+        return fallback
+    try:
+        if pd.isna(value):
+            return fallback
+    except Exception:
+        pass
+    text_value = str(value).strip()
+    return text_value or fallback
+
+
 def _utc_now_iso() -> str:
     return datetime.datetime.now(datetime.UTC).replace(tzinfo=None).isoformat()
 
@@ -896,6 +908,8 @@ def _api_probability_line(prediction: dict) -> str:
 
 
 def _render_match_detail(row: pd.Series, force_api_refresh: bool = False):
+    venue = _display_text(row.get("Stade"), "Stade non renseigné")
+    city = _display_text(row.get("Ville"))
     st.markdown(f"### {row['Domicile']} - {row['Extérieur']}")
     logo_cols = st.columns([0.16, 1, 0.16])
     if row.get("Logo domicile"):
@@ -903,8 +917,8 @@ def _render_match_detail(row: pd.Series, force_api_refresh: bool = False):
     logo_cols[1].markdown(
         f"**{row['Championnat']} - {row['Journée']}**  \n"
         f"{row['Date et heure']}  \n"
-        f"{row.get('Stade') or 'Stade non renseigné'}"
-        f"{', ' + row.get('Ville') if row.get('Ville') else ''}"
+        f"{venue}"
+        f"{', ' + city if city else ''}"
     )
     if row.get("Logo extérieur"):
         logo_cols[2].image(row["Logo extérieur"], width=52)
@@ -934,13 +948,15 @@ def _render_match_detail(row: pd.Series, force_api_refresh: bool = False):
     meta_cols[0].caption("Statut")
     meta_cols[0].write(f"**{row.get('Statut') or '-'}**")
     meta_cols[1].caption("Stade")
-    meta_cols[1].write(f"**{row.get('Stade') or 'Non renseigné'}**")
+    meta_cols[1].write(f"**{venue}**")
     meta_cols[2].caption("Ville")
-    meta_cols[2].write(f"**{row.get('Ville') or 'Non renseignée'}**")
+    meta_cols[2].write(f"**{city or 'Non renseignée'}**")
 
 
 def _render_match_card(row: pd.Series, force_api_refresh: bool = False):
     fixture_id = int(row["fixture_id"])
+    venue = _display_text(row.get("Stade"), "Stade non renseigné")
+    city = _display_text(row.get("Ville"))
     with st.container(border=True):
         logo_cols = st.columns([0.16, 1, 0.16])
         if row.get("Logo domicile"):
@@ -953,7 +969,7 @@ def _render_match_card(row: pd.Series, force_api_refresh: bool = False):
             f"{row['Championnat']} - {row['Journée']} | "
             f"{row['Date']} à {row['Heure']} UTC"
         )
-        st.write(f"**{row.get('Stade') or 'Stade non renseigné'}**{', ' + row.get('Ville') if row.get('Ville') else ''}")
+        st.write(f"**{venue}**{', ' + city if city else ''}")
 
         signal_cols = st.columns(3)
         signal_cols[0].caption("Pronostic")
