@@ -347,6 +347,56 @@ def _sync_fixture_details(upcoming: pd.DataFrame, progress_callback=None) -> dic
     return totals
 
 
+def _fixture_detail_complete(detail: dict | None) -> bool:
+    if not detail:
+        return False
+    return bool(
+        _display_text(detail.get("api_round"))
+        and _display_text(detail.get("api_home_logo"))
+        and _display_text(detail.get("api_away_logo"))
+    )
+
+
+def _sync_missing_fixture_details(upcoming: pd.DataFrame, progress_callback=None) -> dict:
+    schema_guard.ensure_fixture_api_cache_tables()
+    grouped = list(upcoming.groupby(["league_id", "season"]))
+    total_groups = max(1, len(grouped))
+    totals = {"inserted": 0, "updated": 0, "unchanged": 0, "skipped": 0}
+
+    for group_index, ((league_id, season), group) in enumerate(grouped, start=1):
+        if progress_callback:
+            progress_callback(group_index - 1, total_groups, f"Vérification SQLite: ligue {league_id}, saison {season}")
+
+        fixture_ids = tuple(int(value) for value in group["fixture_id"].dropna().tolist())
+        cached_details = _load_cached_fixture_details(int(league_id), int(season), fixture_ids)
+        missing_or_incomplete = [
+            fixture_id
+            for fixture_id in fixture_ids
+            if not _fixture_detail_complete(cached_details.get(fixture_id))
+        ]
+        if not missing_or_incomplete:
+            totals["skipped"] += len(fixture_ids)
+            continue
+
+        if progress_callback:
+            progress_callback(
+                group_index - 1,
+                total_groups,
+                f"Complément API: {len(missing_or_incomplete)} détail(s) manquant(s)",
+            )
+        try:
+            response = api_client.get_fixtures(int(league_id), int(season))
+        except Exception:
+            continue
+        stats = _save_fixture_details(int(league_id), int(season), response.get("response") or [])
+        for key in ["inserted", "updated", "unchanged"]:
+            totals[key] += stats.get(key, 0)
+
+    if progress_callback:
+        progress_callback(total_groups, total_groups, "Détails, journées et logos vérifiés")
+    return totals
+
+
 def _load_cached_prediction(fixture_id: int) -> dict:
     try:
         row = pd.read_sql(
@@ -1038,6 +1088,10 @@ def show():
     progress_bar = st.progress(0, text="Préparation du téléchargement...")
     status_slot = st.empty()
 
+    _sync_missing_fixture_details(
+        upcoming,
+        progress_callback=lambda current, total, label: _update_progress(progress_bar, status_slot, current, total, label),
+    )
     upcoming = _enrich_with_api_details(
         upcoming,
         progress_callback=lambda current, total, label: _update_progress(progress_bar, status_slot, current, total, label),
