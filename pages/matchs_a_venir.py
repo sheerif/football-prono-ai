@@ -1187,6 +1187,20 @@ def show():
     selected_round = st.selectbox("Journée", options=round_options, key="upcoming_round")
     round_rows = league_rows[league_rows["Journée"] == selected_round].copy().sort_values(["Date", "Heure", "Match"])
 
+    api_progress = st.progress(0, text="Vérification des conseils API...")
+    api_status = st.empty()
+    api_stats = _prefetch_api_predictions(
+        round_rows["fixture_id"].tolist(),
+        force_refresh=bool(compare_api),
+        progress_callback=lambda current, total, label: _update_progress(api_progress, api_status, current, total, label),
+    )
+    api_progress.progress(1.0, text="Conseils API vérifiés")
+    api_status.caption(
+        "Conseils API: "
+        f"{api_stats['inserted']} ajouté(s), {api_stats['updated']} mis à jour, "
+        f"{api_stats['unchanged']} déjà en base, {api_stats['unavailable']} indisponible(s)."
+    )
+
     st.caption(f"{selected_league} - {selected_round} - {len(round_rows)} match(s)")
     _render_match_cards(round_rows, force_api_refresh=False)
 
