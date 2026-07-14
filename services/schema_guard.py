@@ -63,3 +63,33 @@ def ensure_fixture_api_cache_tables() -> None:
                 """
             )
         )
+        conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS fixture_match_previews (
+                    fixture_id INTEGER PRIMARY KEY,
+                    source_hash TEXT NOT NULL,
+                    date_time TEXT,
+                    date_label TEXT,
+                    time_label TEXT,
+                    season_label TEXT,
+                    league_name TEXT,
+                    round_label TEXT,
+                    round_api TEXT,
+                    venue TEXT,
+                    city TEXT,
+                    home_logo TEXT,
+                    away_logo TEXT,
+                    match_label TEXT,
+                    home_name TEXT,
+                    away_name TEXT,
+                    status TEXT,
+                    pronostic TEXT,
+                    confidence TEXT,
+                    score_probable TEXT,
+                    summary TEXT,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+        )
