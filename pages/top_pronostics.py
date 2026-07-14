@@ -92,7 +92,7 @@ def show():
 
     leagues = prediction_helpers.fetch_leagues()
     if leagues.empty:
-        st.warning("Aucune donnée disponible. Lancez d'abord un import dans Traitement des données.")
+        st.warning("Aucune donnée disponible. Lancez d'abord une mise à jour.")
         return
 
     ui.section_label("Configuration")

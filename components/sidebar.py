@@ -3,8 +3,8 @@ import streamlit as st
 NAV_ITEMS = [
     "Tableau de bord",
     "Widgets Live",
-    "Traitement des données",
-    "Logs des MAJ",
+    "Mise à jour",
+    "Matchs à venir",
     "Analyse match",
     "Comparaison équipes",
     "Prédiction IA",
@@ -14,8 +14,8 @@ NAV_ITEMS = [
 NAV_TARGETS = {
     "Tableau de bord": "./",
     "Widgets Live": "./api_widgets",
-    "Traitement des données": "./data_management",
-    "Logs des MAJ": "./update_logs",
+    "Mise à jour": "./data_management",
+    "Matchs à venir": "./matchs_a_venir",
     "Analyse match": "./analyse_match",
     "Comparaison équipes": "./comparaison_equipes",
     "Prédiction IA": "./prediction_ia",
@@ -134,8 +134,8 @@ def switch_to_nav(nav: str):
     page_targets = {
         "Tableau de bord": "app.py",
         "Widgets Live": "pages/api_widgets.py",
-        "Traitement des données": "pages/data_management.py",
-        "Logs des MAJ": "pages/update_logs.py",
+        "Mise à jour": "pages/data_management.py",
+        "Matchs à venir": "pages/matchs_a_venir.py",
         "Analyse match": "pages/analyse_match.py",
         "Comparaison équipes": "pages/comparaison_equipes.py",
         "Prédiction IA": "pages/prediction_ia.py",

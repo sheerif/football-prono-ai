@@ -187,7 +187,7 @@ def show():
         league_scope = str(league_seasons_df["league_id"].nunique())
 
     if matches_df.empty:
-        st.warning("Aucune donnée disponible. Ouvrez 'Traitement des données' pour lancer l’import.")
+        st.warning("Aucune donnée disponible. Ouvrez 'Mise à jour' pour lancer l’import.")
 
     ui.dashboard_hero(
         "Football Prono AI",
@@ -288,7 +288,7 @@ def show():
     with st.expander("Voir les définitions des indicateurs"):
         st.dataframe(_indicator_glossary(), hide_index=True, width="stretch")
 
-    st.caption("Les indicateurs sont calculés à partir des matchs présents dans SQLite. Si les données sont vides, allez dans 'Traitement des données'.")
+    st.caption("Les indicateurs sont calculés à partir des matchs présents dans SQLite. Si les données sont vides, allez dans 'Mise à jour'.")
 
 
 if __name__ == "__main__":

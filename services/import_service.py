@@ -35,6 +35,7 @@ def init_db():
     _ensure_connection_log_table()
     _ensure_update_log_table()
     _ensure_league_seasons_table()
+    _ensure_fixture_api_cache_tables()
     config = get_auto_refresh_config()
     register_league_seasons(
         config["league_ids"],
@@ -137,6 +138,48 @@ def _ensure_league_seasons_table():
                     source TEXT,
                     updated_at TEXT NOT NULL,
                     PRIMARY KEY (league_id, season)
+                )
+                """
+            )
+        )
+
+
+def _ensure_fixture_api_cache_tables():
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS fixture_api_details (
+                    fixture_id INTEGER PRIMARY KEY,
+                    league_id INTEGER NOT NULL,
+                    season INTEGER NOT NULL,
+                    round TEXT,
+                    venue TEXT,
+                    city TEXT,
+                    status_short TEXT,
+                    home_logo TEXT,
+                    away_logo TEXT,
+                    league_logo TEXT,
+                    raw_json TEXT,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS fixture_api_predictions (
+                    fixture_id INTEGER PRIMARY KEY,
+                    advice TEXT,
+                    winner TEXT,
+                    home_probability REAL,
+                    draw_probability REAL,
+                    away_probability REAL,
+                    total_home TEXT,
+                    total_away TEXT,
+                    raw_json TEXT,
+                    updated_at TEXT NOT NULL
                 )
                 """
             )
@@ -762,6 +805,7 @@ def import_leagues_cautious(
     pause: float = 1.5,
     max_retries: int = 5,
     force_refresh_seasons: List[int] | None = None,
+    progress_callback=None,
 ):
     """Import several leagues with polite pauses, retries and logging.
 
@@ -772,19 +816,31 @@ def import_leagues_cautious(
     register_league_seasons(league_ids, seasons, source="import")
     session = SessionLocal()
     force_refresh_seasons = set(force_refresh_seasons or [])
+    total_steps = max(1, len(league_ids) * len(seasons) * 3)
+    completed_steps = 0
+
+    def _progress(label: str, increment: int = 0):
+        nonlocal completed_steps
+        completed_steps = min(total_steps, completed_steps + increment)
+        if progress_callback:
+            progress_callback(completed_steps, total_steps, label)
+
     try:
         for lid in league_ids:
             logging.info(f"Starting import for league {lid}")
             for season in seasons:
                 logging.info(f"Importing {lid} season {season}")
+                _progress(f"Ligue {lid} - {season}: préparation")
                 _sync_league_metadata(session, lid, season)
                 # Check existing
                 existing_count = session.query(models.Match).filter_by(league_id=lid, season=season).count()
                 if existing_count > 0 and season not in force_refresh_seasons:
                     logging.info(f"Season {season} already has {existing_count} matches — skipping")
+                    _progress(f"Ligue {lid} - {season}: déjà en base ({existing_count} matchs)", increment=3)
                     continue
 
                 # Teams
+                _progress(f"Ligue {lid} - {season}: téléchargement des équipes")
                 tries = 0
                 while tries < max_retries:
                     try:
@@ -801,10 +857,12 @@ def import_leagues_cautious(
                         tries += 1
                         logging.warning(f"Error fetching teams {lid}/{season}: {e} — retry {tries}")
                         time.sleep(pause * tries)
+                _progress(f"Ligue {lid} - {season}: équipes traitées", increment=1)
 
                 time.sleep(pause)
 
                 # Fixtures
+                _progress(f"Ligue {lid} - {season}: téléchargement des matchs")
                 tries = 0
                 while tries < max_retries:
                     try:
@@ -837,10 +895,12 @@ def import_leagues_cautious(
                         tries += 1
                         logging.warning(f"Error fetching fixtures {lid}/{season}: {e} — retry {tries}")
                         time.sleep(pause * tries)
+                _progress(f"Ligue {lid} - {season}: matchs traités", increment=1)
 
                 time.sleep(pause)
 
                 # Standings
+                _progress(f"Ligue {lid} - {season}: téléchargement du classement")
                 tries = 0
                 while tries < max_retries:
                     try:
@@ -893,9 +953,11 @@ def import_leagues_cautious(
                         tries += 1
                         logging.warning(f"Error fetching standings {lid}/{season}: {e} — retry {tries}")
                         time.sleep(pause * tries)
+                _progress(f"Ligue {lid} - {season}: classement traité", increment=1)
 
                 # polite pause between seasons
                 time.sleep(pause * 2)
+        _progress("Import terminé")
     finally:
         session.close()
 

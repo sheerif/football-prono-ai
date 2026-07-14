@@ -33,6 +33,9 @@ class ApiFootballClient:
             params["to"] = to_date
         return self._get("/fixtures", params)
 
+    def get_fixture(self, fixture_id):
+        return self._get("/fixtures", {"id": fixture_id})
+
     def get_headtohead(self, h2h):
         return self._get("/fixtures/headtohead", {"h2h": h2h})
 

@@ -238,7 +238,8 @@ def render_page_navigation():
         ("app.py", "Tableau de bord"),
         ("pages/analyse_match.py", "Analyse match"),
         ("pages/comparaison_equipes.py", "Comparaison équipes"),
-        ("pages/data_management.py", "Traitement des données"),
+        ("pages/data_management.py", "Mise à jour"),
+        ("pages/matchs_a_venir.py", "Matchs à venir"),
         ("pages/prediction_ia.py", "Prédiction IA"),
         ("pages/top_pronostics.py", "Meilleurs pronostics"),
     ]
@@ -321,7 +322,7 @@ def run_direct_page(title: str, show_func):
         pass
 
     from components import auth, sidebar
-    from services import import_service, schema_guard
+    from services import background_jobs, import_service, schema_guard
 
     inject_app_style()
 
@@ -331,12 +332,13 @@ def run_direct_page(title: str, show_func):
 
     import_service.init_db()
     schema_guard.ensure_match_score_columns()
+    background_jobs.start_startup_updates_once()
 
     current_nav = {
         "Football Prono AI": "Tableau de bord",
         "Widgets Live": "Widgets Live",
-        "Traitement des données": "Traitement des données",
-        "Logs des mises à jour": "Logs des MAJ",
+        "Mise à jour": "Mise à jour",
+        "Matchs à venir": "Matchs à venir",
         "Analyse match": "Analyse match",
         "Comparaison équipes": "Comparaison équipes",
         "Prédiction IA": "Prédiction IA",
@@ -348,5 +350,19 @@ def run_direct_page(title: str, show_func):
     with st.sidebar:
         st.caption(f"Connecté: {st.session_state.get('auth_user', 'utilisateur')}")
         auth.logout_button()
+        render_background_jobs()
 
     show_func()
+
+
+def render_background_jobs():
+    from services import background_jobs
+
+    jobs = background_jobs.active_jobs()
+    if not jobs:
+        return
+    st.markdown("---")
+    st.markdown("### Téléchargements")
+    for job in jobs:
+        st.caption(job.get("label", "Tâche en arrière-plan"))
+        st.progress(float(job.get("progress") or 0), text=job.get("message") or "En cours...")

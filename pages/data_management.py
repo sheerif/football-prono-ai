@@ -1,21 +1,19 @@
-import datetime
-
 import pandas as pd
 import streamlit as st
 
 from components import ui
 from database.database import engine
-from services import import_service
+from services import background_jobs, import_service
 from services.season_format import season_period, season_range
 
 
 LEAGUE_PRESETS = {
-    "Europe - Ligue des Champions": 2,
-    "France - Ligue 1": 61,
-    "Angleterre - Premier League": 39,
-    "Espagne - La Liga": 140,
-    "Italie - Serie A": 135,
-    "Allemagne - Bundesliga": 78,
+    "Ligue des Champions": 2,
+    "Ligue 1": 61,
+    "Premier League": 39,
+    "La Liga": 140,
+    "Serie A": 135,
+    "Bundesliga": 78,
 }
 
 
@@ -35,121 +33,148 @@ def _summary_counts() -> dict[str, int]:
     }
 
 
+def _format_datetime(value):
+    timestamp = pd.to_datetime(value, errors="coerce")
+    if pd.isna(timestamp):
+        return value or "-"
+    return timestamp.strftime("%d/%m/%Y %H:%M")
+
+
+def _recent_logs(limit: int = 6) -> pd.DataFrame:
+    try:
+        logs = pd.read_sql(
+            """
+            SELECT event_type, status, started_at, finished_at, reason, error
+            FROM update_log
+            ORDER BY finished_at DESC, id DESC
+            LIMIT :limit
+            """,
+            engine,
+            params={"limit": int(limit)},
+        )
+    except Exception:
+        return pd.DataFrame()
+    if logs.empty:
+        return logs
+    return pd.DataFrame(
+        [
+            {
+                "Type": row.event_type,
+                "Statut": row.status,
+                "Début": _format_datetime(row.started_at),
+                "Fin": _format_datetime(row.finished_at),
+                "Message": row.error or row.reason or "",
+            }
+            for row in logs.itertuples()
+        ]
+    )
+
+
+def _render_jobs():
+    jobs = background_jobs.list_jobs()
+    active = [job for job in jobs if job.get("status") == "running"]
+    finished = [job for job in jobs if job.get("status") != "running"][:5]
+
+    ui.section_label("Téléchargements")
+    if not active:
+        st.info("Aucun téléchargement en cours.")
+    for job in active:
+        with st.container(border=True):
+            st.markdown(f"### {job.get('label', 'Mise à jour')}")
+            st.progress(float(job.get("progress") or 0), text=job.get("message") or "En cours...")
+            st.caption(f"Démarré le {_format_datetime(job.get('started_at'))}")
+
+    if finished:
+        with st.expander("Dernières tâches terminées", expanded=False):
+            rows = []
+            for job in finished:
+                rows.append(
+                    {
+                        "Tâche": job.get("label"),
+                        "Statut": "Erreur" if job.get("status") == "error" else "Terminée",
+                        "Fin": _format_datetime(job.get("finished_at")),
+                        "Message": job.get("error") or job.get("message"),
+                    }
+                )
+            st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+
+
+def _launch_import(label: str, league_ids: list[int], seasons: list[int], pause: float = 2.0, max_retries: int = 6):
+    job_id = background_jobs.start_manual_import(
+        league_ids,
+        seasons=seasons,
+        pause=pause,
+        max_retries=max_retries,
+        selected_presets=[label],
+    )
+    st.success("Mise à jour lancée en arrière-plan. Vous pouvez changer de page.")
+    st.caption(f"Job: {job_id}")
+
+
 def show():
     ui.page_hero(
-        "Traitement des données",
-        "Importez ou mettez à jour les championnats, saisons sportives, équipes et standings utilisés par les analyses.",
+        "Mise à jour",
+        "Suivez les téléchargements, lancez les mises à jour utiles et consultez l’historique récent depuis un seul écran.",
     )
 
     counts = _summary_counts()
-    ui.section_label("État actuel")
     cols = st.columns(4)
     cols[0].metric("Championnats", counts["leagues"])
     cols[1].metric("Équipes", counts["teams"])
     cols[2].metric("Matchs", counts["matches"])
     cols[3].metric("Classements", counts["standings"])
 
-    ui.section_label("Importer / mettre à jour")
-    st.info("Cet écran sert à peupler la base SQLite et à rafraîchir les indicateurs du tableau de bord.")
-    max_season = max(2026, import_service.get_auto_refresh_config()["end_season"])
+    _render_jobs()
+
+    ui.section_label("Actions simples")
+    config = import_service.get_auto_refresh_config()
+    end_season = max(2026, config["end_season"])
+    recent_start = max(config["start_season"], end_season - 1)
 
     with st.container(border=True):
-        selected_presets = st.multiselect(
-            "Ligues à traiter",
-            options=list(LEAGUE_PRESETS.keys()),
-            default=list(LEAGUE_PRESETS.keys()),
-            key="data_presets",
+        st.markdown("### Mises à jour recommandées")
+        action_cols = st.columns(3)
+        if action_cols[0].button("Mettre à jour les saisons récentes", type="primary", width="stretch"):
+            seasons = list(range(recent_start, end_season + 1))
+            _launch_import("Saisons récentes", list(LEAGUE_PRESETS.values()), seasons)
+        if action_cols[1].button("Mettre à jour la saison en cours", width="stretch"):
+            _launch_import("Saison en cours", list(LEAGUE_PRESETS.values()), [end_season])
+        if action_cols[2].button("Mettre à jour Ligue 1", width="stretch"):
+            seasons = list(range(recent_start, end_season + 1))
+            _launch_import("Ligue 1", [LEAGUE_PRESETS["Ligue 1"]], seasons)
+        st.caption(
+            f"Saisons récentes: {season_range(range(recent_start, end_season + 1))}. "
+            "Les imports continuent en arrière-plan."
         )
 
-        col1, col2, col3 = st.columns(3)
-        start_season = col1.number_input("Saison sportive de début", min_value=2016, max_value=max_season, value=2016, step=1)
-        end_season = col2.number_input("Saison sportive de fin", min_value=2016, max_value=max_season, value=max_season, step=1)
-        pause = col3.number_input("Pause entre requêtes (s)", min_value=0.5, max_value=10.0, value=2.0, step=0.5)
-        st.caption(f"Période sélectionnée: {season_period(start_season)} à {season_period(end_season)}")
+    with st.expander("Import personnalisé", expanded=False):
+        selected_labels = st.multiselect(
+            "Ligues",
+            options=list(LEAGUE_PRESETS.keys()),
+            default=list(LEAGUE_PRESETS.keys()),
+        )
+        col1, col2 = st.columns(2)
+        start_season = col1.number_input("Début", min_value=2016, max_value=end_season, value=recent_start, step=1)
+        selected_end = col2.number_input("Fin", min_value=2016, max_value=end_season, value=end_season, step=1)
+        pause = st.number_input("Pause entre requêtes API", min_value=0.5, max_value=10.0, value=2.0, step=0.5)
+        if st.button("Lancer l’import personnalisé", width="stretch"):
+            if start_season > selected_end:
+                st.error("La saison de début doit être inférieure ou égale à la saison de fin.")
+            else:
+                _launch_import(
+                    "Import personnalisé",
+                    [LEAGUE_PRESETS[label] for label in selected_labels],
+                    list(range(int(start_season), int(selected_end) + 1)),
+                    pause=float(pause),
+                )
 
-        max_retries = st.slider("Nombre maximal de tentatives", min_value=1, max_value=10, value=6)
-
-        quick_cols = st.columns([1, 1])
-        quick_import_l1 = quick_cols[0].button("Import rapide Ligue 1", width="stretch")
-        quick_import_6 = quick_cols[1].button("Import LDC + 5 championnats", width="stretch")
-
-        launch = st.button("Lancer le traitement", type="primary", width="stretch")
-
-    if quick_import_l1:
-        selected_presets = ["France - Ligue 1"]
-    elif quick_import_6:
-        selected_presets = list(LEAGUE_PRESETS.keys())
-
-    if launch or quick_import_l1 or quick_import_6:
-        if start_season > end_season:
-            st.error("La saison sportive de début doit être inférieure ou égale à la saison sportive de fin.")
-            return
-
-        league_ids = [LEAGUE_PRESETS[label] for label in selected_presets]
-        seasons = list(range(int(start_season), int(end_season) + 1))
-
-        st.info("Traitement en cours. Ne rechargez pas la page pendant l’import.")
-        progress = st.progress(0)
-        status = st.empty()
-        started_at = datetime.datetime.now(datetime.UTC).replace(tzinfo=None).isoformat()
-
-        try:
-            status.write("Initialisation de la base...")
-            import_service.init_db()
-
-            status.write(f"Import de {len(league_ids)} championnat(s) sur {len(seasons)} saison(s) sportive(s): {season_range(seasons)}...")
-            import_service.import_leagues_cautious(
-                league_ids,
-                seasons=seasons,
-                pause=float(pause),
-                max_retries=int(max_retries),
-            )
-            progress.progress(100)
-            st.success("Traitement terminé.")
-            st.session_state["last_import_ok"] = True
-            import_service.record_update_log(
-                event_type="import_manuel",
-                status="effectuée",
-                started_at=started_at,
-                reason="Import manuel terminé.",
-                leagues=league_ids,
-                seasons=seasons,
-                details={
-                    "selected_presets": selected_presets,
-                    "pause": float(pause),
-                    "max_retries": int(max_retries),
-                    "counts_after": _summary_counts(),
-                },
-            )
-        except Exception as exc:
-            st.session_state["last_import_ok"] = False
-            st.error(f"Erreur pendant le traitement: {exc}")
-            import_service.record_update_log(
-                event_type="import_manuel",
-                status="erreur",
-                started_at=started_at,
-                reason="Erreur pendant l’import manuel.",
-                leagues=league_ids,
-                seasons=seasons,
-                details={
-                    "selected_presets": selected_presets,
-                    "pause": float(pause),
-                    "max_retries": int(max_retries),
-                },
-                error=str(exc),
-            )
-        finally:
-            counts_after = _summary_counts()
-            st.markdown("### État après traitement")
-            cols2 = st.columns(4)
-            cols2[0].metric("Championnats", counts_after["leagues"])
-            cols2[1].metric("Équipes", counts_after["teams"])
-            cols2[2].metric("Matchs", counts_after["matches"])
-            cols2[3].metric("Classements", counts_after["standings"])
-
-    st.markdown("---")
-    st.caption("Astuce: si vous voyez des 429, augmentez la pause à 3-5 secondes.")
+    ui.section_label("Historique récent")
+    logs = _recent_logs()
+    if logs.empty:
+        st.info("Aucun historique enregistré.")
+    else:
+        st.dataframe(logs, hide_index=True, width="stretch")
 
 
 if __name__ == "__main__":
-    ui.run_direct_page("Traitement des données", show)
+    ui.run_direct_page("Mise à jour", show)
