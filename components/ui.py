@@ -220,15 +220,18 @@ def inject_app_style():
         [data-testid="stSidebarNavItems"] {
             display: block !important;
         }
-        @media (max-width: 760px) {
+        /* Mobile portrait and small phones */
+        @media (max-width: 600px) {
             .block-container {
-                padding-top: 0.75rem;
-                padding-left: 0.72rem;
-                padding-right: 0.72rem;
-                padding-bottom: 2rem;
+                padding-top: 0.65rem;
+                padding-left: 0.62rem;
+                padding-right: 0.62rem;
+                padding-bottom: 1.8rem;
             }
             .page-header {
                 display: block;
+                margin-bottom: 0.85rem;
+                padding-bottom: 0.75rem;
             }
             .page-header-side {
                 min-width: 0;
@@ -270,6 +273,24 @@ def inject_app_style():
                 margin-right: -0.75rem;
             }
         }
+
+        /* Tablets and large phones */
+        @media (min-width: 601px) and (max-width: 900px) {
+            .block-container {
+                padding-top: 0.9rem;
+                padding-left: 0.9rem;
+                padding-right: 0.9rem;
+            }
+            h1 {
+                font-size: 2.25rem !important;
+                line-height: 1.08 !important;
+            }
+            div[data-testid="stMetric"] [data-testid="stMetricValue"] {
+                font-size: 1.38rem;
+            }
+        }
+
+        /* Shared touch layout */
         @media (max-width: 900px) {
             [data-testid="stSidebar"] {
                 width: 100% !important;
@@ -306,7 +327,9 @@ def inject_app_style():
                 font-size: 0.72rem !important;
             }
         }
-        @media (min-width: 761px) and (max-width: 1100px) {
+
+        /* Small laptops and landscape tablets */
+        @media (min-width: 901px) and (max-width: 1100px) {
             .block-container {
                 padding-left: 1rem;
                 padding-right: 1rem;
