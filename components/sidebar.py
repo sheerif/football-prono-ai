@@ -215,6 +215,21 @@ def render_app_rail(current: str):
             font-size: 0.94rem;
             font-weight: 750;
         }
+        @media (max-width: 900px) {
+            [data-testid="stSidebar"] .stButton > button {
+                min-height: 2.25rem;
+                padding: 0.35rem 0.55rem;
+                font-size: 0.9rem;
+            }
+            .app-rail-current {
+                padding: 0.48rem 0.6rem;
+                font-size: 0.9rem;
+            }
+            .app-rail-brand {
+                gap: 0.55rem;
+                margin-bottom: 0.5rem;
+            }
+        }
         </style>
         """,
         unsafe_allow_html=True,

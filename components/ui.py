@@ -28,10 +28,16 @@ def inject_app_style():
             max-width: 1420px;
             padding-top: 1.35rem;
             padding-bottom: 3rem;
+            padding-left: 1.5rem;
+            padding-right: 1.5rem;
         }
         h1, h2, h3 {
             color: var(--app-ink);
             letter-spacing: 0;
+            overflow-wrap: anywhere;
+        }
+        p, span, label, div {
+            overflow-wrap: anywhere;
         }
         .page-header {
             display: flex;
@@ -126,6 +132,8 @@ def inject_app_style():
             color: var(--app-ink);
             font-size: 1.75rem;
             font-weight: 800;
+            overflow-wrap: anywhere;
+            white-space: normal;
         }
         div[data-testid="stDataFrame"],
         div[data-testid="stTable"] {
@@ -215,6 +223,9 @@ def inject_app_style():
         @media (max-width: 760px) {
             .block-container {
                 padding-top: 0.75rem;
+                padding-left: 0.72rem;
+                padding-right: 0.72rem;
+                padding-bottom: 2rem;
             }
             .page-header {
                 display: block;
@@ -223,6 +234,85 @@ def inject_app_style():
                 min-width: 0;
                 margin-top: 0.75rem;
                 text-align: left;
+            }
+            h1 {
+                font-size: 1.9rem !important;
+                line-height: 1.08 !important;
+            }
+            h2 {
+                font-size: 1.35rem !important;
+            }
+            h3 {
+                font-size: 1.12rem !important;
+            }
+            div[data-testid="stMetric"] {
+                min-height: auto;
+                padding: 0.65rem 0.72rem;
+            }
+            div[data-testid="stMetric"] [data-testid="stMetricValue"] {
+                font-size: 1.28rem;
+            }
+            .stButton > button {
+                min-height: 2.55rem;
+                padding-left: 0.65rem;
+                padding-right: 0.65rem;
+            }
+            div[data-testid="stDataFrame"],
+            div[data-testid="stTable"] {
+                max-width: 100%;
+                overflow-x: auto;
+            }
+            div[data-testid="stVerticalBlockBorderWrapper"] > div {
+                box-shadow: 0 10px 22px rgba(22, 32, 27, 0.07);
+            }
+            div[data-testid="stVerticalBlockBorderWrapper"] > div::before {
+                margin-left: -0.75rem;
+                margin-right: -0.75rem;
+            }
+        }
+        @media (max-width: 900px) {
+            [data-testid="stSidebar"] {
+                width: 100% !important;
+                min-width: 0 !important;
+                max-width: 100% !important;
+                border-right: 0;
+                border-bottom: 1px solid rgba(22, 32, 27, 0.10);
+            }
+            [data-testid="stSidebarContent"] {
+                padding: 0.75rem;
+            }
+            [data-testid="stSidebar"] .stButton > button {
+                min-height: 2.35rem;
+                margin: 0.16rem 0;
+                font-size: 0.9rem;
+            }
+            .app-rail-brand,
+            .sidebar-brand {
+                margin-bottom: 0.55rem !important;
+                padding: 0.65rem !important;
+            }
+            .app-rail-mark,
+            .sidebar-mark {
+                width: 2.15rem !important;
+                height: 2.15rem !important;
+                font-size: 0.78rem !important;
+            }
+            .app-rail-title,
+            .sidebar-brand h2 {
+                font-size: 0.95rem !important;
+            }
+            .app-rail-subtitle,
+            .sidebar-brand p {
+                font-size: 0.72rem !important;
+            }
+        }
+        @media (min-width: 761px) and (max-width: 1100px) {
+            .block-container {
+                padding-left: 1rem;
+                padding-right: 1rem;
+            }
+            div[data-testid="stMetric"] [data-testid="stMetricValue"] {
+                font-size: 1.45rem;
             }
         }
         </style>
