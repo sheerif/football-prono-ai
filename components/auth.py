@@ -43,8 +43,12 @@ def _query_value(name: str) -> str:
 
 def _save_auth_query(username: str, password: str) -> None:
     try:
-        st.query_params[AUTH_USER_PARAM] = username
-        st.query_params[AUTH_TOKEN_PARAM] = _auth_token(username, password)
+        st.query_params.update(
+            {
+                AUTH_USER_PARAM: username,
+                AUTH_TOKEN_PARAM: _auth_token(username, password),
+            }
+        )
     except Exception:
         pass
 
@@ -120,6 +124,8 @@ def login_page() -> bool:
             st.session_state["auth_user"] = clean_username
             _save_auth_query(clean_username, expected_password)
             st.rerun()
-        st.error("Identifiant ou mot de passe incorrect.")
+            return True
+        else:
+            st.error("Identifiant ou mot de passe incorrect.")
 
     return False
