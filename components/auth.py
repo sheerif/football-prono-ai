@@ -13,10 +13,17 @@ AUTH_USER_PARAM = "prono_user"
 AUTH_TOKEN_PARAM = "prono_auth"
 
 
+def _secret_value(name: str, fallback: str = "") -> str:
+    try:
+        return str(st.secrets.get(name, fallback))
+    except Exception:
+        return fallback
+
+
 def _credentials() -> tuple[str, str]:
-    username = os.getenv("APP_USERNAME") or st.secrets.get("APP_USERNAME", "admin")
-    password = os.getenv("APP_PASSWORD") or st.secrets.get("APP_PASSWORD", "admin")
-    return username, password
+    username = os.getenv("APP_USERNAME") or _secret_value("APP_USERNAME", "admin")
+    password = os.getenv("APP_PASSWORD") or _secret_value("APP_PASSWORD", "admin")
+    return str(username).strip(), str(password).strip()
 
 
 def _auth_token(username: str, password: str) -> str:
@@ -61,6 +68,8 @@ def _restore_auth_from_query() -> bool:
         st.session_state["authenticated"] = True
         st.session_state["auth_user"] = username
         return True
+    if username or token:
+        _clear_auth_query()
     return False
 
 
@@ -103,13 +112,13 @@ def login_page() -> bool:
     if submitted:
         clean_username = username.strip()
         clean_password = password.strip()
-        valid_username = hmac.compare_digest(clean_username, str(expected_user))
-        valid_password = hmac.compare_digest(clean_password, str(expected_password))
+        valid_username = hmac.compare_digest(clean_username, expected_user)
+        valid_password = hmac.compare_digest(clean_password, expected_password)
         if valid_username and valid_password:
             st.session_state.pop("logged_out", None)
             st.session_state["authenticated"] = True
             st.session_state["auth_user"] = clean_username
-            _save_auth_query(clean_username, str(expected_password))
+            _save_auth_query(clean_username, expected_password)
             st.rerun()
         st.error("Identifiant ou mot de passe incorrect.")
 
