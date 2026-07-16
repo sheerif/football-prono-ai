@@ -36,6 +36,7 @@ def _query_value(name: str) -> str:
 
 def _save_auth_query(username: str, password: str) -> None:
     try:
+        _clear_auth_query()
         st.query_params.update(
             {
                 AUTH_USER_PARAM: username,
@@ -95,6 +96,8 @@ def logout_button():
 
 def login_page() -> bool:
     expected_user, expected_password = _credentials()
+    if _query_value(AUTH_USER_PARAM) or _query_value(AUTH_TOKEN_PARAM):
+        _clear_auth_query()
 
     st.markdown("## Connexion")
     st.caption("Connectez-vous pour accéder au tableau de bord Prono insight.")
@@ -110,6 +113,7 @@ def login_page() -> bool:
         valid_username = hmac.compare_digest(clean_username, str(expected_user))
         valid_password = hmac.compare_digest(clean_password, str(expected_password))
         if valid_username and valid_password:
+            _clear_auth_query()
             st.session_state.pop("logged_out", None)
             st.session_state["authenticated"] = True
             st.session_state["auth_user"] = clean_username
