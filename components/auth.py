@@ -7,7 +7,7 @@ import streamlit as st
 from dotenv import load_dotenv
 
 
-load_dotenv(Path(__file__).resolve().parents[1] / ".env")
+load_dotenv(Path(__file__).resolve().parents[1] / ".env", override=True)
 
 AUTH_USER_PARAM = "prono_user"
 AUTH_TOKEN_PARAM = "prono_auth"
