@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 import os
+import uuid
 from pathlib import Path
 
 import streamlit as st
@@ -11,6 +12,7 @@ load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
 AUTH_USER_PARAM = "prono_user"
 AUTH_TOKEN_PARAM = "prono_auth"
+AUTH_SESSION_KEY = "auth_session_id"
 
 
 def _credentials() -> tuple[str, str]:
@@ -62,18 +64,22 @@ def _restore_auth_from_query() -> bool:
     token = _query_value(AUTH_TOKEN_PARAM)
     expected_token = _auth_token(str(expected_user), str(expected_password))
     if username and token and hmac.compare_digest(username, str(expected_user)) and hmac.compare_digest(token, expected_token):
-        st.session_state.pop("logged_out", None)
-        st.session_state["authenticated"] = True
-        st.session_state["auth_user"] = username
+        _start_auth_session(username)
         return True
     return False
 
 
+def _start_auth_session(username: str) -> None:
+    st.session_state.pop("logged_out", None)
+    st.session_state["authenticated"] = True
+    st.session_state["auth_user"] = username
+    st.session_state[AUTH_SESSION_KEY] = uuid.uuid4().hex
+
+
 def _clear_auth_state() -> None:
-    st.session_state["logged_out"] = True
-    st.session_state.pop("authenticated", None)
-    st.session_state.pop("auth_user", None)
     _clear_auth_query()
+    st.session_state.clear()
+    st.session_state["logged_out"] = True
 
 
 def is_authenticated() -> bool:
@@ -114,9 +120,7 @@ def login_page() -> bool:
         valid_password = hmac.compare_digest(clean_password, str(expected_password))
         if valid_username and valid_password:
             _clear_auth_query()
-            st.session_state.pop("logged_out", None)
-            st.session_state["authenticated"] = True
-            st.session_state["auth_user"] = clean_username
+            _start_auth_session(clean_username)
             _save_auth_query(clean_username, str(expected_password))
             st.rerun()
             return True
