@@ -7,43 +7,15 @@ import streamlit as st
 from dotenv import load_dotenv
 
 
-load_dotenv(Path(__file__).resolve().parents[1] / ".env", override=True)
+load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
 AUTH_USER_PARAM = "prono_user"
 AUTH_TOKEN_PARAM = "prono_auth"
-USERNAME_KEYS = ("APP_USERNAME", "AUTH_USERNAME", "USERNAME")
-PASSWORD_KEYS = ("APP_PASSWORD", "AUTH_PASSWORD", "PASSWORD")
-
-
-def _secret_value(name: str, fallback: str = "") -> str:
-    try:
-        return str(st.secrets.get(name, fallback))
-    except Exception:
-        return fallback
-
-
-def _clean_credential(value) -> str:
-    text_value = str(value or "").strip()
-    if len(text_value) >= 2 and text_value[0] == text_value[-1] and text_value[0] in {"'", '"'}:
-        text_value = text_value[1:-1].strip()
-    return text_value
-
-
-def _first_config_value(keys: tuple[str, ...], fallback: str) -> str:
-    for key in keys:
-        value = os.getenv(key)
-        if _clean_credential(value):
-            return _clean_credential(value)
-    for key in keys:
-        value = _secret_value(key)
-        if _clean_credential(value):
-            return _clean_credential(value)
-    return fallback
 
 
 def _credentials() -> tuple[str, str]:
-    username = _first_config_value(USERNAME_KEYS, "admin")
-    password = _first_config_value(PASSWORD_KEYS, "admin")
+    username = os.getenv("APP_USERNAME") or st.secrets.get("APP_USERNAME", "admin")
+    password = os.getenv("APP_PASSWORD") or st.secrets.get("APP_PASSWORD", "admin")
     return username, password
 
 
@@ -93,8 +65,6 @@ def _restore_auth_from_query() -> bool:
         st.session_state["authenticated"] = True
         st.session_state["auth_user"] = username
         return True
-    if username or token:
-        _clear_auth_query()
     return False
 
 
@@ -135,18 +105,17 @@ def login_page() -> bool:
         submitted = st.button("Se connecter", type="primary", width="stretch")
 
     if submitted:
-        clean_username = _clean_credential(username)
-        clean_password = _clean_credential(password)
-        valid_username = hmac.compare_digest(clean_username.lower(), expected_user.lower())
-        valid_password = hmac.compare_digest(clean_password, expected_password)
+        clean_username = username.strip()
+        clean_password = password.strip()
+        valid_username = hmac.compare_digest(clean_username, str(expected_user))
+        valid_password = hmac.compare_digest(clean_password, str(expected_password))
         if valid_username and valid_password:
             st.session_state.pop("logged_out", None)
             st.session_state["authenticated"] = True
-            st.session_state["auth_user"] = expected_user
-            _save_auth_query(expected_user, expected_password)
+            st.session_state["auth_user"] = clean_username
+            _save_auth_query(clean_username, str(expected_password))
             st.rerun()
             return True
-        else:
-            st.error("Identifiant ou mot de passe incorrect.")
+        st.error("Identifiant ou mot de passe incorrect.")
 
     return False
