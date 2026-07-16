@@ -11,6 +11,8 @@ load_dotenv(Path(__file__).resolve().parents[1] / ".env", override=True)
 
 AUTH_USER_PARAM = "prono_user"
 AUTH_TOKEN_PARAM = "prono_auth"
+USERNAME_KEYS = ("APP_USERNAME", "AUTH_USERNAME", "USERNAME")
+PASSWORD_KEYS = ("APP_PASSWORD", "AUTH_PASSWORD", "PASSWORD")
 
 
 def _secret_value(name: str, fallback: str = "") -> str:
@@ -20,10 +22,29 @@ def _secret_value(name: str, fallback: str = "") -> str:
         return fallback
 
 
+def _clean_credential(value) -> str:
+    text_value = str(value or "").strip()
+    if len(text_value) >= 2 and text_value[0] == text_value[-1] and text_value[0] in {"'", '"'}:
+        text_value = text_value[1:-1].strip()
+    return text_value
+
+
+def _first_config_value(keys: tuple[str, ...], fallback: str) -> str:
+    for key in keys:
+        value = os.getenv(key)
+        if _clean_credential(value):
+            return _clean_credential(value)
+    for key in keys:
+        value = _secret_value(key)
+        if _clean_credential(value):
+            return _clean_credential(value)
+    return fallback
+
+
 def _credentials() -> tuple[str, str]:
-    username = os.getenv("APP_USERNAME") or _secret_value("APP_USERNAME", "admin")
-    password = os.getenv("APP_PASSWORD") or _secret_value("APP_PASSWORD", "admin")
-    return str(username).strip(), str(password).strip()
+    username = _first_config_value(USERNAME_KEYS, "admin")
+    password = _first_config_value(PASSWORD_KEYS, "admin")
+    return username, password
 
 
 def _auth_token(username: str, password: str) -> str:
@@ -116,16 +137,17 @@ def login_page() -> bool:
     if submitted:
         clean_username = username.strip()
         clean_password = password.strip()
-        valid_username = hmac.compare_digest(clean_username, expected_user)
+        valid_username = hmac.compare_digest(clean_username.lower(), expected_user.lower())
         valid_password = hmac.compare_digest(clean_password, expected_password)
         if valid_username and valid_password:
             st.session_state.pop("logged_out", None)
             st.session_state["authenticated"] = True
-            st.session_state["auth_user"] = clean_username
-            _save_auth_query(clean_username, expected_password)
+            st.session_state["auth_user"] = expected_user
+            _save_auth_query(expected_user, expected_password)
             st.rerun()
             return True
         else:
             st.error("Identifiant ou mot de passe incorrect.")
+            st.caption(f"Identifiant configuré sur le serveur : `{expected_user}`")
 
     return False
