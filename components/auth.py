@@ -135,8 +135,8 @@ def login_page() -> bool:
         submitted = st.button("Se connecter", type="primary", width="stretch")
 
     if submitted:
-        clean_username = username.strip()
-        clean_password = password.strip()
+        clean_username = _clean_credential(username)
+        clean_password = _clean_credential(password)
         valid_username = hmac.compare_digest(clean_username.lower(), expected_user.lower())
         valid_password = hmac.compare_digest(clean_password, expected_password)
         if valid_username and valid_password:
@@ -148,6 +148,5 @@ def login_page() -> bool:
             return True
         else:
             st.error("Identifiant ou mot de passe incorrect.")
-            st.caption(f"Identifiant configuré sur le serveur : `{expected_user}`")
 
     return False
