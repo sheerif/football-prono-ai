@@ -1,10 +1,10 @@
 import streamlit as st
 import pandas as pd
 from database.database import engine
-from components import ui
+from components import charts, ui
 from services import stats_service, prediction_service
 from services import prediction_helpers
-from services.season_format import season_period, season_range
+from services.season_format import season_list, season_period, season_range
 from sqlalchemy import text
 
 LEAGUE_PRESETS = {
@@ -273,7 +273,7 @@ def _build_h2h_report(h2h_df: pd.DataFrame, home_team: int, away_team: int, home
 
 def show():
     ui.page_hero(
-        "Analyse de match",
+        "Analyse & comparaison",
         "Comparez deux équipes, visualisez leur dynamique récente, leurs confrontations directes et une prédiction lisible basée sur les données importées.",
     )
 
@@ -375,6 +375,41 @@ def show():
         comp_cols[2].metric(f"Buts marqués - {away_view['team_name']}", away_view['goals_for'])
         comp_cols[3].metric(f"Buts encaissés - {away_view['team_name']}", away_view['goals_against'])
 
+        st.subheader("Comparaison radar")
+        home_form_score = (
+            sum(3 if result == "W" else 1 if result == "D" else 0 for result in home_form)
+            / max(1, 3 * len(home_form))
+            if home_form
+            else 0
+        )
+        away_form_score = (
+            sum(3 if result == "W" else 1 if result == "D" else 0 for result in away_form)
+            / max(1, 3 * len(away_form))
+            if away_form
+            else 0
+        )
+        radar = charts.radar_team_comparison(
+            ["Victoires", "Buts marqués", "Solidité défensive", "Forme", "Expérience"],
+            [
+                home_stats["wins"],
+                home_stats["goals_for"] / max(1, home_stats["played"]),
+                max(0, 10 - home_stats["goals_against"] / max(1, home_stats["played"])),
+                home_form_score * 10,
+                home_stats["played"],
+            ],
+            [
+                away_stats["wins"],
+                away_stats["goals_for"] / max(1, away_stats["played"]),
+                max(0, 10 - away_stats["goals_against"] / max(1, away_stats["played"])),
+                away_form_score * 10,
+                away_stats["played"],
+            ],
+            home_view["team_name"],
+            away_view["team_name"],
+        )
+        if radar is not None:
+            st.plotly_chart(radar, width="stretch", key="radar_match_analysis")
+
         st.subheader("Forme récente")
         home_recent_10 = home_form
         away_recent_10 = away_form
@@ -451,6 +486,49 @@ def show():
             st.dataframe(h2h_table, width="stretch", hide_index=True)
         else:
             st.info("Aucune confrontation trouvée sur la fenêtre choisie.")
+
+        completed_matches_df = matches_df.dropna(subset=["home_goals", "away_goals"])
+        total_matches = len(completed_matches_df)
+        total_goals = int(
+            completed_matches_df["home_goals"].sum()
+            + completed_matches_df["away_goals"].sum()
+        )
+        average_goals = round(total_goals / total_matches, 2) if total_matches else 0
+        per_season = (
+            completed_matches_df.groupby("season")
+            .agg(
+                matches=("fixture_id", "size"),
+                home_goals=("home_goals", "sum"),
+                away_goals=("away_goals", "sum"),
+            )
+            .reset_index()
+            .sort_values("season", ascending=False)
+        )
+        season_rows = [
+            {
+                "season": int(row["season"]),
+                "matches": int(row["matches"]),
+                "avg_goals": round(
+                    (row["home_goals"] + row["away_goals"]) / max(1, row["matches"]),
+                    2,
+                ),
+            }
+            for _, row in per_season.iterrows()
+        ]
+        with st.expander("Contexte du championnat"):
+            ui.season_summary(
+                "Bilan du championnat",
+                (
+                    f"{league_map[league_id]} — saisons sportives : "
+                    f"{season_list(seasons_window)}. Matchs terminés uniquement."
+                ),
+                [
+                    ("Matchs terminés", f"{total_matches:,}".replace(",", " ")),
+                    ("Buts marqués", f"{total_goals:,}".replace(",", " ")),
+                    ("Moyenne buts / match", average_goals),
+                ],
+                season_rows,
+            )
 
         # Simple prediction: compute strengths
         def form_score(results):
@@ -530,4 +608,4 @@ def show():
 
  
 if __name__ == "__main__":
-    ui.run_direct_page("Analyse match", show)
+    ui.run_direct_page("Analyse & comparaison", show)

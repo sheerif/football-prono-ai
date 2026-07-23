@@ -349,8 +349,7 @@ def render_page_navigation():
     st.sidebar.markdown("---")
     links = [
         ("app.py", "Tableau de bord"),
-        ("pages/analyse_match.py", "Analyse match"),
-        ("pages/comparaison_equipes.py", "Comparaison équipes"),
+        ("pages/analyse_match.py", "Analyse & comparaison"),
         ("pages/data_management.py", "Mise à jour"),
         ("pages/matchs_a_venir.py", "Matchs à venir"),
         ("pages/prediction_ia.py", "Prédiction IA"),
@@ -452,8 +451,7 @@ def run_direct_page(title: str, show_func):
         "Widgets Live": "Widgets Live",
         "Mise à jour": "Mise à jour",
         "Matchs à venir": "Matchs à venir",
-        "Analyse match": "Analyse match",
-        "Comparaison équipes": "Comparaison équipes",
+        "Analyse & comparaison": "Analyse & comparaison",
         "Prédiction IA": "Prédiction IA",
         "Meilleurs pronostics": "Meilleurs pronostics",
     }.get(title, "Tableau de bord")
