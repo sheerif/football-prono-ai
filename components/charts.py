@@ -133,9 +133,16 @@ def radar_team_comparison(labels, values_a, values_b, name_a="Equipe A", name_b=
     fig.update_layout(
         polar={
             "bgcolor": "rgba(255,255,255,0)",
-            "radialaxis": {"visible": True, "gridcolor": "rgba(22,32,27,0.10)"},
+            "radialaxis": {
+                "visible": True,
+                "range": [0, 100],
+                "tickvals": [25, 50, 75, 100],
+                "ticksuffix": "%",
+                "gridcolor": "rgba(22,32,27,0.10)",
+            },
             "angularaxis": {"gridcolor": "rgba(22,32,27,0.10)"},
         },
         showlegend=True,
+        height=430,
     )
-    return _apply_chart_theme(fig, "Comparaison radar")
+    return _apply_chart_theme(fig, "Profil comparé")

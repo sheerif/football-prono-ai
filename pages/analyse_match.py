@@ -1038,6 +1038,35 @@ def show():
             f"{prediction['away_probability']} %",
         )
 
+        st.subheader("Profil comparé")
+        st.caption(
+            "Quatre indicateurs simples, tous ramenés sur 100. Plus la zone "
+            "est étendue, meilleur est le profil."
+        )
+        radar = charts.radar_team_comparison(
+            ["Victoires", "Attaque", "Défense", "Forme"],
+            [
+                home_stats["wins"] / max(1, home_stats["played"]) * 100,
+                min(100, home_attack / 3 * 100),
+                max(0, 100 - home_defense / 3 * 100),
+                home_form_score * 100,
+            ],
+            [
+                away_stats["wins"] / max(1, away_stats["played"]) * 100,
+                min(100, away_attack / 3 * 100),
+                max(0, 100 - away_defense / 3 * 100),
+                away_form_score * 100,
+            ],
+            home_view["team_name"],
+            away_view["team_name"],
+        )
+        if radar is not None:
+            st.plotly_chart(
+                radar,
+                width="stretch",
+                key="simple_radar_match_sheet",
+            )
+
     with form_tab:
         st.subheader("Forme — 5 derniers matchs")
         st.caption(
@@ -1136,35 +1165,7 @@ def show():
             )
 
     with stats_tab:
-        st.subheader("Comparaison statistique")
-        radar = charts.radar_team_comparison(
-            [
-                "Victoires",
-                "Buts marqués",
-                "Solidité défensive",
-                "Forme",
-                "Expérience",
-            ],
-            [
-                home_stats["wins"],
-                home_attack,
-                max(0, 10 - home_defense),
-                home_form_score * 10,
-                home_stats["played"],
-            ],
-            [
-                away_stats["wins"],
-                away_attack,
-                max(0, 10 - away_defense),
-                away_form_score * 10,
-                away_stats["played"],
-            ],
-            home_view["team_name"],
-            away_view["team_name"],
-        )
-        if radar is not None:
-            st.plotly_chart(radar, width="stretch", key="radar_match_sheet")
-
+        st.subheader("Contexte statistique")
         completed_matches = matches_df.dropna(
             subset=["home_goals", "away_goals"]
         )
