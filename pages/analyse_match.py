@@ -1,3 +1,5 @@
+import html
+
 import streamlit as st
 import pandas as pd
 from database.database import engine
@@ -56,7 +58,7 @@ def _fetch_teams(league_id: int, seasons):
         params.update({f"s{i}": season for i, season in enumerate(seasons)})
         return pd.read_sql(
             text(
-                f"SELECT DISTINCT t.id, t.name "
+                f"SELECT DISTINCT t.id, t.name, t.logo "
                 f"FROM teams t JOIN matches m ON (t.id = m.home_team_id OR t.id = m.away_team_id) "
                 f"WHERE m.league_id = :lid AND m.season IN ({placeholders}) ORDER BY t.name"
             ),
@@ -271,7 +273,201 @@ def _build_h2h_report(h2h_df: pd.DataFrame, home_team: int, away_team: int, home
     return pd.DataFrame(rows), totals
 
 
-def show():
+def _recent_matches_table(
+    matches_df: pd.DataFrame,
+    team_id: int,
+    team_options: dict[int, str],
+    limit: int = 5,
+) -> pd.DataFrame:
+    team_matches = matches_df[
+        (matches_df["home_team_id"] == team_id)
+        | (matches_df["away_team_id"] == team_id)
+    ].copy()
+    team_matches = (
+        team_matches.dropna(subset=["date"])
+        .sort_values("date", ascending=False)
+        .head(limit)
+    )
+    rows = []
+    result_icons = {"Victoire": "✅ V", "Match nul": "🟡 N", "Défaite": "❌ D"}
+    for _, match in team_matches.iterrows():
+        home_id = int(match["home_team_id"])
+        away_id = int(match["away_team_id"])
+        is_home = home_id == int(team_id)
+        goals_for = match.get("home_goals") if is_home else match.get("away_goals")
+        goals_against = match.get("away_goals") if is_home else match.get("home_goals")
+        if pd.isna(goals_for) or pd.isna(goals_against):
+            result = "À jouer"
+        elif goals_for > goals_against:
+            result = "Victoire"
+        elif goals_for == goals_against:
+            result = "Match nul"
+        else:
+            result = "Défaite"
+        match_date = pd.to_datetime(match.get("date"), errors="coerce")
+        rows.append(
+            {
+                "Date": match_date.strftime("%d/%m") if pd.notna(match_date) else "—",
+                "Domicile": team_options.get(home_id, str(home_id)),
+                "Score": _score_label(match.get("home_goals"), match.get("away_goals"))
+                .replace("Score non disponible", "—"),
+                "Extérieur": team_options.get(away_id, str(away_id)),
+                "Résultat": result_icons.get(result, "⏳"),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def _form_record(results: list[str]) -> str:
+    return (
+        f"{results.count('W')} V  ·  {results.count('D')} N  ·  "
+        f"{results.count('L')} D"
+    )
+
+
+def _team_logo_markup(logo: str | None, team_name: str) -> str:
+    if logo:
+        return (
+            f'<img class="match-team-logo" src="{html.escape(str(logo), quote=True)}" '
+            f'alt="Logo {html.escape(team_name, quote=True)}">'
+        )
+    initials = "".join(part[:1] for part in team_name.split()[:2]).upper()
+    return f'<div class="match-team-fallback">{html.escape(initials)}</div>'
+
+
+def _render_match_header(
+    league_name: str,
+    season_label: str,
+    home_name: str,
+    away_name: str,
+    home_logo: str | None,
+    away_logo: str | None,
+    score_prediction: dict,
+):
+    likely_score = (
+        score_prediction["scores"][0]["Score"]
+        if score_prediction.get("scores")
+        else "VS"
+    )
+    st.markdown(
+        f"""
+        <div class="match-sheet">
+            <div class="match-sheet-context">
+                <span>ANALYSE DU MATCH</span>
+                <strong>{html.escape(league_name)}</strong>
+                <small>{html.escape(season_label)}</small>
+            </div>
+            <div class="match-sheet-grid">
+                <div class="match-team">
+                    {_team_logo_markup(home_logo, home_name)}
+                    <strong>{html.escape(home_name)}</strong>
+                    <small>Domicile</small>
+                </div>
+                <div class="match-center">
+                    <small>Score le plus probable</small>
+                    <strong>{html.escape(likely_score)}</strong>
+                    <span>Face-à-face</span>
+                </div>
+                <div class="match-team">
+                    {_team_logo_markup(away_logo, away_name)}
+                    <strong>{html.escape(away_name)}</strong>
+                    <small>Extérieur</small>
+                </div>
+            </div>
+        </div>
+        <style>
+        .match-sheet {{
+            overflow: hidden;
+            margin: 0.3rem 0 1rem;
+            border-radius: 14px;
+            color: #fff;
+            background:
+                radial-gradient(circle at 50% 0%, rgba(216,165,40,.22), transparent 34%),
+                linear-gradient(135deg, #14251d, #20362b);
+            box-shadow: 0 18px 44px rgba(20,37,29,.18);
+        }}
+        .match-sheet-context {{
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: .7rem;
+            padding: .75rem 1rem;
+            color: rgba(255,255,255,.76);
+            border-bottom: 1px solid rgba(255,255,255,.1);
+            font-size: .78rem;
+        }}
+        .match-sheet-context span {{ color: #d8a528; font-weight: 850; }}
+        .match-sheet-context strong {{ color: #fff; }}
+        .match-sheet-grid {{
+            display: grid;
+            grid-template-columns: 1fr minmax(120px,.72fr) 1fr;
+            align-items: center;
+            gap: 1rem;
+            padding: 1.5rem;
+        }}
+        .match-team, .match-center {{
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            text-align: center;
+        }}
+        .match-team-logo, .match-team-fallback {{
+            width: 72px;
+            height: 72px;
+            margin-bottom: .65rem;
+            object-fit: contain;
+        }}
+        .match-team-fallback {{
+            display: grid;
+            place-items: center;
+            border-radius: 50%;
+            background: rgba(255,255,255,.12);
+            color: #d8a528;
+            font-size: 1.25rem;
+            font-weight: 900;
+        }}
+        .match-team strong {{ font-size: 1.22rem; }}
+        .match-team small, .match-center small {{
+            margin-top: .25rem;
+            color: rgba(255,255,255,.62);
+        }}
+        .match-center strong {{
+            margin: .25rem 0;
+            color: #fff;
+            font-size: 2.1rem;
+            line-height: 1;
+        }}
+        .match-center span {{
+            color: #d8a528;
+            font-size: .78rem;
+            font-weight: 800;
+            text-transform: uppercase;
+        }}
+        div[data-testid="stTabs"] button[role="tab"] {{
+            min-height: 3rem;
+            font-weight: 750;
+        }}
+        @media (max-width: 600px) {{
+            .match-sheet-context {{ flex-wrap: wrap; gap: .3rem .55rem; }}
+            .match-sheet-grid {{
+                grid-template-columns: 1fr 78px 1fr;
+                gap: .3rem;
+                padding: 1rem .55rem;
+            }}
+            .match-team-logo, .match-team-fallback {{
+                width: 52px;
+                height: 52px;
+            }}
+            .match-team strong {{ font-size: .95rem; }}
+            .match-center strong {{ font-size: 1.45rem; }}
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _legacy_show():
     ui.page_hero(
         "Analyse & comparaison",
         "Comparez deux équipes, visualisez leur dynamique récente, leurs confrontations directes et une prédiction lisible basée sur les données importées.",
@@ -606,6 +802,440 @@ def show():
 
         st.caption("Le modèle combine la forme récente, le niveau offensif/défensif et l’historique direct pour produire une estimation probabiliste.")
 
- 
+def show():
+    ui.page_hero(
+        "Analyse & comparaison",
+        "Une fiche de match claire pour comparer la forme, les statistiques, les confrontations directes et la prédiction.",
+    )
+
+    league_map = _league_options()
+    ui.section_label("Choisir l'affiche")
+    with st.container(border=True):
+        league_id = st.selectbox(
+            "Championnat",
+            options=list(league_map.keys()),
+            format_func=lambda key: league_map[key],
+        )
+
+        seasons = _fetch_seasons_for_league(league_id)
+        if not seasons:
+            st.warning("Aucune saison trouvée pour ce championnat.")
+            return
+
+        default_window = [
+            season
+            for season in sorted(_season_window(seasons[0], 10), reverse=True)
+            if season in seasons
+        ]
+        selected_seasons = st.multiselect(
+            "Saisons sportives",
+            options=sorted(prediction_helpers.configured_seasons(), reverse=True),
+            default=default_window,
+            format_func=season_period,
+            key="analyse_seasons_sheet",
+        )
+
+        seasons_window, missing_seasons = prediction_helpers.selected_season_status(
+            selected_seasons, seasons
+        )
+        seasons_window = sorted(seasons_window, reverse=True)
+        if missing_seasons:
+            st.warning(
+                prediction_helpers.missing_seasons_message(
+                    missing_seasons, seasons_window
+                )
+            )
+        if not seasons_window:
+            st.warning(
+                "Sélectionnez au moins une saison disponible pour ce championnat."
+            )
+            return
+
+        teams_df = _fetch_teams(league_id, seasons_window)
+        if teams_df.empty:
+            st.warning("Aucune équipe disponible pour cette sélection.")
+            return
+
+        team_options = {int(row.id): row.name for row in teams_df.itertuples()}
+        team_logos = {
+            int(row.id): getattr(row, "logo", None) for row in teams_df.itertuples()
+        }
+        team_cols = st.columns(2)
+        home_team = team_cols[0].selectbox(
+            "Équipe domicile",
+            options=list(team_options),
+            format_func=lambda key: team_options[key],
+        )
+        away_team = team_cols[1].selectbox(
+            "Équipe extérieure",
+            options=[key for key in team_options if key != home_team],
+            format_func=lambda key: team_options[key],
+        )
+
+        st.caption(
+            prediction_helpers.teams_available_message(
+                len(team_options), seasons_window
+            )
+        )
+        analyse = st.button(
+            "Afficher la fiche du match", type="primary", width="stretch"
+        )
+
+    if not analyse:
+        st.info(
+            "Choisissez les deux équipes puis affichez la fiche pour consulter "
+            "l'analyse complète."
+        )
+        return
+
+    matches_df = _load_matches_window(league_id, seasons_window)
+    if matches_df.empty:
+        st.warning("Aucun match disponible sur les saisons retenues.")
+        return
+
+    home_stats = stats_service.compute_basic_stats(matches_df, home_team)
+    away_stats = stats_service.compute_basic_stats(matches_df, away_team)
+    home_results = _last_results(matches_df, home_team, 10)
+    away_results = _last_results(matches_df, away_team, 10)
+    home_view = _team_summary_metrics(
+        team_options[home_team], home_stats, home_results
+    )
+    away_view = _team_summary_metrics(
+        team_options[away_team], away_stats, away_results
+    )
+
+    def form_score(results):
+        if not results:
+            return 0.5
+        points = sum(
+            3 if result == "W" else 1 if result == "D" else 0
+            for result in results
+        )
+        return points / (3 * len(results))
+
+    home_form_score = form_score(home_results)
+    away_form_score = form_score(away_results)
+    home_attack = home_stats["goals_for"] / max(1, home_stats["played"])
+    home_defense = home_stats["goals_against"] / max(1, home_stats["played"])
+    away_attack = away_stats["goals_for"] / max(1, away_stats["played"])
+    away_defense = away_stats["goals_against"] / max(1, away_stats["played"])
+    home_strength = (
+        0.6 * home_form_score
+        + 0.2 * (home_attack - away_defense)
+        + 0.1
+    )
+    away_strength = (
+        0.6 * away_form_score
+        + 0.2 * (away_attack - home_defense)
+        + 0.1
+    )
+    prediction = prediction_service.predict_simple(home_strength, away_strength)
+    score_prediction = prediction_service.predict_scorelines(
+        matches_df,
+        home_team,
+        away_team,
+        home_form_score=home_form_score,
+        away_form_score=away_form_score,
+        top_n=6,
+    )
+
+    _render_match_header(
+        league_map[league_id],
+        season_range(seasons_window),
+        home_view["team_name"],
+        away_view["team_name"],
+        team_logos.get(home_team),
+        team_logos.get(away_team),
+        score_prediction,
+    )
+
+    overview_tab, form_tab, h2h_tab, stats_tab, prediction_tab = st.tabs(
+        [
+            "Vue d'ensemble",
+            "Forme",
+            "Face-à-face",
+            "Statistiques",
+            "Prédiction",
+        ]
+    )
+
+    with overview_tab:
+        st.subheader("Les deux équipes en un coup d'œil")
+        home_column, away_column = st.columns(2)
+        for column, view, venue in (
+            (home_column, home_view, "Domicile"),
+            (away_column, away_view, "Extérieur"),
+        ):
+            with column:
+                with st.container(border=True):
+                    st.markdown(f"### {view['team_name']}")
+                    st.caption(venue)
+                    summary_columns = st.columns(3)
+                    summary_columns[0].metric("Matchs", view["played"])
+                    summary_columns[1].metric("Victoires", view["wins"])
+                    summary_columns[2].metric("Taux", f"{view['win_pct']} %")
+                    goal_columns = st.columns(2)
+                    goal_columns[0].metric(
+                        "Buts / match", view["goals_for_avg"]
+                    )
+                    goal_columns[1].metric(
+                        "Encaissés / match", view["goals_against_avg"]
+                    )
+                    st.markdown(f"**Forme :** {_form_record(home_results if venue == 'Domicile' else away_results)}")
+
+        probability_columns = st.columns(3)
+        probability_columns[0].metric(
+            f"Victoire {home_view['team_name']}",
+            f"{prediction['home_probability']} %",
+        )
+        probability_columns[1].metric(
+            "Match nul", f"{prediction['draw_probability']} %"
+        )
+        probability_columns[2].metric(
+            f"Victoire {away_view['team_name']}",
+            f"{prediction['away_probability']} %",
+        )
+
+    with form_tab:
+        st.subheader("Forme — 5 derniers matchs")
+        st.caption(
+            "✅ victoire · 🟡 match nul · ❌ défaite. Le résultat est toujours "
+            "lu du point de vue de l'équipe présentée."
+        )
+        home_form_column, away_form_column = st.columns(2)
+        for column, team_id, view, results in (
+            (home_form_column, home_team, home_view, home_results),
+            (away_form_column, away_team, away_view, away_results),
+        ):
+            with column:
+                with st.container(border=True):
+                    st.markdown(f"### {view['team_name']}")
+                    st.caption(_form_record(results[:5]))
+                    recent_table = _recent_matches_table(
+                        matches_df, team_id, team_options, 5
+                    )
+                    if recent_table.empty:
+                        st.info("Aucun match récent disponible.")
+                    else:
+                        st.dataframe(
+                            recent_table,
+                            width="stretch",
+                            hide_index=True,
+                            column_config={
+                                "Date": st.column_config.TextColumn(width="small"),
+                                "Score": st.column_config.TextColumn(width="small"),
+                                "Résultat": st.column_config.TextColumn(width="small"),
+                            },
+                        )
+
+        with st.expander("Voir l'historique complet des deux équipes"):
+            history_home, history_away = st.tabs(
+                [home_view["team_name"], away_view["team_name"]]
+            )
+            with history_home:
+                st.dataframe(
+                    _team_matches_history_table(
+                        matches_df, home_team, team_options
+                    ),
+                    width="stretch",
+                    hide_index=True,
+                )
+            with history_away:
+                st.dataframe(
+                    _team_matches_history_table(
+                        matches_df, away_team, team_options
+                    ),
+                    width="stretch",
+                    hide_index=True,
+                )
+
+    h2h_df = matches_df[
+        (
+            (matches_df["home_team_id"] == home_team)
+            & (matches_df["away_team_id"] == away_team)
+        )
+        | (
+            (matches_df["home_team_id"] == away_team)
+            & (matches_df["away_team_id"] == home_team)
+        )
+    ].copy()
+    h2h_table, h2h_totals = _build_h2h_report(
+        h2h_df,
+        home_team,
+        away_team,
+        home_view["team_name"],
+        away_view["team_name"],
+    )
+
+    with h2h_tab:
+        st.subheader("Confrontations directes")
+        h2h_columns = st.columns(4)
+        h2h_columns[0].metric("Matchs", len(h2h_table))
+        h2h_columns[1].metric(
+            f"Victoires {home_view['team_name']}",
+            h2h_totals[home_team]["wins"],
+        )
+        h2h_columns[2].metric("Nuls", h2h_totals[home_team]["draws"])
+        h2h_columns[3].metric(
+            f"Victoires {away_view['team_name']}",
+            h2h_totals[away_team]["wins"],
+        )
+        if h2h_table.empty:
+            st.info("Aucune confrontation trouvée sur la période choisie.")
+        else:
+            st.dataframe(h2h_table, width="stretch", hide_index=True)
+
+    with stats_tab:
+        st.subheader("Comparaison statistique")
+        radar = charts.radar_team_comparison(
+            [
+                "Victoires",
+                "Buts marqués",
+                "Solidité défensive",
+                "Forme",
+                "Expérience",
+            ],
+            [
+                home_stats["wins"],
+                home_attack,
+                max(0, 10 - home_defense),
+                home_form_score * 10,
+                home_stats["played"],
+            ],
+            [
+                away_stats["wins"],
+                away_attack,
+                max(0, 10 - away_defense),
+                away_form_score * 10,
+                away_stats["played"],
+            ],
+            home_view["team_name"],
+            away_view["team_name"],
+        )
+        if radar is not None:
+            st.plotly_chart(radar, width="stretch", key="radar_match_sheet")
+
+        completed_matches = matches_df.dropna(
+            subset=["home_goals", "away_goals"]
+        )
+        total_matches = len(completed_matches)
+        total_goals = int(
+            completed_matches["home_goals"].sum()
+            + completed_matches["away_goals"].sum()
+        )
+        per_season = (
+            completed_matches.groupby("season")
+            .agg(
+                matches=("fixture_id", "size"),
+                home_goals=("home_goals", "sum"),
+                away_goals=("away_goals", "sum"),
+            )
+            .reset_index()
+            .sort_values("season", ascending=False)
+        )
+        season_rows = [
+            {
+                "season": int(row["season"]),
+                "matches": int(row["matches"]),
+                "avg_goals": round(
+                    (row["home_goals"] + row["away_goals"])
+                    / max(1, row["matches"]),
+                    2,
+                ),
+            }
+            for _, row in per_season.iterrows()
+        ]
+        with st.expander("Contexte du championnat"):
+            ui.season_summary(
+                "Bilan du championnat",
+                (
+                    f"{league_map[league_id]} — saisons : "
+                    f"{season_list(seasons_window)}."
+                ),
+                [
+                    ("Matchs terminés", f"{total_matches:,}".replace(",", " ")),
+                    ("Buts marqués", f"{total_goals:,}".replace(",", " ")),
+                    (
+                        "Moyenne buts / match",
+                        round(total_goals / total_matches, 2)
+                        if total_matches
+                        else 0,
+                    ),
+                ],
+                season_rows,
+            )
+
+    with prediction_tab:
+        st.subheader("Prédiction du match")
+        prediction_columns = st.columns(4)
+        prediction_columns[0].metric(
+            f"Victoire {home_view['team_name']}",
+            f"{prediction['home_probability']} %",
+        )
+        prediction_columns[1].metric(
+            "Match nul", f"{prediction['draw_probability']} %"
+        )
+        prediction_columns[2].metric(
+            f"Victoire {away_view['team_name']}",
+            f"{prediction['away_probability']} %",
+        )
+        prediction_columns[3].metric(
+            "Confiance", f"{prediction.get('confidence')} %"
+        )
+
+        reasons = []
+        if home_form_score > away_form_score:
+            reasons.append(
+                f"Meilleure forme récente pour {home_view['team_name']}"
+            )
+        elif away_form_score > home_form_score:
+            reasons.append(
+                f"Meilleure forme récente pour {away_view['team_name']}"
+            )
+        if home_attack > away_attack:
+            reasons.append(
+                f"Avantage offensif pour {home_view['team_name']}"
+            )
+        elif away_attack > home_attack:
+            reasons.append(
+                f"Avantage offensif pour {away_view['team_name']}"
+            )
+        if home_defense < away_defense:
+            reasons.append(
+                f"Défense plus solide pour {home_view['team_name']}"
+            )
+        elif away_defense < home_defense:
+            reasons.append(
+                f"Défense plus solide pour {away_view['team_name']}"
+            )
+
+        st.markdown("#### Pourquoi ce résultat ?")
+        for reason in reasons or ["Aucune tendance forte dans les données."]:
+            st.write(f"- {reason}")
+
+        st.markdown("#### Scores probables")
+        expected_columns = st.columns(2)
+        expected_columns[0].metric(
+            f"Buts attendus {home_view['team_name']}",
+            score_prediction["expected_home_goals"],
+        )
+        expected_columns[1].metric(
+            f"Buts attendus {away_view['team_name']}",
+            score_prediction["expected_away_goals"],
+        )
+        if score_prediction["scores"]:
+            st.dataframe(
+                pd.DataFrame(score_prediction["scores"]),
+                width="stretch",
+                hide_index=True,
+            )
+            best_score = score_prediction["scores"][0]
+            st.success(
+                f"Score le plus probable : {best_score['Score']} "
+                f"({best_score['Probabilité']} %)"
+            )
+        st.caption(score_prediction["method"])
+
+
 if __name__ == "__main__":
     ui.run_direct_page("Analyse & comparaison", show)
