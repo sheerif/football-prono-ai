@@ -1242,6 +1242,51 @@ def _render_upcoming_match_analysis(fixture: pd.Series):
     )
 
     with overview_tab:
+        st.subheader("Les deux équipes en un coup d'œil")
+        team_columns = st.columns(2)
+        for column, team_name, venue_label, stats, form_results in (
+            (
+                team_columns[0],
+                home_name,
+                "Domicile",
+                home_stats,
+                details["home_form_results"],
+            ),
+            (
+                team_columns[1],
+                away_name,
+                "Extérieur",
+                away_stats,
+                details["away_form_results"],
+            ),
+        ):
+            played = max(1, stats["played"])
+            with column:
+                with st.container(border=True):
+                    st.markdown(f"### {team_name}")
+                    st.caption(venue_label)
+                    summary = st.columns(3)
+                    summary[0].metric("Matchs", stats["played"])
+                    summary[1].metric("Victoires", stats["wins"])
+                    summary[2].metric(
+                        "Taux",
+                        f"{round(stats['wins'] / played * 100, 1)} %",
+                    )
+                    goals = st.columns(2)
+                    goals[0].metric(
+                        "Buts / match",
+                        round(stats["goals_for"] / played, 2),
+                    )
+                    goals[1].metric(
+                        "Encaissés / match",
+                        round(stats["goals_against"] / played, 2),
+                    )
+                    st.markdown("**Forme récente**")
+                    st.html(
+                        match_analysis._form_badges(form_results)
+                    )
+
+        st.subheader("Informations du match")
         venue = _display_text(
             fixture.get("api_venue"), "Stade non renseigné"
         )
@@ -1517,7 +1562,24 @@ def show():
 
     ui.section_label("Journées")
     league_options = previews["Championnat"].drop_duplicates().tolist()
-    selected_league = st.selectbox("Ligue", options=league_options, key="upcoming_league")
+    ligue_1_name = next(
+        (
+            str(row.name)
+            for row in leagues.itertuples()
+            if int(row.id) == 61
+        ),
+        "",
+    )
+    selected_league = st.selectbox(
+        "Ligue",
+        options=league_options,
+        index=(
+            league_options.index(ligue_1_name)
+            if ligue_1_name in league_options
+            else 0
+        ),
+        key="upcoming_league",
+    )
     league_rows = previews[previews["Championnat"] == selected_league].copy()
     round_options = sorted(
         league_rows["Journée"].dropna().drop_duplicates().tolist(),

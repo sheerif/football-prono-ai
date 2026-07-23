@@ -289,6 +289,7 @@ def _show_match_prediction():
         league_id = st.selectbox(
             "Championnat",
             options=list(league_map.keys()),
+            index=prediction_helpers.default_league_index(league_map.keys()),
             format_func=lambda key: league_map[key],
             key="prediction_match_league",
         )
@@ -563,6 +564,7 @@ def _show_best_predictions():
         league_id = st.selectbox(
             "Championnat",
             options=list(league_map),
+            index=prediction_helpers.default_league_index(league_map),
             format_func=lambda key: league_map[key],
             key="prediction_ranking_league",
         )

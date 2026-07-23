@@ -13,6 +13,14 @@ def fetch_leagues():
         return pd.DataFrame(columns=["id", "name", "country"])
 
 
+def default_league_index(options, preferred_league_id: int = 61) -> int:
+    league_ids = [int(option) for option in options]
+    try:
+        return league_ids.index(int(preferred_league_id))
+    except ValueError:
+        return 0
+
+
 def fetch_seasons(league_id: int):
     try:
         df = pd.read_sql(

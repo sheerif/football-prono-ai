@@ -751,7 +751,13 @@ def _legacy_show():
     league_map = _league_options()
     ui.section_label("Configuration")
     with st.container(border=True):
-        league_id = st.selectbox("Championnat", options=list(league_map.keys()), format_func=lambda k: league_map[k])
+        league_options = list(league_map.keys())
+        league_id = st.selectbox(
+            "Championnat",
+            options=league_options,
+            index=prediction_helpers.default_league_index(league_options),
+            format_func=lambda k: league_map[k],
+        )
 
     seasons = _fetch_seasons_for_league(league_id)
     if not seasons:
@@ -1086,9 +1092,11 @@ def show():
     league_map = _league_options()
     ui.section_label("Choisir l'affiche")
     with st.container(border=True):
+        league_options = list(league_map.keys())
         league_id = st.selectbox(
             "Championnat",
-            options=list(league_map.keys()),
+            options=league_options,
+            index=prediction_helpers.default_league_index(league_options),
             format_func=lambda key: league_map[key],
         )
 
