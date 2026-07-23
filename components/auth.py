@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
+LOGO_PATH = Path(__file__).resolve().parents[1] / "assets" / "prono-insight-logo.png"
 
 AUTH_USER_PARAM = "prono_user"
 AUTH_TOKEN_PARAM = "prono_auth"
@@ -137,6 +138,11 @@ def login_page() -> bool:
     expected_user, expected_password = _credentials()
     if _query_value(AUTH_USER_PARAM) or _query_value(AUTH_TOKEN_PARAM) or _query_value(AUTH_EXPIRES_PARAM):
         _clear_auth_query()
+
+    if LOGO_PATH.exists():
+        left, logo_column, right = st.columns([1, 0.8, 1])
+        with logo_column:
+            st.image(str(LOGO_PATH), width="stretch")
 
     st.markdown("## Connexion")
     st.caption("Connectez-vous pour accéder au tableau de bord Prono insight.")

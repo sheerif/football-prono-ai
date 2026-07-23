@@ -6,10 +6,10 @@ import re
 import streamlit as st
 from sqlalchemy import text
 
-from components import ui
+from components import charts, ui
 from database.database import engine
 from services.api_football import ApiFootballClient
-from services import prediction_helpers, prediction_service
+from services import cross_insight_service, prediction_helpers, prediction_service
 from services import schema_guard
 from services.season_format import season_period
 
@@ -1094,6 +1094,14 @@ def _render_match_card(row: pd.Series, force_api_refresh: bool = False):
         else:
             st.caption("Conseil API non synchronisé.")
 
+        if st.button(
+            "Voir l'analyse complète",
+            key=f"open_upcoming_match_{fixture_id}",
+            width="stretch",
+        ):
+            st.session_state["selected_upcoming_fixture"] = fixture_id
+            st.rerun()
+
 
 def _render_match_cards(round_rows: pd.DataFrame, force_api_refresh: bool = False):
     for start in range(0, len(round_rows), 2):
@@ -1103,12 +1111,305 @@ def _render_match_cards(round_rows: pd.DataFrame, force_api_refresh: bool = Fals
                 _render_match_card(row, force_api_refresh=force_api_refresh)
 
 
+def _load_fixture_for_analysis(fixture_id: int) -> pd.Series | None:
+    try:
+        rows = pd.read_sql(
+            text(
+                """
+                SELECT
+                    m.*,
+                    COALESCE(l.name, 'Championnat ' || m.league_id) AS league_name,
+                    COALESCE(home.name, 'Équipe ' || m.home_team_id) AS home_name,
+                    COALESCE(away.name, 'Équipe ' || m.away_team_id) AS away_name,
+                    details.round AS api_round,
+                    details.venue AS api_venue,
+                    details.city AS api_city,
+                    COALESCE(details.home_logo, home.logo) AS home_logo,
+                    COALESCE(details.away_logo, away.logo) AS away_logo
+                FROM matches m
+                LEFT JOIN leagues l ON l.id = m.league_id
+                LEFT JOIN teams home ON home.id = m.home_team_id
+                LEFT JOIN teams away ON away.id = m.away_team_id
+                LEFT JOIN fixture_api_details details
+                  ON details.fixture_id = m.fixture_id
+                WHERE m.fixture_id = :fixture_id
+                LIMIT 1
+                """
+            ),
+            engine,
+            params={"fixture_id": int(fixture_id)},
+        )
+    except Exception:
+        return None
+    return None if rows.empty else rows.iloc[0]
+
+
+def _render_upcoming_match_analysis(fixture: pd.Series):
+    from pages import analyse_match as match_analysis
+
+    fixture_id = int(fixture["fixture_id"])
+    home_team = int(fixture["home_team_id"])
+    away_team = int(fixture["away_team_id"])
+    home_name = str(fixture["home_name"])
+    away_name = str(fixture["away_name"])
+    context_df = _load_prediction_context(
+        int(fixture["league_id"]), fixture["date"]
+    )
+
+    if st.button("← Retour aux matchs à venir", key="close_upcoming_match"):
+        st.session_state.pop("selected_upcoming_fixture", None)
+        st.rerun()
+
+    if context_df.empty:
+        st.warning(
+            "Aucun historique disponible avant cette rencontre pour construire "
+            "la fiche d'analyse."
+        )
+        return
+
+    team_options = prediction_helpers.fetch_teams(context_df)
+    team_options[home_team] = home_name
+    team_options[away_team] = away_name
+    prediction, home_stats, away_stats, details = (
+        prediction_helpers.predict_match(context_df, home_team, away_team)
+    )
+    score_prediction = prediction_service.predict_scorelines(
+        context_df,
+        home_team,
+        away_team,
+        home_form_score=details["home_form_score"] / 100,
+        away_form_score=details["away_form_score"] / 100,
+        top_n=6,
+    )
+    api_prediction = _load_cached_prediction(fixture_id)
+    api_signal = None
+    if api_prediction:
+        api_signal = {
+            "fixture_id": fixture_id,
+            "date": fixture["date"],
+            "advice": api_prediction.get("api_advice"),
+            "winner": api_prediction.get("api_winner"),
+            "home_probability": float(
+                api_prediction.get("api_home_probability") or 0
+            ),
+            "draw_probability": float(
+                api_prediction.get("api_draw_probability") or 0
+            ),
+            "away_probability": float(
+                api_prediction.get("api_away_probability") or 0
+            ),
+        }
+    cross_insight = cross_insight_service.build_cross_insight(
+        matches_df=context_df,
+        home_team=home_team,
+        away_team=away_team,
+        home_name=home_name,
+        away_name=away_name,
+        prediction=prediction,
+        score_prediction=score_prediction,
+        home_form_score=details["home_form_score"] / 100,
+        away_form_score=details["away_form_score"] / 100,
+        home_played=home_stats["played"],
+        away_played=away_stats["played"],
+        selected_seasons=sorted(
+            int(value)
+            for value in context_df["season"].dropna().unique().tolist()
+        ),
+        api_signal=api_signal,
+    )
+
+    match_analysis._render_match_header(
+        str(fixture["league_name"]),
+        (
+            f"{season_period(fixture['season'])} · "
+            f"{_format_datetime(fixture['date'])}"
+        ),
+        home_name,
+        away_name,
+        _display_text(fixture.get("home_logo")),
+        _display_text(fixture.get("away_logo")),
+        score_prediction,
+    )
+
+    overview_tab, form_tab, h2h_tab, stats_tab, prediction_tab = st.tabs(
+        [
+            "Vue d'ensemble",
+            "Forme",
+            "Face-à-face",
+            "Statistiques",
+            "Prédiction",
+        ]
+    )
+
+    with overview_tab:
+        venue = _display_text(
+            fixture.get("api_venue"), "Stade non renseigné"
+        )
+        city = _display_text(fixture.get("api_city"))
+        metadata = st.columns(3)
+        metadata[0].metric(
+            "Journée", _round_label(_display_text(fixture.get("api_round")))
+        )
+        metadata[1].metric("Stade", venue)
+        metadata[2].metric("Ville", city or "Non renseignée")
+
+        probabilities = st.columns(4)
+        probabilities[0].metric(
+            f"Victoire {home_name}", f"{prediction['home_probability']} %"
+        )
+        probabilities[1].metric(
+            "Match nul", f"{prediction['draw_probability']} %"
+        )
+        probabilities[2].metric(
+            f"Victoire {away_name}", f"{prediction['away_probability']} %"
+        )
+        probabilities[3].metric(
+            "Confiance", f"{prediction['confidence']} %"
+        )
+        ui.render_cross_insight(cross_insight)
+
+    with form_tab:
+        st.subheader("Forme — 5 derniers matchs")
+        form_columns = st.columns(2)
+        for column, team_id, team_name, results in (
+            (
+                form_columns[0],
+                home_team,
+                home_name,
+                details["home_form_results"],
+            ),
+            (
+                form_columns[1],
+                away_team,
+                away_name,
+                details["away_form_results"],
+            ),
+        ):
+            with column:
+                with st.container(border=True):
+                    st.markdown(f"### {team_name}")
+                    st.markdown(
+                        match_analysis._form_badges(results[:5]),
+                        unsafe_allow_html=True,
+                    )
+                    recent = match_analysis._recent_matches_table(
+                        context_df, team_id, team_options, 5
+                    )
+                    if recent.empty:
+                        st.info("Aucun match récent disponible.")
+                    else:
+                        match_analysis._render_recent_matches_list(recent)
+
+    h2h_df = context_df[
+        (
+            (context_df["home_team_id"] == home_team)
+            & (context_df["away_team_id"] == away_team)
+        )
+        | (
+            (context_df["home_team_id"] == away_team)
+            & (context_df["away_team_id"] == home_team)
+        )
+    ].copy()
+    h2h_table, h2h_totals = match_analysis._build_h2h_report(
+        h2h_df, home_team, away_team, home_name, away_name
+    )
+    with h2h_tab:
+        st.subheader("Confrontations directes")
+        summary = st.columns(4)
+        summary[0].metric("Matchs", len(h2h_table))
+        summary[1].metric(
+            f"Victoires {home_name}", h2h_totals[home_team]["wins"]
+        )
+        summary[2].metric("Nuls", h2h_totals[home_team]["draws"])
+        summary[3].metric(
+            f"Victoires {away_name}", h2h_totals[away_team]["wins"]
+        )
+        if h2h_table.empty:
+            st.info("Aucune confrontation directe disponible.")
+        else:
+            match_analysis._render_h2h_list(h2h_table)
+
+    with stats_tab:
+        st.subheader("Profil comparé")
+        home_attack = home_stats["goals_for"] / max(1, home_stats["played"])
+        away_attack = away_stats["goals_for"] / max(1, away_stats["played"])
+        home_defense = home_stats["goals_against"] / max(
+            1, home_stats["played"]
+        )
+        away_defense = away_stats["goals_against"] / max(
+            1, away_stats["played"]
+        )
+        radar = charts.radar_team_comparison(
+            ["Victoires", "Attaque", "Défense", "Forme"],
+            [
+                home_stats["wins"] / max(1, home_stats["played"]) * 100,
+                min(100, home_attack / 3 * 100),
+                max(0, 100 - home_defense / 3 * 100),
+                details["home_form_score"],
+            ],
+            [
+                away_stats["wins"] / max(1, away_stats["played"]) * 100,
+                min(100, away_attack / 3 * 100),
+                max(0, 100 - away_defense / 3 * 100),
+                details["away_form_score"],
+            ],
+            home_name,
+            away_name,
+        )
+        st.plotly_chart(
+            radar, width="stretch", key=f"upcoming_radar_{fixture_id}"
+        )
+
+    with prediction_tab:
+        st.subheader("Scores probables")
+        expected = st.columns(2)
+        expected[0].metric(
+            f"Buts attendus {home_name}",
+            score_prediction["expected_home_goals"],
+        )
+        expected[1].metric(
+            f"Buts attendus {away_name}",
+            score_prediction["expected_away_goals"],
+        )
+        score_columns = st.columns(
+            min(3, max(1, len(score_prediction["scores"])))
+        )
+        for column, score in zip(
+            score_columns, score_prediction["scores"][:3]
+        ):
+            column.metric(
+                f"Score {score['Score']}",
+                f"{score['Probabilité']} %",
+            )
+        if api_prediction:
+            st.markdown("#### Conseil API")
+            st.write(
+                f"**{_translate_api_advice(api_prediction.get('api_advice'), api_prediction.get('api_winner'))}**"
+            )
+            st.caption(
+                f"Probabilités API 1/N/2 : "
+                f"{_api_probability_line(api_prediction)}"
+            )
+        else:
+            st.caption("Conseil API non synchronisé pour cette rencontre.")
+
+
 def show():
     schema_guard.ensure_fixture_api_cache_tables()
     ui.page_hero(
         "Matchs à venir",
         "Consultez les prochaines affiches importées dans la base, avec dates, heures et résumé prévisionnel pour chaque ligue.",
     )
+
+    selected_fixture_id = st.session_state.get("selected_upcoming_fixture")
+    if selected_fixture_id is not None:
+        selected_fixture = _load_fixture_for_analysis(selected_fixture_id)
+        if selected_fixture is None:
+            st.session_state.pop("selected_upcoming_fixture", None)
+            st.warning("Ce match n'est plus disponible dans la base.")
+        else:
+            _render_upcoming_match_analysis(selected_fixture)
+        return
 
     leagues = _load_leagues_with_upcoming()
     if leagues.empty:

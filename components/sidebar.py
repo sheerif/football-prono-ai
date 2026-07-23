@@ -1,4 +1,17 @@
+from pathlib import Path
+
 import streamlit as st
+
+LOGO_PATH = Path(__file__).resolve().parents[1] / "assets" / "prono-insight-logo.png"
+
+
+def _render_logo(width: int = 148):
+    if not LOGO_PATH.exists():
+        return
+    left, center, right = st.columns([1, 2.2, 1])
+    with center:
+        st.image(str(LOGO_PATH), width=width)
+
 
 NAV_ITEMS = [
     "Tableau de bord",
@@ -25,10 +38,12 @@ def render_sidebar(current: str = "Tableau de bord"):
     except ValueError:
         current_index = 0
 
+    with st.sidebar:
+        _render_logo()
+
     st.sidebar.markdown(
         """
         <div class="sidebar-brand">
-            <div class="sidebar-mark">PI</div>
             <div>
                 <h2>Prono insight</h2>
                 <p>Analyse, signaux et prédictions</p>
@@ -247,10 +262,10 @@ def render_app_rail(current: str):
     )
 
     with st.sidebar:
+        _render_logo()
         st.markdown(
             """
             <div class="app-rail-brand">
-                <div class="app-rail-mark">PI</div>
                 <div>
                     <div class="app-rail-title">Prono insight</div>
                     <div class="app-rail-subtitle">Analyse, signaux et prédictions</div>
