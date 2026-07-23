@@ -4,7 +4,7 @@ import pandas as pd
 import streamlit as st
 
 from components import ui
-from services import prediction_helpers
+from services import cross_insight_service, prediction_helpers, prediction_service
 from services.season_format import season_period
 
 
@@ -337,6 +337,28 @@ def _show_match_prediction():
         pred, home_stats, away_stats, details = prediction_helpers.predict_match(matches_df, home_team, away_team)
         home_name = team_options[home_team]
         away_name = team_options[away_team]
+        score_prediction = prediction_service.predict_scorelines(
+            matches_df,
+            home_team,
+            away_team,
+            home_form_score=details["home_form_score"] / 100,
+            away_form_score=details["away_form_score"] / 100,
+            top_n=6,
+        )
+        cross_insight = cross_insight_service.build_cross_insight(
+            matches_df=matches_df,
+            home_team=home_team,
+            away_team=away_team,
+            home_name=home_name,
+            away_name=away_name,
+            prediction=pred,
+            score_prediction=score_prediction,
+            home_form_score=details["home_form_score"] / 100,
+            away_form_score=details["away_form_score"] / 100,
+            home_played=home_stats["played"],
+            away_played=away_stats["played"],
+            selected_seasons=seasons_with_data,
+        )
 
         ui.section_label("Ce que ces informations représentent")
         st.dataframe(
@@ -363,6 +385,7 @@ def _show_match_prediction():
             key=lambda item: item[0],
         )[1]
         st.success(_favorite_sentence(favorite, pred["confidence"], home_name, away_name, details))
+        ui.render_cross_insight(cross_insight)
 
         ui.section_label("Pourquoi le modèle arrive à ce résultat ?")
         for reason in _build_reasons(home_name, away_name, details):

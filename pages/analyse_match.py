@@ -4,7 +4,7 @@ import streamlit as st
 import pandas as pd
 from database.database import engine
 from components import charts, ui
-from services import stats_service, prediction_service
+from services import cross_insight_service, stats_service, prediction_service
 from services import prediction_helpers
 from services.season_format import season_list, season_period, season_range
 from sqlalchemy import text
@@ -1228,6 +1228,20 @@ def show():
         away_form_score=away_form_score,
         top_n=6,
     )
+    cross_insight = cross_insight_service.build_cross_insight(
+        matches_df=matches_df,
+        home_team=home_team,
+        away_team=away_team,
+        home_name=home_view["team_name"],
+        away_name=away_view["team_name"],
+        prediction=prediction,
+        score_prediction=score_prediction,
+        home_form_score=home_form_score,
+        away_form_score=away_form_score,
+        home_played=home_stats["played"],
+        away_played=away_stats["played"],
+        selected_seasons=seasons_window,
+    )
 
     _render_match_header(
         league_map[league_id],
@@ -1293,6 +1307,8 @@ def show():
             f"Victoire {away_view['team_name']}",
             f"{prediction['away_probability']} %",
         )
+
+        ui.render_cross_insight(cross_insight)
 
         st.subheader("Profil comparé")
         st.caption(

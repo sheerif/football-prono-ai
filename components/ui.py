@@ -426,6 +426,62 @@ def season_summary(title: str, subtitle: str, cards: list[tuple[str, str]], rows
         st.dataframe(table_rows, hide_index=True, width="stretch")
 
 
+def render_cross_insight(insight: dict):
+    section_label("Lecture croisée")
+    st.caption(
+        "Synthèse commune de la forme, du rendement domicile/extérieur, des "
+        "face-à-face, du modèle probabiliste et des buts attendus."
+    )
+    columns = st.columns(3)
+    columns[0].metric("Tendance", insight["verdict"])
+    columns[1].metric(
+        "Écart synthétique",
+        f"{abs(insight['edge'])} points",
+        help="Amplitude de l'avantage après combinaison des différents signaux.",
+    )
+    columns[2].metric(
+        "Fiabilité des données",
+        f"{insight['reliability']} %",
+        insight["reliability_label"],
+    )
+
+    if insight["verdict"] == "Match équilibré":
+        st.warning(
+            "Les signaux restent proches : aucun scénario ne domine clairement."
+        )
+    elif insight["opposing_factors"]:
+        st.info(
+            f"{insight['verdict']}, mais la lecture reste nuancée car certains "
+            "indicateurs vont dans le sens inverse."
+        )
+    else:
+        st.success(
+            f"{insight['verdict']} : les principaux indicateurs convergent."
+        )
+
+    st.markdown("#### Détail des signaux")
+    for factor in insight["factors"]:
+        strength = factor["strength"]
+        intensity = (
+            "marqué" if strength >= 35 else "modéré" if strength >= 15 else "léger"
+        )
+        st.write(
+            f"- **{factor['factor']}** : {factor['advantage']} "
+            f"— signal {intensity} ({strength}/100)"
+        )
+
+    with st.expander("Réserves et limites de cette lecture"):
+        if insight["caveats"]:
+            for caveat in insight["caveats"]:
+                st.write(f"- {caveat}")
+        else:
+            st.write("Aucune réserve majeure détectée sur les données disponibles.")
+        st.caption(
+            "Cette synthèse reste statistique et ne connaît pas automatiquement "
+            "les blessures, suspensions, compositions ou conditions météo."
+        )
+
+
 def run_direct_page(title: str, show_func):
     try:
         st.set_page_config(page_title=title, layout="wide")

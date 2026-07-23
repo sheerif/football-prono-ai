@@ -1119,6 +1119,17 @@ def show():
         int(row.id): f"{row.name} — {row.country}" if row.country else str(row.name)
         for row in leagues.itertuples()
     }
+    default_leagues = (
+        [61]
+        if 61 in league_labels
+        else [
+            league_id
+            for league_id, label in league_labels.items()
+            if "ligue 1" in label.lower()
+        ][:1]
+    )
+    if not default_leagues:
+        default_leagues = list(league_labels)[:1]
 
     ui.section_label("Configuration")
     with st.container(border=True):
@@ -1126,11 +1137,16 @@ def show():
         selected_leagues = cols[0].multiselect(
             "Ligues",
             options=list(league_labels.keys()),
-            default=list(league_labels.keys()),
+            default=default_leagues,
             format_func=lambda league_id: league_labels[league_id],
+            help="La Ligue 1 est sélectionnée par défaut. Ajoutez les autres ligues que vous souhaitez afficher.",
         )
         days_ahead = cols[1].number_input("Jours à venir", min_value=1, max_value=365, value=365, step=7)
         compare_api = st.checkbox("Comparer avec l'API et mettre à jour", value=False)
+
+    if not selected_leagues:
+        st.info("Sélectionnez au moins une ligue pour afficher ses matchs à venir.")
+        return
 
     if st.session_state.get("upcoming_sync_message"):
         st.success(st.session_state.pop("upcoming_sync_message"))
