@@ -224,7 +224,17 @@ def _build_h2h_report(h2h_df: pd.DataFrame, home_team: int, away_team: int, home
     }
 
     if h2h_df.empty:
-        return pd.DataFrame(columns=["Saison sportive", "Horodatage", "Domicile", "Extérieur", "Score", "Vainqueur"]), totals
+        return pd.DataFrame(
+            columns=[
+                "Saison sportive",
+                "Horodatage",
+                "Domicile",
+                "Extérieur",
+                "Score",
+                f"Résultat {home_name}",
+                f"Résultat {away_name}",
+            ]
+        ), totals
 
     def _format_timestamp(value):
         timestamp = pd.to_datetime(value, errors="coerce")
@@ -241,21 +251,24 @@ def _build_h2h_report(h2h_df: pd.DataFrame, home_team: int, away_team: int, home
 
         if home_goals > away_goals:
             winner_id = match["home_team_id"]
-            winner_name = home_name if winner_id == home_team else away_name
         elif away_goals > home_goals:
             winner_id = match["away_team_id"]
-            winner_name = home_name if winner_id == home_team else away_name
         else:
             winner_id = None
-            winner_name = "Match nul"
 
         if winner_id is None:
+            home_result = "🟡 Nul"
+            away_result = "🟡 Nul"
             totals[home_team]["draws"] += 1
             totals[away_team]["draws"] += 1
         elif winner_id == home_team:
+            home_result = "✅ Victoire"
+            away_result = "❌ Défaite"
             totals[home_team]["wins"] += 1
             totals[away_team]["losses"] += 1
         else:
+            home_result = "❌ Défaite"
+            away_result = "✅ Victoire"
             totals[away_team]["wins"] += 1
             totals[home_team]["losses"] += 1
 
@@ -266,11 +279,40 @@ def _build_h2h_report(h2h_df: pd.DataFrame, home_team: int, away_team: int, home
                 "Domicile": home_name if match["home_team_id"] == home_team else away_name,
                 "Extérieur": away_name if match["away_team_id"] == away_team else home_name,
                 "Score": f"{home_goals}-{away_goals}",
-                "Vainqueur": winner_name,
+                f"Résultat {home_name}": home_result,
+                f"Résultat {away_name}": away_result,
             }
         )
 
     return pd.DataFrame(rows), totals
+
+
+def _style_result_codes(table: pd.DataFrame):
+    def result_style(value):
+        text_value = str(value)
+        if text_value.startswith("✅"):
+            return (
+                "background-color: rgba(34, 197, 94, 0.16); "
+                "color: #166534; font-weight: 750;"
+            )
+        if text_value.startswith("❌"):
+            return (
+                "background-color: rgba(239, 68, 68, 0.14); "
+                "color: #991b1b; font-weight: 750;"
+            )
+        if text_value.startswith("🟡"):
+            return (
+                "background-color: rgba(234, 179, 8, 0.18); "
+                "color: #854d0e; font-weight: 750;"
+            )
+        return ""
+
+    result_columns = [
+        column for column in table.columns if column.startswith("Résultat ")
+    ]
+    if not result_columns:
+        return table
+    return table.style.map(result_style, subset=result_columns)
 
 
 def _recent_matches_table(
@@ -1083,7 +1125,15 @@ def show():
         if h2h_table.empty:
             st.info("Aucune confrontation trouvée sur la période choisie.")
         else:
-            st.dataframe(h2h_table, width="stretch", hide_index=True)
+            st.caption(
+                "✅ victoire · 🟡 match nul · ❌ défaite, du point de vue de "
+                "chaque équipe."
+            )
+            st.dataframe(
+                _style_result_codes(h2h_table),
+                width="stretch",
+                hide_index=True,
+            )
 
     with stats_tab:
         st.subheader("Comparaison statistique")
