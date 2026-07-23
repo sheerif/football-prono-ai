@@ -14,7 +14,7 @@ def _force_2026_active_season(session, league_id: int, fallback_season: int) -> 
 import_service._active_season_for_league = _force_2026_active_season
 
 from components import auth, sidebar, ui
-from pages import dashboard, data_management, api_widgets, matchs_a_venir, analyse_match, prediction_ia, top_pronostics
+from pages import dashboard, data_management, api_widgets, matchs_a_venir, analyse_match, prediction_ia
 
 st.set_page_config(page_title="Prono insight", layout="wide", initial_sidebar_state="expanded")
 ui.inject_app_style()

@@ -6,8 +6,7 @@ NAV_ITEMS = [
     "Mise à jour",
     "Matchs à venir",
     "Analyse & comparaison",
-    "Prédiction IA",
-    "Meilleurs pronostics",
+    "Prédictions",
 ]
 
 NAV_TARGETS = {
@@ -16,8 +15,7 @@ NAV_TARGETS = {
     "Mise à jour": "./data_management",
     "Matchs à venir": "./matchs_a_venir",
     "Analyse & comparaison": "./analyse_match",
-    "Prédiction IA": "./prediction_ia",
-    "Meilleurs pronostics": "./top_pronostics",
+    "Prédictions": "./prediction_ia",
 }
 
 
@@ -135,8 +133,7 @@ def switch_to_nav(nav: str):
         "Mise à jour": "pages/data_management.py",
         "Matchs à venir": "pages/matchs_a_venir.py",
         "Analyse & comparaison": "pages/analyse_match.py",
-        "Prédiction IA": "pages/prediction_ia.py",
-        "Meilleurs pronostics": "pages/top_pronostics.py",
+        "Prédictions": "pages/prediction_ia.py",
     }
     target = page_targets.get(nav)
     if target:

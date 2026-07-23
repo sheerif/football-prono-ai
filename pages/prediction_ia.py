@@ -1,3 +1,5 @@
+import itertools
+
 import pandas as pd
 import streamlit as st
 
@@ -269,10 +271,11 @@ def _build_reasons(home_name: str, away_name: str, details: dict):
     return reasons
 
 
-def show():
-    ui.page_hero(
-        "Prédiction IA",
-        "Générez une lecture probabiliste simple à partir de la forme récente, de l’attaque, de la défense et de l’avantage domicile.",
+def _show_match_prediction():
+    st.subheader("Prédiction d'un match")
+    st.caption(
+        "Analysez une affiche précise à partir de la forme récente, de "
+        "l'attaque, de la défense et de l'avantage domicile."
     )
 
     leagues = prediction_helpers.fetch_leagues()
@@ -283,7 +286,12 @@ def show():
     ui.section_label("Configuration")
     with st.container(border=True):
         league_map = {int(row.id): f"{row.name} — {row.country or ''}" for row in leagues.itertuples()}
-        league_id = st.selectbox("Championnat", options=list(league_map.keys()), format_func=lambda key: league_map[key])
+        league_id = st.selectbox(
+            "Championnat",
+            options=list(league_map.keys()),
+            format_func=lambda key: league_map[key],
+            key="prediction_match_league",
+        )
         available_seasons = prediction_helpers.fetch_seasons(league_id)
         season_options = sorted(prediction_helpers.configured_seasons(), reverse=True)
         default_seasons = available_seasons[:5]
@@ -292,6 +300,7 @@ def show():
             options=season_options,
             default=default_seasons,
             format_func=season_period,
+            key="prediction_match_seasons",
         )
 
     seasons_with_data, seasons_without_data = prediction_helpers.selected_season_status(selected_seasons, available_seasons)
@@ -306,14 +315,25 @@ def show():
 
     with st.container(border=True):
         cols = st.columns(2)
-        home_team = cols[0].selectbox("Équipe domicile", options=list(team_options.keys()), format_func=lambda key: team_options[key])
+        home_team = cols[0].selectbox(
+            "Équipe domicile",
+            options=list(team_options.keys()),
+            format_func=lambda key: team_options[key],
+            key="prediction_match_home",
+        )
         away_team = cols[1].selectbox(
             "Équipe extérieur",
             options=[team_id for team_id in team_options if team_id != home_team],
             format_func=lambda key: team_options[key],
+            key="prediction_match_away",
         )
 
-    if st.button("Calculer la prédiction", type="primary", width="stretch"):
+    if st.button(
+        "Calculer la prédiction",
+        type="primary",
+        width="stretch",
+        key="prediction_match_submit",
+    ):
         pred, home_stats, away_stats, details = prediction_helpers.predict_match(matches_df, home_team, away_team)
         home_name = team_options[home_team]
         away_name = team_options[away_team]
@@ -398,5 +418,239 @@ def show():
                 st.dataframe(h2h_table, hide_index=True, width="stretch")
 
 
+def _rankings_glossary_table() -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "Terme": "Pronostic conseillé",
+                "Définition": "Issue qui ressort le plus fortement : victoire domicile, nul ou victoire extérieure.",
+            },
+            {
+                "Terme": "Code 1N2",
+                "Définition": "1 = domicile, N = match nul, 2 = extérieur.",
+            },
+            {
+                "Terme": "Probabilité retenue",
+                "Définition": "Pourcentage estimé pour le pronostic conseillé.",
+            },
+            {
+                "Terme": "Confiance",
+                "Définition": "Force de l'issue la plus probable. Ce n'est pas une certitude.",
+            },
+        ]
+    )
+
+
+def _ranking_confidence_label(confidence: float) -> str:
+    if confidence >= 70:
+        return "signal fort"
+    if confidence >= 60:
+        return "signal intéressant"
+    if confidence >= 50:
+        return "match ouvert"
+    return "signal faible"
+
+
+def _ranking_argument(
+    home_name: str,
+    away_name: str,
+    pick: str,
+    details: dict,
+) -> str:
+    if pick == "Match nul":
+        return "Match serré : forces proches."
+    if pick == home_name:
+        if details["home_form_score"] >= details["away_form_score"]:
+            return f"Avantage {home_name} : meilleure forme."
+        if details["home_attack"] >= details["away_attack"]:
+            return f"Avantage {home_name} : attaque plus haute."
+        return f"Avantage {home_name} : profil plus solide."
+    if details["away_form_score"] >= details["home_form_score"]:
+        return f"Avantage {away_name} : meilleure forme."
+    if details["away_attack"] >= details["home_attack"]:
+        return f"Avantage {away_name} : attaque plus haute."
+    return f"Avantage {away_name} : profil plus solide."
+
+
+def _build_rankings(
+    matches_df: pd.DataFrame,
+    team_options: dict[int, str],
+    limit: int,
+) -> pd.DataFrame:
+    rows = []
+    for home_team, away_team in itertools.permutations(team_options, 2):
+        pred, _, _, details = prediction_helpers.predict_match(
+            matches_df, home_team, away_team
+        )
+        home_name = team_options[home_team]
+        away_name = team_options[away_team]
+        outcomes = [
+            ("1", "Victoire domicile", home_name, pred["home_probability"]),
+            ("N", "Match nul", "Match nul", pred["draw_probability"]),
+            ("2", "Victoire extérieure", away_name, pred["away_probability"]),
+        ]
+        code, market_label, pick, probability = max(
+            outcomes, key=lambda item: item[3]
+        )
+        rows.append(
+            {
+                "Match": f"{home_name} - {away_name}",
+                "Pronostic conseillé": (
+                    f"{market_label} : {pick}"
+                    if pick != "Match nul"
+                    else "Match nul"
+                ),
+                "Code 1N2": code,
+                "Probabilité retenue": probability,
+                "Confiance": pred["confidence"],
+                "Lecture": _ranking_confidence_label(pred["confidence"]),
+                "Argument principal": _ranking_argument(
+                    home_name, away_name, pick, details
+                ),
+            }
+        )
+    return (
+        pd.DataFrame(rows)
+        .sort_values(
+            ["Confiance", "Probabilité retenue"],
+            ascending=False,
+        )
+        .head(limit)
+    )
+
+
+def _show_best_predictions():
+    st.subheader("Meilleurs pronostics")
+    st.caption(
+        "Comparez automatiquement les équipes sélectionnées et classez les "
+        "signaux les plus forts du modèle."
+    )
+
+    leagues = prediction_helpers.fetch_leagues()
+    if leagues.empty:
+        st.warning("Aucune donnée disponible. Lancez d'abord une mise à jour.")
+        return
+
+    ui.section_label("Configuration")
+    with st.container(border=True):
+        league_map = {
+            int(row.id): f"{row.name} — {row.country or ''}"
+            for row in leagues.itertuples()
+        }
+        league_id = st.selectbox(
+            "Championnat",
+            options=list(league_map),
+            format_func=lambda key: league_map[key],
+            key="prediction_ranking_league",
+        )
+        available_seasons = prediction_helpers.fetch_seasons(league_id)
+        selected_seasons = st.multiselect(
+            "Saisons sportives",
+            options=sorted(prediction_helpers.configured_seasons(), reverse=True),
+            default=available_seasons[:3],
+            format_func=season_period,
+            key="prediction_ranking_seasons",
+        )
+        top_limit = st.segmented_control(
+            "Volume",
+            options=[10, 20, 50],
+            default=20,
+            key="prediction_ranking_limit",
+        )
+
+    seasons_with_data, seasons_without_data = (
+        prediction_helpers.selected_season_status(
+            selected_seasons, available_seasons
+        )
+    )
+    if seasons_without_data:
+        st.warning(
+            prediction_helpers.missing_seasons_message(
+                seasons_without_data, seasons_with_data
+            )
+        )
+    matches_df = prediction_helpers.load_matches(
+        league_id, seasons_with_data
+    )
+    team_options = prediction_helpers.fetch_teams(matches_df)
+    if len(team_options) < 2:
+        st.warning("Pas assez d'équipes disponibles pour générer un classement.")
+        return
+
+    with st.container(border=True):
+        selected_team_ids = st.multiselect(
+            "Équipes à inclure",
+            options=list(team_options),
+            default=list(team_options)[:12],
+            format_func=lambda key: team_options[key],
+            key="prediction_ranking_teams",
+        )
+        st.caption(
+            prediction_helpers.teams_available_message(
+                len(team_options), seasons_with_data
+            )
+        )
+
+    selected_options = {
+        team_id: team_options[team_id] for team_id in selected_team_ids
+    }
+    if len(selected_options) < 2:
+        st.warning("Sélectionnez au moins deux équipes.")
+        return
+
+    if st.button(
+        "Générer le classement",
+        type="primary",
+        width="stretch",
+        key="prediction_ranking_submit",
+    ):
+        rankings = _build_rankings(
+            matches_df, selected_options, int(top_limit)
+        )
+        ui.section_label("Classement")
+        st.caption(
+            "La première ligne correspond au signal le plus fort parmi les "
+            "affiches simulées."
+        )
+        st.dataframe(rankings, hide_index=True, width="stretch")
+        with st.expander("Comprendre le classement"):
+            st.dataframe(
+                _rankings_glossary_table(),
+                hide_index=True,
+                width="stretch",
+            )
+
+        if not rankings.empty:
+            best = rankings.iloc[0]
+            columns = st.columns(3)
+            columns[0].metric(
+                "Meilleur pronostic", best["Pronostic conseillé"]
+            )
+            columns[1].metric(
+                "Probabilité retenue",
+                f"{best['Probabilité retenue']} %",
+            )
+            columns[2].metric("Confiance", f"{best['Confiance']} %")
+            st.success(
+                f"Meilleur choix : {best['Pronostic conseillé']} sur "
+                f"{best['Match']} ({best['Confiance']} % de confiance). "
+                f"{best['Argument principal']}"
+            )
+
+
+def show():
+    ui.page_hero(
+        "Prédictions",
+        "Analysez un match précis ou parcourez les meilleurs signaux du modèle depuis un seul espace.",
+    )
+    match_tab, ranking_tab = st.tabs(
+        ["Prédiction d'un match", "Meilleurs pronostics"]
+    )
+    with match_tab:
+        _show_match_prediction()
+    with ranking_tab:
+        _show_best_predictions()
+
+
 if __name__ == "__main__":
-    ui.run_direct_page("Prédiction IA", show)
+    ui.run_direct_page("Prédictions", show)

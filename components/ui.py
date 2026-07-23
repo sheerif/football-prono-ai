@@ -352,8 +352,7 @@ def render_page_navigation():
         ("pages/analyse_match.py", "Analyse & comparaison"),
         ("pages/data_management.py", "Mise à jour"),
         ("pages/matchs_a_venir.py", "Matchs à venir"),
-        ("pages/prediction_ia.py", "Prédiction IA"),
-        ("pages/top_pronostics.py", "Meilleurs pronostics"),
+        ("pages/prediction_ia.py", "Prédictions"),
     ]
     for page, label in links:
         try:
@@ -452,8 +451,7 @@ def run_direct_page(title: str, show_func):
         "Mise à jour": "Mise à jour",
         "Matchs à venir": "Matchs à venir",
         "Analyse & comparaison": "Analyse & comparaison",
-        "Prédiction IA": "Prédiction IA",
-        "Meilleurs pronostics": "Meilleurs pronostics",
+        "Prédictions": "Prédictions",
     }.get(title, "Tableau de bord")
 
     sidebar.render_app_rail(current_nav)
