@@ -145,12 +145,12 @@ def _score_label(home_goals, away_goals):
 
 def _result_label(goals_for, goals_against):
     if pd.isna(goals_for) or pd.isna(goals_against):
-        return "Non joué / non compté"
+        return "⏳ À jouer"
     if goals_for > goals_against:
-        return "Victoire"
+        return "✅ Victoire"
     if goals_for == goals_against:
-        return "Nul"
-    return "Défaite"
+        return "🟡 Nul"
+    return "❌ Défaite"
 
 
 def _team_matches_history_table(matches_df: pd.DataFrame, team_id: int, team_options: dict[int, str]) -> pd.DataFrame:
@@ -290,17 +290,17 @@ def _build_h2h_report(h2h_df: pd.DataFrame, home_team: int, away_team: int, home
 def _style_result_codes(table: pd.DataFrame):
     def result_style(value):
         text_value = str(value)
-        if text_value.startswith("✅"):
+        if text_value.startswith("✅") or text_value == "Victoire":
             return (
                 "background-color: rgba(34, 197, 94, 0.16); "
                 "color: #166534; font-weight: 750;"
             )
-        if text_value.startswith("❌"):
+        if text_value.startswith("❌") or text_value == "Défaite":
             return (
                 "background-color: rgba(239, 68, 68, 0.14); "
                 "color: #991b1b; font-weight: 750;"
             )
-        if text_value.startswith("🟡"):
+        if text_value.startswith("🟡") or text_value in {"Nul", "Match nul"}:
             return (
                 "background-color: rgba(234, 179, 8, 0.18); "
                 "color: #854d0e; font-weight: 750;"
@@ -308,7 +308,9 @@ def _style_result_codes(table: pd.DataFrame):
         return ""
 
     result_columns = [
-        column for column in table.columns if column.startswith("Résultat ")
+        column
+        for column in table.columns
+        if column == "Résultat" or column.startswith("Résultat ")
     ]
     if not result_columns:
         return table
@@ -364,6 +366,109 @@ def _form_record(results: list[str]) -> str:
     return (
         f"{results.count('W')} V  ·  {results.count('D')} N  ·  "
         f"{results.count('L')} D"
+    )
+
+
+def _form_badges(results: list[str]) -> str:
+    return (
+        '<div class="form-badges">'
+        f'<span class="form-win">✅ {results.count("W")} V</span>'
+        f'<span class="form-draw">🟡 {results.count("D")} N</span>'
+        f'<span class="form-loss">❌ {results.count("L")} D</span>'
+        "</div>"
+    )
+
+
+def _result_badge_markup(value) -> str:
+    result = str(value)
+    if result.startswith("✅"):
+        css_class, short_label = "result-win", "V"
+    elif result.startswith("❌"):
+        css_class, short_label = "result-loss", "D"
+    elif result.startswith("🟡"):
+        css_class, short_label = "result-draw", "N"
+    else:
+        css_class, short_label = "result-pending", "—"
+    return (
+        f'<span class="result-code {css_class}" '
+        f'title="{html.escape(result, quote=True)}">{short_label}</span>'
+    )
+
+
+def _render_recent_matches_list(table: pd.DataFrame):
+    rows = []
+    for _, match in table.iterrows():
+        rows.append(
+            f"""
+            <div class="compact-match-row">
+                <time>{html.escape(str(match["Date"]))}</time>
+                <div class="compact-match-teams">
+                    <span>{html.escape(str(match["Domicile"]))}</span>
+                    <strong>{html.escape(str(match["Score"]))}</strong>
+                    <span>{html.escape(str(match["Extérieur"]))}</span>
+                </div>
+                {_result_badge_markup(match["Résultat"])}
+            </div>
+            """
+        )
+    st.markdown(
+        f'<div class="compact-match-list">{"".join(rows)}</div>',
+        unsafe_allow_html=True,
+    )
+
+
+def _render_team_history_list(table: pd.DataFrame):
+    rows = []
+    for _, match in table.iterrows():
+        rows.append(
+            f"""
+            <div class="history-match-row">
+                <div class="history-match-main">
+                    <strong>{html.escape(str(match["Adversaire"]))}</strong>
+                    <span>{html.escape(str(match["Lieu"]))} · {html.escape(str(match["Horodatage"]))}</span>
+                </div>
+                <strong class="history-score">{html.escape(str(match["Score"]))}</strong>
+                {_result_badge_markup(match["Résultat"])}
+            </div>
+            """
+        )
+    st.markdown(
+        f'<div class="compact-match-list">{"".join(rows)}</div>',
+        unsafe_allow_html=True,
+    )
+
+
+def _render_h2h_list(table: pd.DataFrame):
+    result_columns = [
+        column for column in table.columns if column.startswith("Résultat ")
+    ]
+    rows = []
+    for _, match in table.iterrows():
+        result_markup = "".join(
+            (
+                '<div class="h2h-result">'
+                f'<small>{html.escape(column.removeprefix("Résultat "))}</small>'
+                f'{_result_badge_markup(match[column])}'
+                "</div>"
+            )
+            for column in result_columns
+        )
+        rows.append(
+            f"""
+            <div class="h2h-match-row">
+                <time>{html.escape(str(match["Horodatage"]))}</time>
+                <div class="compact-match-teams">
+                    <span>{html.escape(str(match["Domicile"]))}</span>
+                    <strong>{html.escape(str(match["Score"]))}</strong>
+                    <span>{html.escape(str(match["Extérieur"]))}</span>
+                </div>
+                <div class="h2h-results">{result_markup}</div>
+            </div>
+            """
+        )
+    st.markdown(
+        f'<div class="compact-match-list">{"".join(rows)}</div>',
+        unsafe_allow_html=True,
     )
 
 
@@ -489,6 +594,128 @@ def _render_match_header(
             min-height: 3rem;
             font-weight: 750;
         }}
+        .form-badges {{
+            display: flex;
+            flex-wrap: wrap;
+            gap: .45rem;
+            margin: .45rem 0 .25rem;
+        }}
+        .form-badges span {{
+            display: inline-flex;
+            align-items: center;
+            padding: .28rem .52rem;
+            border-radius: 7px;
+            font-size: .82rem;
+            font-weight: 800;
+        }}
+        .form-win {{
+            color: #166534;
+            background: rgba(34, 197, 94, .16);
+        }}
+        .form-draw {{
+            color: #854d0e;
+            background: rgba(234, 179, 8, .18);
+        }}
+        .form-loss {{
+            color: #991b1b;
+            background: rgba(239, 68, 68, .14);
+        }}
+        .compact-match-list {{
+            overflow: hidden;
+            border: 1px solid rgba(22, 32, 27, .10);
+            border-radius: 10px;
+            background: rgba(255, 255, 255, .68);
+        }}
+        .compact-match-row, .h2h-match-row {{
+            display: grid;
+            grid-template-columns: 48px minmax(0, 1fr) 34px;
+            align-items: center;
+            gap: .55rem;
+            min-height: 3.25rem;
+            padding: .5rem .65rem;
+            border-bottom: 1px solid rgba(22, 32, 27, .08);
+        }}
+        .h2h-match-row {{
+            grid-template-columns: 120px minmax(0, 1fr) auto;
+        }}
+        .compact-match-row:last-child,
+        .h2h-match-row:last-child,
+        .history-match-row:last-child {{
+            border-bottom: 0;
+        }}
+        .compact-match-row time, .h2h-match-row time {{
+            color: #66736b;
+            font-size: .76rem;
+        }}
+        .compact-match-teams {{
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+            align-items: center;
+            gap: .45rem;
+            min-width: 0;
+        }}
+        .compact-match-teams span {{
+            min-width: 0;
+            overflow-wrap: anywhere;
+            font-size: .86rem;
+        }}
+        .compact-match-teams span:first-child {{ text-align: right; }}
+        .compact-match-teams strong {{
+            padding: .16rem .35rem;
+            border-radius: 5px;
+            background: rgba(22, 32, 27, .07);
+            white-space: nowrap;
+            font-size: .9rem;
+        }}
+        .result-code {{
+            display: grid;
+            place-items: center;
+            width: 28px;
+            height: 28px;
+            border-radius: 7px;
+            font-size: .78rem;
+            font-weight: 900;
+        }}
+        .result-win {{ color: #166534; background: rgba(34, 197, 94, .18); }}
+        .result-draw {{ color: #854d0e; background: rgba(234, 179, 8, .22); }}
+        .result-loss {{ color: #991b1b; background: rgba(239, 68, 68, .17); }}
+        .result-pending {{ color: #475569; background: rgba(100, 116, 139, .14); }}
+        .history-match-row {{
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto 34px;
+            align-items: center;
+            gap: .65rem;
+            padding: .55rem .7rem;
+            border-bottom: 1px solid rgba(22, 32, 27, .08);
+        }}
+        .history-match-main {{
+            display: flex;
+            flex-direction: column;
+            min-width: 0;
+        }}
+        .history-match-main strong {{ overflow-wrap: anywhere; }}
+        .history-match-main span {{
+            color: #66736b;
+            font-size: .73rem;
+        }}
+        .history-score {{ white-space: nowrap; }}
+        .h2h-results {{
+            display: flex;
+            gap: .4rem;
+        }}
+        .h2h-result {{
+            display: flex;
+            align-items: center;
+            gap: .25rem;
+        }}
+        .h2h-result small {{
+            max-width: 76px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            color: #66736b;
+            font-size: .68rem;
+        }}
         @media (max-width: 600px) {{
             .match-sheet-context {{ flex-wrap: wrap; gap: .3rem .55rem; }}
             .match-sheet-grid {{
@@ -502,6 +729,22 @@ def _render_match_header(
             }}
             .match-team strong {{ font-size: .95rem; }}
             .match-center strong {{ font-size: 1.45rem; }}
+            .compact-match-row {{
+                grid-template-columns: 38px minmax(0, 1fr) 30px;
+                gap: .35rem;
+                padding: .48rem .42rem;
+            }}
+            .compact-match-teams {{ gap: .28rem; }}
+            .compact-match-teams span {{ font-size: .76rem; }}
+            .compact-match-teams strong {{ font-size: .8rem; }}
+            .h2h-match-row {{
+                grid-template-columns: 1fr;
+                gap: .4rem;
+                padding: .65rem;
+            }}
+            .h2h-match-row time {{ text-align: center; }}
+            .h2h-results {{ justify-content: center; }}
+            .h2h-result small {{ max-width: 100px; }}
         }}
         </style>
         """,
@@ -1023,7 +1266,15 @@ def show():
                     goal_columns[1].metric(
                         "Encaissés / match", view["goals_against_avg"]
                     )
-                    st.markdown(f"**Forme :** {_form_record(home_results if venue == 'Domicile' else away_results)}")
+                    st.markdown("**Forme récente**")
+                    st.markdown(
+                        _form_badges(
+                            home_results
+                            if venue == "Domicile"
+                            else away_results
+                        ),
+                        unsafe_allow_html=True,
+                    )
 
         probability_columns = st.columns(3)
         probability_columns[0].metric(
@@ -1081,7 +1332,10 @@ def show():
             with column:
                 with st.container(border=True):
                     st.markdown(f"### {view['team_name']}")
-                    st.caption(_form_record(results[:5]))
+                    st.markdown(
+                        _form_badges(results[:5]),
+                        unsafe_allow_html=True,
+                    )
                     recent_table = _recent_matches_table(
                         matches_df, team_id, team_options, 5
                     )
@@ -1089,14 +1343,9 @@ def show():
                         st.info("Aucun match récent disponible.")
                     else:
                         st.dataframe(
-                            recent_table,
+                            _style_result_codes(recent_table),
                             width="stretch",
                             hide_index=True,
-                            column_config={
-                                "Date": st.column_config.TextColumn(width="small"),
-                                "Score": st.column_config.TextColumn(width="small"),
-                                "Résultat": st.column_config.TextColumn(width="small"),
-                            },
                         )
 
         with st.expander("Voir l'historique complet des deux équipes"):
@@ -1105,16 +1354,20 @@ def show():
             )
             with history_home:
                 st.dataframe(
-                    _team_matches_history_table(
-                        matches_df, home_team, team_options
+                    _style_result_codes(
+                        _team_matches_history_table(
+                            matches_df, home_team, team_options
+                        )
                     ),
                     width="stretch",
                     hide_index=True,
                 )
             with history_away:
                 st.dataframe(
-                    _team_matches_history_table(
-                        matches_df, away_team, team_options
+                    _style_result_codes(
+                        _team_matches_history_table(
+                            matches_df, away_team, team_options
+                        )
                     ),
                     width="stretch",
                     hide_index=True,
