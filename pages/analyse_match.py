@@ -399,43 +399,34 @@ def _render_recent_matches_list(table: pd.DataFrame):
     rows = []
     for _, match in table.iterrows():
         rows.append(
-            f"""
-            <div class="compact-match-row">
-                <time>{html.escape(str(match["Date"]))}</time>
-                <div class="compact-match-teams">
-                    <span>{html.escape(str(match["Domicile"]))}</span>
-                    <strong>{html.escape(str(match["Score"]))}</strong>
-                    <span>{html.escape(str(match["Extérieur"]))}</span>
-                </div>
-                {_result_badge_markup(match["Résultat"])}
-            </div>
-            """
+            '<div class="compact-match-row">'
+            f'<time>{html.escape(str(match["Date"]))}</time>'
+            '<div class="compact-match-teams">'
+            f'<span>{html.escape(str(match["Domicile"]))}</span>'
+            f'<strong>{html.escape(str(match["Score"]))}</strong>'
+            f'<span>{html.escape(str(match["Extérieur"]))}</span>'
+            "</div>"
+            f'{_result_badge_markup(match["Résultat"])}'
+            "</div>"
         )
-    st.markdown(
-        f'<div class="compact-match-list">{"".join(rows)}</div>',
-        unsafe_allow_html=True,
-    )
+    st.html(f'<div class="compact-match-list">{"".join(rows)}</div>')
 
 
 def _render_team_history_list(table: pd.DataFrame):
     rows = []
     for _, match in table.iterrows():
         rows.append(
-            f"""
-            <div class="history-match-row">
-                <div class="history-match-main">
-                    <strong>{html.escape(str(match["Adversaire"]))}</strong>
-                    <span>{html.escape(str(match["Lieu"]))} · {html.escape(str(match["Horodatage"]))}</span>
-                </div>
-                <strong class="history-score">{html.escape(str(match["Score"]))}</strong>
-                {_result_badge_markup(match["Résultat"])}
-            </div>
-            """
+            '<div class="history-match-row">'
+            '<div class="history-match-main">'
+            f'<strong>{html.escape(str(match["Adversaire"]))}</strong>'
+            f'<span>{html.escape(str(match["Lieu"]))} · '
+            f'{html.escape(str(match["Horodatage"]))}</span>'
+            "</div>"
+            f'<strong class="history-score">{html.escape(str(match["Score"]))}</strong>'
+            f'{_result_badge_markup(match["Résultat"])}'
+            "</div>"
         )
-    st.markdown(
-        f'<div class="compact-match-list">{"".join(rows)}</div>',
-        unsafe_allow_html=True,
-    )
+    st.html(f'<div class="compact-match-list">{"".join(rows)}</div>')
 
 
 def _render_h2h_list(table: pd.DataFrame):
@@ -454,22 +445,17 @@ def _render_h2h_list(table: pd.DataFrame):
             for column in result_columns
         )
         rows.append(
-            f"""
-            <div class="h2h-match-row">
-                <time>{html.escape(str(match["Horodatage"]))}</time>
-                <div class="compact-match-teams">
-                    <span>{html.escape(str(match["Domicile"]))}</span>
-                    <strong>{html.escape(str(match["Score"]))}</strong>
-                    <span>{html.escape(str(match["Extérieur"]))}</span>
-                </div>
-                <div class="h2h-results">{result_markup}</div>
-            </div>
-            """
+            '<div class="h2h-match-row">'
+            f'<time>{html.escape(str(match["Horodatage"]))}</time>'
+            '<div class="compact-match-teams">'
+            f'<span>{html.escape(str(match["Domicile"]))}</span>'
+            f'<strong>{html.escape(str(match["Score"]))}</strong>'
+            f'<span>{html.escape(str(match["Extérieur"]))}</span>'
+            "</div>"
+            f'<div class="h2h-results">{result_markup}</div>'
+            "</div>"
         )
-    st.markdown(
-        f'<div class="compact-match-list">{"".join(rows)}</div>',
-        unsafe_allow_html=True,
-    )
+    st.html(f'<div class="compact-match-list">{"".join(rows)}</div>')
 
 
 def _team_logo_markup(logo: str | None, team_name: str) -> str:
@@ -496,7 +482,7 @@ def _render_match_header(
         if score_prediction.get("scores")
         else "VS"
     )
-    st.markdown(
+    st.html(
         f"""
         <div class="match-sheet">
             <div class="match-sheet-context">
@@ -752,8 +738,7 @@ def _render_match_header(
             .h2h-result small {{ max-width: 100px; }}
         }}
         </style>
-        """,
-        unsafe_allow_html=True,
+        """
     )
 
 
@@ -1286,13 +1271,12 @@ def show():
                         "Encaissés / match", view["goals_against_avg"]
                     )
                     st.markdown("**Forme récente**")
-                    st.markdown(
+                    st.html(
                         _form_badges(
                             home_results
                             if venue == "Domicile"
                             else away_results
-                        ),
-                        unsafe_allow_html=True,
+                        )
                     )
 
         probability_columns = st.columns(3)
@@ -1353,10 +1337,7 @@ def show():
             with column:
                 with st.container(border=True):
                     st.markdown(f"### {view['team_name']}")
-                    st.markdown(
-                        _form_badges(results[:5]),
-                        unsafe_allow_html=True,
-                    )
+                    st.html(_form_badges(results[:5]))
                     recent_table = _recent_matches_table(
                         matches_df, team_id, team_options, 5
                     )

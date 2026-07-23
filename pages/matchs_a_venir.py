@@ -1288,10 +1288,7 @@ def _render_upcoming_match_analysis(fixture: pd.Series):
             with column:
                 with st.container(border=True):
                     st.markdown(f"### {team_name}")
-                    st.markdown(
-                        match_analysis._form_badges(results[:5]),
-                        unsafe_allow_html=True,
-                    )
+                    st.html(match_analysis._form_badges(results[:5]))
                     recent = match_analysis._recent_matches_table(
                         context_df, team_id, team_options, 5
                     )
