@@ -658,6 +658,7 @@ def _render_match_header(
             min-width: 0;
             overflow-wrap: anywhere;
             font-size: .86rem;
+            font-weight: 750;
         }}
         .compact-match-teams span:first-child {{ text-align: right; }}
         .compact-match-teams strong {{
@@ -666,6 +667,7 @@ def _render_match_header(
             background: rgba(22, 32, 27, .07);
             white-space: nowrap;
             font-size: .9rem;
+            font-weight: 900;
         }}
         .result-code {{
             display: grid;
@@ -674,7 +676,7 @@ def _render_match_header(
             height: 28px;
             border-radius: 7px;
             font-size: .78rem;
-            font-weight: 900;
+            font-weight: 900 !important;
         }}
         .result-win {{ color: #166534; background: rgba(34, 197, 94, .18); }}
         .result-draw {{ color: #854d0e; background: rgba(234, 179, 8, .22); }}
@@ -698,7 +700,10 @@ def _render_match_header(
             color: #66736b;
             font-size: .73rem;
         }}
-        .history-score {{ white-space: nowrap; }}
+        .history-score {{
+            white-space: nowrap;
+            font-weight: 900;
+        }}
         .h2h-results {{
             display: flex;
             gap: .4rem;
@@ -1342,36 +1347,28 @@ def show():
                     if recent_table.empty:
                         st.info("Aucun match récent disponible.")
                     else:
-                        st.dataframe(
-                            _style_result_codes(recent_table),
-                            width="stretch",
-                            hide_index=True,
-                        )
+                        _render_recent_matches_list(recent_table)
 
         with st.expander("Voir l'historique complet des deux équipes"):
             history_home, history_away = st.tabs(
                 [home_view["team_name"], away_view["team_name"]]
             )
             with history_home:
-                st.dataframe(
-                    _style_result_codes(
-                        _team_matches_history_table(
-                            matches_df, home_team, team_options
-                        )
-                    ),
-                    width="stretch",
-                    hide_index=True,
+                home_history_table = _team_matches_history_table(
+                    matches_df, home_team, team_options
                 )
+                if home_history_table.empty:
+                    st.info("Aucun historique disponible.")
+                else:
+                    _render_team_history_list(home_history_table)
             with history_away:
-                st.dataframe(
-                    _style_result_codes(
-                        _team_matches_history_table(
-                            matches_df, away_team, team_options
-                        )
-                    ),
-                    width="stretch",
-                    hide_index=True,
+                away_history_table = _team_matches_history_table(
+                    matches_df, away_team, team_options
                 )
+                if away_history_table.empty:
+                    st.info("Aucun historique disponible.")
+                else:
+                    _render_team_history_list(away_history_table)
 
     h2h_df = matches_df[
         (
@@ -1411,11 +1408,7 @@ def show():
                 "✅ victoire · 🟡 match nul · ❌ défaite, du point de vue de "
                 "chaque équipe."
             )
-            st.dataframe(
-                _style_result_codes(h2h_table),
-                width="stretch",
-                hide_index=True,
-            )
+            _render_h2h_list(h2h_table)
 
     with stats_tab:
         st.subheader("Contexte statistique")
