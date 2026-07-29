@@ -278,6 +278,7 @@ def run_full_sync(progress_callback=None) -> dict:
         "unavailable": 0,
         "errors": [],
         "quota_reached": False,
+        "partial": 0,
     }
 
     def progress(current, total, label):
@@ -370,9 +371,9 @@ def run_full_sync(progress_callback=None) -> dict:
                 sync_registry.mark(lineup_key, "fixture_lineup", "running")
                 lineup_result = lineup_service.sync_lineups(fixture_id)
                 count = int(lineup_result.get("teams") or 0)
-                status = "complete" if count else "unavailable"
+                status = "complete" if count >= 2 else ("partial" if count else "unavailable")
                 sync_registry.mark(lineup_key, "fixture_lineup", status, item_count=count)
-                result = "downloaded" if count else "unavailable"
+                result = "downloaded" if count >= 2 else ("partial" if count else "unavailable")
             except Exception as exc:
                 sync_registry.mark(lineup_key, "fixture_lineup", "error", message=str(exc))
                 summary["errors"].append(f"{lineup_key}: {exc}")
@@ -456,7 +457,7 @@ def run_full_sync(progress_callback=None) -> dict:
                     page_count=int(data.get("pages") or 0),
                     metadata=data,
                 )
-                result = "downloaded" if count else "unavailable"
+                result = "partial" if data.get("truncated") and count else ("downloaded" if count else "unavailable")
                 time.sleep(pause)
             except Exception as exc:
                 sync_registry.mark(key, "season_players", "error", message=str(exc))

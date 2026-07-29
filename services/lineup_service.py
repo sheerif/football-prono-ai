@@ -618,15 +618,9 @@ def _choose_projected_players(
         for player in groups[position][:count]:
             selected.append(player)
             selected_ids.add(int(player["player_id"]))
-    if len(selected) < 11:
-        for player in frame.to_dict("records"):
-            player_id = int(player["player_id"])
-            if player_id in selected_ids:
-                continue
-            selected.append(player)
-            selected_ids.add(player_id)
-            if len(selected) == 11:
-                break
+    # Never pad a projection with players from an unrelated position just to
+    # reach eleven.  Returning an incomplete projection is more honest and
+    # lets the UI explain exactly which positions lack evidence.
     return formation, selected[:11]
 
 
@@ -863,6 +857,17 @@ def _projected_player_pool(
                 WHERE fps.team_id = :team_id
                   AND m.league_id = :league_id
                   AND m.date < :before_date
+                  AND m.fixture_id IN (
+                      SELECT recent_matches.fixture_id
+                      FROM (
+                          SELECT m2.fixture_id
+                          FROM matches m2
+                          WHERE (m2.home_team_id = :team_id OR m2.away_team_id = :team_id)
+                            AND m2.date < :before_date
+                          ORDER BY m2.date DESC
+                          LIMIT 10
+                      ) AS recent_matches
+                  )
                 GROUP BY fps.player_id
                 """
             ),
@@ -974,6 +979,16 @@ def _projected_lineup(
     if not starters:
         return None
     selected_ids = {int(player["player_id"]) for player in starters}
+    targets = _formation_targets(formation)
+    observed_counts = defaultdict(int)
+    for player in starters:
+        observed_counts[str(player.get("games_position") or "")] += 1
+    missing_positions = {
+        position: max(0, int(required) - observed_counts.get(position, 0))
+        for position, required in targets.items()
+        if observed_counts.get(position, 0) < int(required)
+    }
+    lineup_complete = len(starters) == 11 and not missing_positions
     substitutes = [
         player for player in frame.to_dict("records")
         if int(player["player_id"]) not in selected_ids
@@ -1028,6 +1043,9 @@ def _projected_lineup(
         ),
         "coach_name": None,
         "official": False,
+        "complete": lineup_complete,
+        "status": "projection complète" if lineup_complete else "projection incomplète",
+        "missing_positions": missing_positions,
         "starters": starters,
         "substitutes": substitutes,
     }

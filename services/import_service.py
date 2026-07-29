@@ -21,6 +21,16 @@ DEFAULT_START_SEASON = 2016
 # be overridden explicitly with AUTO_REFRESH_END_SEASON.
 DEFAULT_END_SEASON = datetime.datetime.now(datetime.UTC).year
 
+
+def _api_error(response) -> str | None:
+    """Return the API error payload instead of treating it as empty data."""
+    if not isinstance(response, dict) or not response.get("errors"):
+        return None
+    errors = response["errors"]
+    if isinstance(errors, dict):
+        return " ; ".join(f"{key}: {value}" for key, value in errors.items())
+    return str(errors)
+
 # configure basic logging if not set
 if not logging.getLogger().handlers:
     logging.basicConfig(level=logging.INFO)
@@ -901,6 +911,8 @@ def import_leagues_cautious(
                 while tries < max_retries:
                     try:
                         resp = client.get_teams(lid, season)
+                        if (api_error := _api_error(resp)):
+                            raise RuntimeError(api_error)
                         team_items = resp.get('response', [])
                         for t in team_items:
                             team_info = t.get('team') if 'team' in t else t
@@ -928,6 +940,8 @@ def import_leagues_cautious(
                 while tries < max_retries:
                     try:
                         resp = client.get_fixtures(lid, season)
+                        if (api_error := _api_error(resp)):
+                            raise RuntimeError(api_error)
                         items = resp.get('response', [])
                         # Support paging if present
                         paging = resp.get('paging') or {}
@@ -946,6 +960,8 @@ def import_leagues_cautious(
                                 break
                             page += 1
                             resp = client._get('/fixtures', {'league': lid, 'season': season, 'page': page})
+                            if (api_error := _api_error(resp)):
+                                raise RuntimeError(api_error)
                             items = resp.get('response', [])
                         # An empty response is valid only for a genuinely empty
                         # competition; keep it retryable so missing data is not
@@ -973,6 +989,8 @@ def import_leagues_cautious(
                 while tries < max_retries:
                     try:
                         resp = client.get_standings(lid, season)
+                        if (api_error := _api_error(resp)):
+                            raise RuntimeError(api_error)
                         for s in resp.get('response', []):
                             table = None
                             if isinstance(s, dict) and 'league' in s and 'standings' in s['league']:

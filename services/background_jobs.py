@@ -166,14 +166,17 @@ def start_full_sync() -> str:
                 )
             )
             quota_reached = bool(result.get("quota_reached"))
+            has_partial_data = bool(result.get("partial")) or bool(result.get("errors"))
             message = (
                 "Limite API atteinte : progression conservée, relancez plus tard."
                 if quota_reached
+                else "Synchronisation partielle : certains éléments restent à compléter."
+                if has_partial_data
                 else "Synchronisation globale terminée"
             )
             _set_job(
                 job_id,
-                status="done",
+                status="partial" if quota_reached or has_partial_data else "done",
                 progress=1.0,
                 message=message,
                 finished_at=_now(),

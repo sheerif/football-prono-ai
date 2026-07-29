@@ -68,7 +68,10 @@ def _player_match_score(row: pd.Series) -> dict:
     if duels > 0:
         signals.append((_clip(duels_won / duels * 100), 0.08))
     if not signals:
-        score = 50.0
+        # A player listed on the bench without minutes is an availability
+        # signal, not an average performance. Keep it visible but neutral/
+        # slightly below neutral instead of treating it like a played match.
+        score = 35.0 if minutes <= 0 else 50.0
     else:
         weight = sum(item[1] for item in signals)
         score = sum(value * item_weight for value, item_weight in signals) / weight
@@ -84,6 +87,7 @@ def _player_match_score(row: pd.Series) -> dict:
         "score": round(_clip(score), 1),
         "rating": round(rating, 2) if math.isfinite(rating) else None,
         "minutes": int(minutes),
+        "appearance": "banc" if minutes <= 0 else "terrain",
         "goals": int(goals),
         "assists": int(assists),
     }
@@ -117,14 +121,17 @@ def build_trend(history: pd.DataFrame, score_builder, subject_id=None) -> dict:
             "delta": 0.0,
             "recent_average": points[0]["score"] if points else None,
             "previous_average": None,
-            "confidence": count * 10,
+            "confidence": round(min(100.0, count * 10.0) * min(1.0, count / 5.0)),
             "history": points,
             "season_transition": False,
         }
 
-    half = max(1, count // 2)
-    previous = points[:half]
-    recent = points[-half:]
+    # Split into two non-overlapping periods.  With an odd number of matches,
+    # the most recent period receives the extra match (no match is counted
+    # twice, which previously made the delta artificially small).
+    previous_size = max(1, count // 2)
+    previous = points[:previous_size]
+    recent = points[previous_size:]
     previous_average = sum(point["score"] for point in previous) / len(previous)
     recent_average = sum(point["score"] for point in recent) / len(recent)
     delta = recent_average - previous_average
@@ -141,7 +148,9 @@ def build_trend(history: pd.DataFrame, score_builder, subject_id=None) -> dict:
         "delta": round(delta, 1),
         "recent_average": round(recent_average, 1),
         "previous_average": round(previous_average, 1),
-        "confidence": min(100, count * 10),
+        # A short history must not look as reliable as a full ten-match
+        # sample.  The second factor penalises samples smaller than five.
+        "confidence": round(min(100.0, count * 10.0) * min(1.0, count / 5.0)),
         "history": points,
         "match_count": count,
         "season_transition": len({point["season"] for point in points}) > 1,
@@ -206,7 +215,9 @@ def load_player_history(player_id: int, league_id: int | None = None, limit: int
                 LEFT JOIN teams home ON home.id = m.home_team_id
                 LEFT JOIN teams away ON away.id = m.away_team_id
                 WHERE fps.player_id = :player_id
-                  AND COALESCE(fps.minutes, 0) > 0
+                  -- Keep bench appearances too: a zero-minute substitute is
+                  -- useful context for availability and must not disappear
+                  -- from the player's recent history.
                   {league_filter}
                 ORDER BY m.date DESC
                 LIMIT :limit
