@@ -140,10 +140,10 @@ def inject_app_style():
         }
         [data-testid="stAppViewContainer"] {
             background-image:
-                linear-gradient(180deg, rgba(7, 26, 43, .78) 0%, rgba(238, 243, 247, .94) 34%, rgba(238, 243, 247, .98) 100%),
+                linear-gradient(180deg, rgba(7, 26, 43, .30) 0%, rgba(238, 243, 247, .78) 38%, rgba(238, 243, 247, .96) 100%),
                 __STADIUM_BACKGROUND__;
             background-size: cover;
-            background-position: center top;
+            background-position: center 18%;
             background-attachment: fixed;
         }
         [data-testid="stAppViewContainer"] > .main {
@@ -364,13 +364,13 @@ def inject_app_style():
             border: 1px solid rgba(220,174,79,.42);
             border-radius: 22px;
             background:
-                linear-gradient(90deg, rgba(5,20,35,.98) 0%, rgba(7,31,52,.90) 52%, rgba(7,26,43,.74) 100%),
+                linear-gradient(90deg, rgba(5,20,35,.78) 0%, rgba(7,31,52,.68) 52%, rgba(7,26,43,.58) 100%),
                 repeating-linear-gradient(90deg, transparent 0 10%, rgba(255,255,255,.035) 10% 10.2%),
                 repeating-linear-gradient(0deg, transparent 0 18px, rgba(255,255,255,.022) 18px 19px),
                 radial-gradient(ellipse at 72% 110%, rgba(49,98,70,.72) 0%, rgba(23,57,77,.78) 43%, rgba(7,26,43,.86) 78%),
                 __STADIUM_BACKGROUND__;
             background-size: cover, auto, auto, cover, cover;
-            background-position: center, center, center, center, center;
+            background-position: center, center, center, center, 50% 35%;
             box-shadow: 0 24px 54px rgba(7,26,43,.24);
             color: white;
         }
@@ -549,14 +549,16 @@ def inject_app_style():
         }
         /* Compact, branded download/progress bars used across update screens. */
         [data-testid="stProgress"] > div {
-            height: .62rem;
-            border-radius: 999px;
-            background: rgba(7,26,43,.10);
+            min-height: 2.35rem;
+            border-radius: 10px;
+            background: transparent;
         }
         [data-testid="stProgress"] p {
             color: var(--app-ink);
             font-size: .9rem;
             font-weight: 700;
+            line-height: 1.25;
+            margin: 0 0 .28rem 0;
         }
         [data-testid="stDownloadButton"] > button {
             border-color: rgba(220,174,79,.48);
