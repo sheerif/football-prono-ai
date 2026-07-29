@@ -150,8 +150,8 @@ def _render_player_mode(scopes: pd.DataFrame, league_id: int):
 
 def show():
     ui.page_hero(
-        "Progression",
-        "Visualisez la progression ou la régression des équipes et des joueurs sur leurs 10 derniers matchs, y compris entre deux saisons.",
+        "Équipes",
+        "Comparez simplement la forme des équipes sur leurs 10 derniers matchs.",
     )
     scopes = player_service.load_scopes()
     if scopes.empty:
@@ -159,21 +159,12 @@ def show():
         return
     with st.container(border=True):
         league_id = _league_controls(scopes)
-        mode = st.radio(
-            "Type d’analyse",
-            ["Équipes", "Joueur"],
-            horizontal=True,
-            key="progression_mode",
-        )
-    if mode == "Équipes":
-        _render_team_mode(league_id)
-    else:
-        _render_player_mode(scopes, league_id)
+    _render_team_mode(league_id)
 
 
 def run():
     try:
-        st.set_page_config(page_title="Progression", layout="wide")
+        st.set_page_config(page_title="Équipes", layout="wide")
     except Exception:
         pass
     ui.inject_app_style()
@@ -183,7 +174,7 @@ def run():
     import_service.init_db()
     schema_guard.ensure_match_score_columns()
     background_jobs.start_startup_updates_once()
-    sidebar.render_app_rail("Progression")
+    sidebar.render_app_rail("Équipes")
     with st.sidebar:
         st.caption(f"Connecté: {st.session_state.get('auth_user', 'utilisateur')}")
         auth.logout_button()

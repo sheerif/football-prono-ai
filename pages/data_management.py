@@ -94,8 +94,9 @@ def _render_jobs():
     for job in active:
         with st.container(border=True):
             st.markdown(f"### {job.get('label', 'Mise à jour')}")
-            st.progress(float(job.get("progress") or 0), text=job.get("message") or "En cours...")
-            st.caption(f"Démarré le {_format_datetime(job.get('started_at'))}")
+            progress = float(job.get("progress") or 0)
+            st.progress(progress, text=ui.friendly_progress_message(job.get("message"), progress * 100))
+            st.caption("La mise à jour continue automatiquement en arrière-plan.")
 
     if finished:
         with st.expander("Dernières tâches terminées", expanded=False):
@@ -120,14 +121,13 @@ def _launch_import(label: str, league_ids: list[int], seasons: list[int], pause:
         max_retries=max_retries,
         selected_presets=[label],
     )
-    st.success("Mise à jour lancée en arrière-plan. Vous pouvez changer de page.")
-    st.caption(f"Job: {job_id}")
+    st.success("Mise à jour lancée. Vous pouvez continuer à utiliser l’application.")
 
 
 def show():
     ui.page_hero(
         "Mise à jour",
-        "Suivez les téléchargements, lancez les mises à jour utiles et consultez l’historique récent depuis un seul écran.",
+        "Lancez une mise à jour et suivez son avancement simplement.",
     )
 
     counts = _summary_counts()
@@ -151,9 +151,8 @@ def show():
     with st.container(border=True):
         st.markdown("### Tout mettre à jour")
         st.write(
-            "Complète en arrière-plan uniquement les informations manquantes : "
-            "championnats, équipes, matchs, classements, joueurs, statistiques, "
-            "détails, prédictions, compositions et forme récente."
+            "L’application ajoute seulement les informations manquantes. "
+            "Les données déjà enregistrées restent intactes."
         )
         if st.button(
             "↻ Tout mettre à jour en arrière-plan",
@@ -162,18 +161,13 @@ def show():
             disabled=any(job.get("kind") == "full_sync" for job in background_jobs.active_jobs()),
         ):
             job_id = background_jobs.start_full_sync()
-            st.success("Synchronisation globale lancée. Vous pouvez continuer à utiliser l’application.")
-            st.caption(f"Job: {job_id}")
+            st.success("Mise à jour lancée. Vous pouvez continuer à utiliser l’application.")
         registry_counts = sync_registry.counts()
         if registry_counts:
-            st.caption(
-                f"Périmètres mémorisés : {registry_counts.get('complete', 0)} terminés, "
-                f"{registry_counts.get('unavailable', 0)} temporairement indisponibles, "
-                f"{registry_counts.get('error', 0)} à retenter."
-            )
+            st.caption(f"Avancement : {registry_counts.get('complete', 0)} terminé(s), "
+                       f"{registry_counts.get('error', 0)} à retenter.")
         st.caption(
-            "Les données déjà présentes ne sont pas retéléchargées. En cas de limite API, "
-            "la progression reste en base et le prochain lancement reprend les éléments manquants."
+            "Les éléments non disponibles seront repris lors de la prochaine mise à jour."
         )
 
     ui.section_label("Actions simples")

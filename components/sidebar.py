@@ -18,7 +18,7 @@ NAV_ITEMS = [
     "Widgets Live",
     "Mise à jour",
     "Joueurs",
-    "Progression",
+    "Équipes",
     "Matchs à venir",
     "Analyse & comparaison",
     "Prédictions",
@@ -29,10 +29,21 @@ NAV_TARGETS = {
     "Widgets Live": "./api_widgets",
     "Mise à jour": "./data_management",
     "Joueurs": "./joueurs",
-    "Progression": "./progression",
+    "Équipes": "./progression",
     "Matchs à venir": "./matchs_a_venir",
     "Analyse & comparaison": "./analyse_match",
     "Prédictions": "./prediction_ia",
+}
+
+NAV_ICONS = {
+    "Tableau de bord": "⌂",
+    "Widgets Live": "◉",
+    "Mise à jour": "↻",
+    "Joueurs": "♙",
+    "Équipes": "↗",
+    "Matchs à venir": "◷",
+    "Analyse & comparaison": "◈",
+    "Prédictions": "✦",
 }
 
 
@@ -151,7 +162,7 @@ def switch_to_nav(nav: str):
         "Widgets Live": "pages/api_widgets.py",
         "Mise à jour": "pages/data_management.py",
         "Joueurs": "pages/joueurs.py",
-        "Progression": "pages/progression.py",
+        "Équipes": "pages/progression.py",
         "Matchs à venir": "pages/matchs_a_venir.py",
         "Analyse & comparaison": "pages/analyse_match.py",
         "Prédictions": "pages/prediction_ia.py",
@@ -180,6 +191,21 @@ def render_app_rail(current: str):
             background: transparent;
             color: #dce5ed;
             font-weight: 750;
+        }
+        .app-rail-label {
+            margin: .35rem .2rem .45rem;
+            color: rgba(220,229,237,.52);
+            font-size: .66rem;
+            letter-spacing: .14em;
+            font-weight: 800;
+        }
+        .app-rail-nav-icon {
+            display: inline-grid;
+            place-items: center;
+            width: 1.35rem;
+            margin-right: .35rem;
+            color: #f1ca73;
+            font-size: 1.05rem;
         }
         [data-testid="stSidebar"] .stButton > button:hover {
             background: rgba(220, 174, 79, 0.10);
@@ -284,8 +310,10 @@ def render_app_rail(current: str):
             unsafe_allow_html=True,
         )
         st.markdown("---")
+        st.markdown('<div class="app-rail-label">NAVIGATION</div>', unsafe_allow_html=True)
         for item in NAV_ITEMS:
+            display_item = f"{NAV_ICONS.get(item, '•')}  {item}"
             if item == current:
-                st.markdown(f'<div class="app-rail-current">{item}</div>', unsafe_allow_html=True)
-            elif st.button(item, key=f"nav_{item}", width="stretch"):
+                st.markdown(f'<div class="app-rail-current"><span class="app-rail-nav-icon">{NAV_ICONS.get(item, "•")}</span>{item}</div>', unsafe_allow_html=True)
+            elif st.button(display_item, key=f"nav_{item}", width="stretch"):
                 switch_to_nav(item)

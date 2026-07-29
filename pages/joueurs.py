@@ -4,8 +4,8 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from components import ui
-from services import player_service
+from components import trends, ui
+from services import player_service, trend_service
 from services.season_format import season_period
 
 
@@ -191,56 +191,39 @@ def _player_wheel(title: str, metrics: list[dict]):
     labels = [item["label"] for item in metrics]
     values = [item["percentile"] for item in metrics]
     raw_values = [item["raw_value"] for item in metrics]
-    width = [360 / len(metrics) * 0.82] * len(metrics)
     figure = go.Figure()
     figure.add_trace(
-        go.Barpolar(
-            r=values,
-            theta=labels,
-            width=width,
+        go.Bar(
+            x=values,
+            y=labels,
+            orientation="h",
             marker={
                 "color": [_percentile_color(value) for value in values],
-                "line": {"color": "#172033", "width": 2},
             },
             customdata=raw_values,
             hovertemplate=(
-                "<b>%{theta}</b><br>Percentile : %{r}/100"
+                "<b>%{y}</b><br>Score : %{x}/100"
                 "<br>Valeur du joueur : %{customdata}<extra></extra>"
             ),
         )
     )
-    figure.add_trace(
-        go.Scatterpolar(
-            r=[max(10, value * 0.58) for value in values],
-            theta=labels,
-            mode="text",
-            text=[f"<b>{value}</b>" for value in values],
-            textfont={"color": "#09111f", "size": 13},
-            hoverinfo="skip",
-            showlegend=False,
-        )
-    )
     figure.update_layout(
         title={"text": title, "x": 0.5, "xanchor": "center", "font": {"color": "#f8fafc", "size": 18}},
-        height=500,
-        margin={"l": 60, "r": 60, "t": 70, "b": 55},
+        height=max(300, 55 * len(metrics) + 85),
+        margin={"l": 145, "r": 35, "t": 65, "b": 35},
         paper_bgcolor="#101827",
         plot_bgcolor="#101827",
         font={"family": "Inter, system-ui, sans-serif", "color": "#e5e7eb"},
-        polar={
-            "bgcolor": "#101827",
-            "radialaxis": {
-                "range": [0, 100],
-                "tickvals": [20, 40, 60, 80, 100],
-                "showticklabels": False,
-                "gridcolor": "rgba(255,255,255,0.12)",
-                "linecolor": "rgba(255,255,255,0.12)",
-            },
-            "angularaxis": {
-                "gridcolor": "rgba(255,255,255,0.12)",
-                "linecolor": "rgba(255,255,255,0.12)",
-                "tickfont": {"size": 11, "color": "#f8fafc"},
-            },
+        xaxis={
+            "range": [0, 100],
+            "title": "Score comparé (0 à 100)",
+            "gridcolor": "rgba(255,255,255,0.14)",
+            "zeroline": False,
+        },
+        yaxis={
+            "autorange": "reversed",
+            "gridcolor": "rgba(255,255,255,0.06)",
+            "tickfont": {"size": 11, "color": "#f8fafc"},
         },
         showlegend=False,
     )
@@ -273,12 +256,9 @@ def _render_visual_analysis(selected: pd.Series, players: pd.DataFrame):
             scored_groups.append((title, scored))
             all_metrics.extend(scored)
 
-    ui.section_label("Profil statistique visuel")
+    ui.section_label("Statistiques du joueur")
     if len(all_metrics) < 4:
-        st.info(
-            "Le temps de jeu ou les statistiques disponibles sont insuffisants "
-            "pour construire un profil comparatif fiable."
-        )
+        st.info("Pas assez de statistiques pour afficher le profil du joueur.")
         return
 
     average = int(round(sum(item["percentile"] for item in all_metrics) / len(all_metrics)))
@@ -306,9 +286,8 @@ def _render_visual_analysis(selected: pd.Series, players: pd.DataFrame):
         ]
     )
     st.caption(
-        "Chaque note est un percentile : 80 signifie que le joueur fait mieux que "
-        "80 % des joueurs comparables. Cette lecture porte uniquement sur les données "
-        "réellement enregistrées pour la saison sélectionnée."
+        "Score sur 100 : plus la barre est longue, meilleur est le résultat comparé "
+        "aux joueurs du même poste."
     )
 
     chart_columns = st.columns(len(scored_groups))
@@ -446,14 +425,14 @@ def _render_sync(
             try:
                 progress_bar = st.progress(
                     0.0,
-                    text="0 % — Préparation du téléchargement des joueurs",
+                    text="0 % — Préparation…",
                 )
 
                 def update_progress(current, total, label):
                     ratio = min(1.0, current / max(1, total))
                     progress_bar.progress(
                         ratio,
-                        text=f"{int(round(ratio * 100))} % — {label}",
+                        text=ui.friendly_progress_message(label, ratio * 100),
                     )
 
                 result = player_service.sync_players(
@@ -846,6 +825,16 @@ def show():
     benchmark_players = player_service.load_players(league_id, season)
     _render_visual_analysis(selected, benchmark_players)
     _render_player_stats(selected)
+    ui.section_label("Progression du joueur")
+    st.caption("10 derniers matchs : la courbe montre si la forme monte ou baisse.")
+    player_trend = trend_service.player_progression(
+        int(selected["player_id"]), league_id=league_id, limit=10
+    )
+    trends.render_trend(
+        player_trend,
+        "Forme sur les 10 derniers matchs",
+        f"joueur_progression_{int(selected['player_id'])}",
+    )
 
 
 if __name__ == "__main__":

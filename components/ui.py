@@ -1,5 +1,7 @@
+import base64
 import html
 import re
+from pathlib import Path
 
 import streamlit as st
 
@@ -48,6 +50,16 @@ LABEL_ICONS = {
     "défense": "🧱",
 }
 
+STADIUM_PATH = Path(__file__).resolve().parents[1] / "assets" / "stadium-hero.png"
+
+
+def _stadium_background_uri() -> str:
+    try:
+        encoded = base64.b64encode(STADIUM_PATH.read_bytes()).decode("ascii")
+        return f"url(data:image/png;base64,{encoded})"
+    except OSError:
+        return "none"
+
 
 def _icon_for(label: str, fallback: str = "◆") -> str:
     normalized = str(label or "").lower()
@@ -75,14 +87,41 @@ def _progress_value(value) -> float | None:
     return None
 
 
+def friendly_progress_message(message: str | None, percent: float | None = None) -> str:
+    """Return a short status sentence for users (hide technical API wording)."""
+    raw = str(message or "").strip()
+    lower = raw.lower()
+    if "termin" in lower or "complete" in lower:
+        label = "Mise à jour terminée"
+    elif "prépar" in lower or "initial" in lower or not raw:
+        label = "Préparation…"
+    elif "joueur" in lower or "profil" in lower:
+        label = "Mise à jour des joueurs…"
+    elif "équipe" in lower:
+        label = "Mise à jour des équipes…"
+    elif "match" in lower or "fixture" in lower:
+        label = "Mise à jour des matchs…"
+    elif "classement" in lower:
+        label = "Mise à jour des classements…"
+    elif "composition" in lower or "forme" in lower:
+        label = "Mise à jour des compositions…"
+    else:
+        label = "Mise à jour en cours…"
+    if percent is None:
+        match = re.search(r"(\d+(?:\.\d+)?)\s*%", raw)
+        percent = float(match.group(1)) if match else None
+    return f"{int(round(percent))} % — {label}" if percent is not None else label
+
+
 def inject_app_style():
+    stadium_background = _stadium_background_uri()
     st.markdown(
         """
         <style>
         :root {
-            --app-bg: #f2f5f8;
+            --app-bg: #eef3f7;
             --app-surface: #ffffff;
-            --app-ink: #0b2035;
+            --app-ink: #10263d;
             --app-muted: #66768a;
             --app-line: rgba(10, 34, 57, 0.12);
             --app-green: #0b2b48;
@@ -90,14 +129,25 @@ def inject_app_style():
             --app-gold: #dcae4f;
             --app-red: #d45a55;
             --app-navy: #071a2b;
-            --app-navy-soft: #123b5d;
+            --app-navy-soft: #173e61;
         }
         html, body, [data-testid="stAppViewContainer"] {
             background:
-                radial-gradient(circle at 10% 0%, rgba(220, 174, 79, 0.12), transparent 27rem),
-                radial-gradient(circle at 92% 8%, rgba(32, 91, 132, 0.10), transparent 30rem),
-                linear-gradient(180deg, #fbfcfe 0%, var(--app-bg) 100%);
+                radial-gradient(circle at 8% -5%, rgba(220, 174, 79, 0.18), transparent 28rem),
+                radial-gradient(circle at 94% 4%, rgba(42, 102, 145, 0.13), transparent 32rem),
+                linear-gradient(180deg, #ffffff 0%, var(--app-bg) 74%, #e8eef4 100%);
             color: var(--app-ink);
+        }
+        [data-testid="stAppViewContainer"] {
+            background-image:
+                linear-gradient(180deg, rgba(7, 26, 43, .78) 0%, rgba(238, 243, 247, .94) 34%, rgba(238, 243, 247, .98) 100%),
+                __STADIUM_BACKGROUND__;
+            background-size: cover;
+            background-position: center top;
+            background-attachment: fixed;
+        }
+        [data-testid="stAppViewContainer"] > .main {
+            background: transparent;
         }
         .block-container {
             max-width: 1420px;
@@ -113,6 +163,17 @@ def inject_app_style():
         }
         p, span, label, div {
             overflow-wrap: anywhere;
+        }
+        [data-testid="stCaptionContainer"] {
+            color: #486074;
+            font-size: .88rem;
+            line-height: 1.45;
+        }
+        [data-testid="stAlert"] p,
+        [data-testid="stAlert"] div {
+            color: #17324b;
+            font-weight: 600;
+            line-height: 1.45;
         }
         .page-header {
             display: flex;
@@ -303,9 +364,13 @@ def inject_app_style():
             border: 1px solid rgba(220,174,79,.42);
             border-radius: 22px;
             background:
-                linear-gradient(90deg, rgba(7,26,43,.96), rgba(7,26,43,.78)),
-                repeating-linear-gradient(90deg, transparent 0 11%, rgba(255,255,255,.025) 11% 12%),
-                radial-gradient(ellipse at 68% 104%, #315f37 0%, #17394d 42%, #071a2b 76%);
+                linear-gradient(90deg, rgba(5,20,35,.98) 0%, rgba(7,31,52,.90) 52%, rgba(7,26,43,.74) 100%),
+                repeating-linear-gradient(90deg, transparent 0 10%, rgba(255,255,255,.035) 10% 10.2%),
+                repeating-linear-gradient(0deg, transparent 0 18px, rgba(255,255,255,.022) 18px 19px),
+                radial-gradient(ellipse at 72% 110%, rgba(49,98,70,.72) 0%, rgba(23,57,77,.78) 43%, rgba(7,26,43,.86) 78%),
+                __STADIUM_BACKGROUND__;
+            background-size: cover, auto, auto, cover, cover;
+            background-position: center, center, center, center, center;
             box-shadow: 0 24px 54px rgba(7,26,43,.24);
             color: white;
         }
@@ -327,6 +392,19 @@ def inject_app_style():
             border: 2px solid rgba(220,174,79,.32);
             border-radius: 50%;
             box-shadow: 0 0 0 22px rgba(255,255,255,.04);
+        }
+        .visual-hero > div:nth-child(2) { position: relative; z-index: 2; }
+        .visual-hero > div:nth-child(2)::after {
+            content: "";
+            position: absolute;
+            right: -2rem;
+            bottom: -2.5rem;
+            width: 12rem;
+            height: 5rem;
+            border: 1px solid rgba(241,202,115,.25);
+            border-radius: 50%;
+            transform: perspective(8rem) rotateX(58deg);
+            opacity: .7;
         }
         .visual-hero-icon {
             display: grid;
@@ -399,8 +477,8 @@ def inject_app_style():
             overflow: hidden;
             border: 1px solid rgba(10,34,57,.11);
             border-radius: 17px;
-            background: linear-gradient(145deg, rgba(255,255,255,.99), rgba(244,247,250,.97));
-            box-shadow: 0 14px 32px rgba(7,26,43,.09);
+            background: linear-gradient(145deg, rgba(255,255,255,.99), rgba(241,246,250,.98));
+            box-shadow: 0 16px 34px rgba(7,26,43,.12);
         }
         .visual-kpi::after {
             content: "";
@@ -468,6 +546,21 @@ def inject_app_style():
         }
         [data-testid="stProgress"] > div > div > div {
             background: linear-gradient(90deg, #123f63, var(--app-gold));
+        }
+        /* Compact, branded download/progress bars used across update screens. */
+        [data-testid="stProgress"] > div {
+            height: .62rem;
+            border-radius: 999px;
+            background: rgba(7,26,43,.10);
+        }
+        [data-testid="stProgress"] p {
+            color: var(--app-ink);
+            font-size: .9rem;
+            font-weight: 700;
+        }
+        [data-testid="stDownloadButton"] > button {
+            border-color: rgba(220,174,79,.48);
+            color: var(--app-navy);
         }
         button[data-baseweb="tab"] {
             border: 1px solid transparent;
@@ -625,7 +718,7 @@ def inject_app_style():
             }
         }
         </style>
-        """,
+        """.replace("__STADIUM_BACKGROUND__", stadium_background),
         unsafe_allow_html=True,
     )
 
@@ -860,6 +953,7 @@ def run_direct_page(title: str, show_func):
         "Widgets Live": "Widgets Live",
         "Mise à jour": "Mise à jour",
         "Joueurs": "Joueurs",
+        "Équipes": "Équipes",
         "Matchs à venir": "Matchs à venir",
         "Analyse & comparaison": "Analyse & comparaison",
         "Prédictions": "Prédictions",
@@ -885,4 +979,5 @@ def render_background_jobs():
     st.markdown("### Téléchargements")
     for job in jobs:
         st.caption(job.get("label", "Tâche en arrière-plan"))
-        st.progress(float(job.get("progress") or 0), text=job.get("message") or "En cours...")
+        progress = float(job.get("progress") or 0)
+        st.progress(progress, text=friendly_progress_message(job.get("message"), progress * 100))
