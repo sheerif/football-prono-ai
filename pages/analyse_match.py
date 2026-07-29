@@ -642,7 +642,8 @@ def _render_match_header(
         }}
         .compact-match-teams span {{
             min-width: 0;
-            overflow-wrap: anywhere;
+            overflow-wrap: normal;
+            word-break: normal;
             font-size: .86rem;
             font-weight: 750;
         }}
@@ -665,7 +666,7 @@ def _render_match_header(
             font-weight: 900 !important;
         }}
         .result-win {{ color: #166534; background: rgba(34, 197, 94, .18); }}
-        .result-draw {{ color: #854d0e; background: rgba(234, 179, 8, .22); }}
+        .result-draw {{ color: #176b73; background: rgba(42, 161, 152, .18); }}
         .result-loss {{ color: #991b1b; background: rgba(239, 68, 68, .17); }}
         .result-pending {{ color: #475569; background: rgba(100, 116, 139, .14); }}
         .history-match-row {{
@@ -681,7 +682,7 @@ def _render_match_header(
             flex-direction: column;
             min-width: 0;
         }}
-        .history-match-main strong {{ overflow-wrap: anywhere; }}
+        .history-match-main strong {{ overflow-wrap: normal; word-break: normal; }}
         .history-match-main span {{
             color: #66736b;
             font-size: .73rem;

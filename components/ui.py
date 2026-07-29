@@ -158,10 +158,12 @@ def inject_app_style():
         h1, h2, h3 {
             color: var(--app-ink);
             letter-spacing: 0;
-            overflow-wrap: anywhere;
+            overflow-wrap: normal;
+            word-break: normal;
         }
         p, span, label, div {
-            overflow-wrap: anywhere;
+            overflow-wrap: normal;
+            word-break: normal;
         }
         .main p, .main label, .main [data-testid="stCaptionContainer"] {
             text-shadow: 0 1px 2px rgba(255,255,255,.72);
@@ -272,7 +274,8 @@ def inject_app_style():
             color: var(--app-ink);
             font-size: 1.95rem;
             font-weight: 800;
-            overflow-wrap: anywhere;
+            overflow-wrap: normal;
+            word-break: normal;
             white-space: normal;
         }
         div[data-testid="stMetric"] label::before {
