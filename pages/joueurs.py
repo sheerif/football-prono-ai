@@ -491,8 +491,7 @@ def show():
     if selected_positions:
         filtered = filtered[filtered["games_position"].isin(selected_positions)]
 
-    ui.kpi_grid(
-        [
+    player_kpis = [
             {
                 "label": "Joueurs",
                 "value": filtered["player_id"].nunique(),
@@ -513,9 +512,13 @@ def show():
                 "value": f"{_integer(filtered['games_minutes'].sum()):,}".replace(",", " "),
                 "caption": "Temps de jeu cumulé",
             },
-        ],
-        columns=4,
-    )
+        ]
+    try:
+        ui.kpi_grid(player_kpis, columns=4)
+    except TypeError:
+        # Compatibilité avec un processus Streamlit ayant conservé l'ancienne
+        # version de components.ui pendant un redéploiement à chaud.
+        ui.kpi_grid(player_kpis)
 
     st.caption(
         "Sélection interactive : cliquez directement sur une ligne pour afficher "

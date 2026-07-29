@@ -131,8 +131,7 @@ def show():
     )
 
     counts = _summary_counts()
-    ui.kpi_grid(
-        [
+    database_kpis = [
             {"label": "Championnats", "value": counts["leagues"], "caption": "Compétitions suivies"},
             {"label": "Équipes", "value": counts["teams"], "caption": "Clubs enregistrés"},
             {"label": "Matchs", "value": counts["matches"], "caption": "Rencontres en base"},
@@ -140,9 +139,11 @@ def show():
             {"label": "Joueurs", "value": counts["players"], "caption": "Profils persistés"},
             {"label": "Compositions", "value": counts["lineups"], "caption": "Onze officiels ou projetés"},
             {"label": "Analyses", "value": counts["analyses"], "caption": "Études conservées"},
-        ],
-        columns=4,
-    )
+        ]
+    try:
+        ui.kpi_grid(database_kpis, columns=4)
+    except TypeError:
+        ui.kpi_grid(database_kpis)
 
     _render_jobs()
 

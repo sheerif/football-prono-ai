@@ -426,8 +426,7 @@ def _show_match_prediction():
         )
 
         ui.section_label("Résultat")
-        ui.kpi_grid(
-            [
+        result_kpis = [
                 {
                     "label": f"Victoire {home_name}",
                     "value": f"{pred['home_probability']} %",
@@ -452,9 +451,11 @@ def _show_match_prediction():
                     "caption": "Force du scénario dominant",
                     "icon": "🎯",
                 },
-            ],
-            columns=4,
-        )
+            ]
+        try:
+            ui.kpi_grid(result_kpis, columns=4)
+        except TypeError:
+            ui.kpi_grid(result_kpis)
 
         st.dataframe(_glossary_table(), hide_index=True, width="stretch")
 
