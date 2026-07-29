@@ -318,13 +318,13 @@ def show():
                 "label": "Matchs terminés",
                 "value": _format_int(kpis["completed_count"]),
                 "caption": "Matchs avec score complet",
-                "accent": "#126447",
+                "accent": "#164d73",
             },
             {
                 "label": "Détails matchs",
                 "value": _format_int(health["fixture_details"]),
                 "caption": "Journées, stades et logos en cache",
-                "accent": "#d8a528",
+                "accent": "#dcae4f",
             },
             {
                 "label": "Résumés prêts",
@@ -336,13 +336,13 @@ def show():
                 "label": "Joueurs",
                 "value": _format_int(health["players"]),
                 "caption": "Profils disponibles pour les onze probables",
-                "accent": "#126447",
+                "accent": "#164d73",
             },
             {
                 "label": "Compositions",
                 "value": _format_int(health["lineups"]),
                 "caption": "Dispositifs officiels conservés",
-                "accent": "#d8a528",
+                "accent": "#dcae4f",
             },
             {
                 "label": "Performances joueurs",
@@ -372,7 +372,7 @@ def show():
                 "label": "Plus de 2,5 buts",
                 "value": _format_percent(kpis["over_25_rate"]),
                 "caption": "Matchs à 3 buts ou plus",
-                "accent": "#c94b3f",
+                "accent": "#d45a55",
             },
             {
                 "label": "Matchs nuls",
@@ -394,7 +394,7 @@ def show():
             st.bar_chart(
                 upcoming_table.set_index("Championnat")[["Matchs à venir"]],
                 horizontal=True,
-                color="#126447",
+                color="#164d73",
                 height=300,
             )
             with st.expander("Voir les dates précises"):
@@ -412,7 +412,7 @@ def show():
                     ["Matchs importés", "Matchs joués"]
                 ],
                 horizontal=True,
-                color=["#d8a528", "#126447"],
+                color=["#dcae4f", "#164d73"],
                 height=300,
             )
             with st.expander("Voir le détail des saisons"):

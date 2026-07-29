@@ -80,20 +80,23 @@ def inject_app_style():
         """
         <style>
         :root {
-            --app-bg: #f5f7f2;
+            --app-bg: #f2f5f8;
             --app-surface: #ffffff;
-            --app-ink: #16201b;
-            --app-muted: #66736b;
-            --app-line: rgba(22, 32, 27, 0.10);
-            --app-green: #126447;
-            --app-lime: #b9d76f;
-            --app-gold: #d8a528;
-            --app-red: #c94b3f;
+            --app-ink: #0b2035;
+            --app-muted: #66768a;
+            --app-line: rgba(10, 34, 57, 0.12);
+            --app-green: #0b2b48;
+            --app-lime: #f1ca73;
+            --app-gold: #dcae4f;
+            --app-red: #d45a55;
+            --app-navy: #071a2b;
+            --app-navy-soft: #123b5d;
         }
         html, body, [data-testid="stAppViewContainer"] {
             background:
-                radial-gradient(circle at 18% 0%, rgba(185, 215, 111, 0.16), transparent 28rem),
-                linear-gradient(180deg, #fbfcf8 0%, var(--app-bg) 100%);
+                radial-gradient(circle at 10% 0%, rgba(220, 174, 79, 0.12), transparent 27rem),
+                radial-gradient(circle at 92% 8%, rgba(32, 91, 132, 0.10), transparent 30rem),
+                linear-gradient(180deg, #fbfcfe 0%, var(--app-bg) 100%);
             color: var(--app-ink);
         }
         .block-container {
@@ -118,7 +121,7 @@ def inject_app_style():
             gap: 1.5rem;
             margin: 0.25rem 0 1.35rem 0;
             padding-bottom: 1rem;
-            border-bottom: 1px solid rgba(22, 32, 27, 0.10);
+            border-bottom: 1px solid var(--app-line);
         }
         .page-eyebrow {
             display: inline-flex;
@@ -163,37 +166,37 @@ def inject_app_style():
             display: inline-block;
             padding: 0.32rem 0.7rem;
             border-radius: 999px;
-            background: rgba(18, 100, 71, 0.10);
-            color: var(--app-green);
+            background: rgba(220, 174, 79, 0.14);
+            color: #8a6116;
             font-size: 0.78rem;
             font-weight: 800;
             letter-spacing: 0.04em;
             text-transform: uppercase;
             margin: 0.65rem 0 0.55rem 0;
-            border: 1px solid rgba(18, 100, 71, 0.12);
+            border: 1px solid rgba(220, 174, 79, 0.26);
         }
         div[data-testid="stVerticalBlockBorderWrapper"] > div {
             border-color: var(--app-line);
-            border-radius: 8px;
+            border-radius: 16px;
             background:
-                linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(248, 251, 243, 0.92));
-            box-shadow: 0 18px 38px rgba(22, 32, 27, 0.09);
+                linear-gradient(180deg, rgba(255, 255, 255, 0.99), rgba(247, 249, 252, 0.97));
+            box-shadow: 0 18px 42px rgba(7, 26, 43, 0.09);
         }
         div[data-testid="stVerticalBlockBorderWrapper"] > div::before {
             content: "";
             display: block;
             height: 4px;
             margin: -1rem -1rem 0.9rem -1rem;
-            border-radius: 8px 8px 0 0;
-            background: linear-gradient(90deg, var(--app-green), var(--app-gold), rgba(255, 255, 255, 0));
+            border-radius: 16px 16px 0 0;
+            background: linear-gradient(90deg, var(--app-gold), #f3d486, rgba(255, 255, 255, 0));
         }
         div[data-testid="stMetric"] {
             border: 1px solid var(--app-line);
-            border-radius: 8px;
+            border-radius: 14px;
             padding: 0.78rem 0.88rem;
             background:
-                linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(250, 252, 247, 0.92));
-            box-shadow: 0 10px 26px rgba(22, 32, 27, 0.07);
+                linear-gradient(180deg, rgba(255, 255, 255, 0.99), rgba(246, 249, 252, 0.96));
+            box-shadow: 0 12px 30px rgba(7, 26, 43, 0.08);
             min-height: 6.1rem;
         }
         div[data-testid="stMetric"] label {
@@ -215,34 +218,38 @@ def inject_app_style():
             height: 1.35rem;
             margin-right: .38rem;
             border-radius: 7px;
-            background: rgba(18,100,71,.10);
-            color: var(--app-green);
+            background: var(--app-navy);
+            color: var(--app-gold);
             font-size: .65rem;
         }
         div[data-testid="stDataFrame"],
         div[data-testid="stTable"] {
-            border-radius: 8px;
+            border-radius: 14px;
             overflow: hidden;
             border: 1px solid var(--app-line);
-            box-shadow: 0 10px 28px rgba(22, 32, 27, 0.05);
+            box-shadow: 0 10px 28px rgba(7, 26, 43, 0.06);
         }
         .stButton > button {
-            border-radius: 8px;
-            border: 1px solid rgba(18, 100, 71, 0.16);
+            border-radius: 10px;
+            border: 1px solid rgba(220, 174, 79, 0.50);
             font-weight: 800;
             min-height: 2.75rem;
-            box-shadow: 0 10px 24px rgba(18, 100, 71, 0.12);
+            box-shadow: 0 10px 24px rgba(7, 26, 43, 0.12);
         }
         .stButton > button[kind="primary"] {
-            background: linear-gradient(135deg, var(--app-green), #153d2e);
+            background: linear-gradient(135deg, var(--app-navy-soft), var(--app-navy));
+            color: #ffffff;
         }
         .stButton > button:hover {
-            border-color: rgba(18, 100, 71, 0.45);
-            box-shadow: 0 14px 28px rgba(18, 100, 71, 0.18);
+            border-color: var(--app-gold);
+            box-shadow: 0 14px 28px rgba(7, 26, 43, 0.20);
             transform: translateY(-1px);
         }
         [data-testid="stSidebar"] {
-            background: #f4f7ee;
+            background:
+                radial-gradient(circle at 50% 0%, rgba(220,174,79,.12), transparent 17rem),
+                linear-gradient(180deg, #071a2b 0%, #0a243b 100%);
+            color: #e8eef4;
         }
         [data-testid="stSidebar"] h1,
         [data-testid="stSidebar"] h2,
@@ -250,9 +257,10 @@ def inject_app_style():
         [data-testid="stSidebar"] p,
         [data-testid="stSidebar"] label {
             letter-spacing: 0;
+            color: #d7e1ea;
         }
         [data-testid="stSidebar"] hr {
-            border-color: rgba(22, 32, 27, 0.12);
+            border-color: rgba(220, 174, 79, 0.24);
         }
         [data-testid="stSidebar"] [role="radiogroup"] {
             gap: 0.35rem;
@@ -262,25 +270,25 @@ def inject_app_style():
             border-radius: 8px;
         }
         [data-testid="stSidebar"] [role="radiogroup"] label:hover {
-            background: rgba(18, 100, 71, 0.08);
+            background: rgba(220, 174, 79, 0.10);
         }
         div[data-baseweb="select"] > div,
         div[data-baseweb="input"] > div,
         textarea {
-            border-radius: 8px;
-            border-color: rgba(22, 32, 27, 0.14);
+            border-radius: 10px;
+            border-color: rgba(10, 34, 57, 0.16);
             background-color: rgba(255, 255, 255, 0.96);
         }
         button[data-baseweb="tab"] {
-            border-radius: 8px 8px 0 0;
+            border-radius: 10px 10px 0 0;
             font-weight: 800;
         }
         button[data-baseweb="tab"][aria-selected="true"] {
-            background: rgba(18, 100, 71, 0.10);
+            background: rgba(220, 174, 79, 0.13);
             color: var(--app-green);
         }
         div[data-testid="stAlert"] {
-            border-radius: 8px;
+            border-radius: 12px;
             border: 1px solid rgba(22, 32, 27, 0.08);
         }
         .visual-hero {
@@ -292,13 +300,22 @@ def inject_app_style():
             margin: .2rem 0 1.35rem;
             padding: 1.15rem 1.3rem;
             overflow: hidden;
-            border: 1px solid rgba(18,100,71,.18);
-            border-radius: 18px;
+            border: 1px solid rgba(220,174,79,.42);
+            border-radius: 22px;
             background:
-                radial-gradient(circle at 85% 20%, rgba(216,165,40,.26), transparent 13rem),
-                linear-gradient(135deg, #102f24, #18563f 62%, #244c3b);
-            box-shadow: 0 20px 44px rgba(16,47,36,.18);
+                linear-gradient(90deg, rgba(7,26,43,.96), rgba(7,26,43,.78)),
+                repeating-linear-gradient(90deg, transparent 0 11%, rgba(255,255,255,.025) 11% 12%),
+                radial-gradient(ellipse at 68% 104%, #315f37 0%, #17394d 42%, #071a2b 76%);
+            box-shadow: 0 24px 54px rgba(7,26,43,.24);
             color: white;
+        }
+        .visual-hero::before {
+            content: "";
+            position: absolute;
+            inset: 12% 3% auto 42%;
+            height: 1px;
+            background: linear-gradient(90deg, transparent, rgba(241,202,115,.75), transparent);
+            box-shadow: 0 7px 22px rgba(241,202,115,.46);
         }
         .visual-hero::after {
             content: "";
@@ -307,7 +324,7 @@ def inject_app_style():
             bottom: -70px;
             width: 180px;
             height: 180px;
-            border: 2px solid rgba(255,255,255,.16);
+            border: 2px solid rgba(220,174,79,.32);
             border-radius: 50%;
             box-shadow: 0 0 0 22px rgba(255,255,255,.04);
         }
@@ -316,14 +333,15 @@ def inject_app_style():
             place-items: center;
             width: 4.4rem;
             height: 4.4rem;
-            border: 1px solid rgba(255,255,255,.28);
+            border: 1px solid rgba(220,174,79,.72);
             border-radius: 18px;
-            background: linear-gradient(135deg, rgba(185,215,111,.95), rgba(216,165,40,.96));
+            background: linear-gradient(145deg, #0f3555, #071a2b);
+            color: var(--app-gold);
             box-shadow: 0 12px 28px rgba(0,0,0,.22);
             font-size: 2rem;
         }
         .visual-hero-eyebrow {
-            color: #d8e9ab;
+            color: #f1ca73;
             font-size: .68rem;
             font-weight: 900;
             letter-spacing: .12em;
@@ -363,25 +381,26 @@ def inject_app_style():
             width: 2rem;
             height: 2rem;
             border-radius: 10px;
-            background: linear-gradient(135deg, rgba(18,100,71,.14), rgba(216,165,40,.18));
-            box-shadow: inset 0 0 0 1px rgba(18,100,71,.10);
+            background: linear-gradient(135deg, #0b2b48, #164d73);
+            color: var(--app-gold);
+            box-shadow: inset 0 0 0 1px rgba(220,174,79,.24);
             font-size: 1rem;
         }
         .visual-section::after {
             content: "";
             flex: 1;
             height: 1px;
-            background: linear-gradient(90deg, rgba(18,100,71,.22), transparent);
+            background: linear-gradient(90deg, rgba(220,174,79,.50), transparent);
         }
         .visual-kpi {
             position: relative;
             min-height: 8.2rem;
             padding: .92rem 1rem;
             overflow: hidden;
-            border: 1px solid rgba(22,32,27,.10);
-            border-radius: 15px;
-            background: linear-gradient(145deg, rgba(255,255,255,.98), rgba(245,249,239,.95));
-            box-shadow: 0 12px 28px rgba(22,32,27,.08);
+            border: 1px solid rgba(10,34,57,.11);
+            border-radius: 17px;
+            background: linear-gradient(145deg, rgba(255,255,255,.99), rgba(244,247,250,.97));
+            box-shadow: 0 14px 32px rgba(7,26,43,.09);
         }
         .visual-kpi::after {
             content: "";
@@ -393,6 +412,16 @@ def inject_app_style():
             border-radius: 50%;
             background: var(--kpi-accent);
             opacity: .10;
+        }
+        .visual-kpi::before {
+            content: "";
+            position: absolute;
+            left: 1rem;
+            bottom: 0;
+            width: 2.8rem;
+            height: 3px;
+            border-radius: 99px 99px 0 0;
+            background: var(--kpi-accent);
         }
         .visual-kpi-head {
             display: flex;
@@ -408,7 +437,8 @@ def inject_app_style():
             width: 1.85rem;
             height: 1.85rem;
             border-radius: 9px;
-            background: color-mix(in srgb, var(--kpi-accent) 16%, white);
+            background: var(--app-navy);
+            color: var(--app-gold);
             font-size: .95rem;
         }
         .visual-kpi-value {
@@ -429,7 +459,7 @@ def inject_app_style():
             margin-top: .55rem;
             overflow: hidden;
             border-radius: 999px;
-            background: rgba(22,32,27,.08);
+            background: rgba(10,34,57,.09);
         }
         .visual-kpi-fill {
             height: 100%;
@@ -437,13 +467,13 @@ def inject_app_style():
             background: var(--kpi-accent);
         }
         [data-testid="stProgress"] > div > div > div {
-            background: linear-gradient(90deg, var(--app-green), var(--app-gold));
+            background: linear-gradient(90deg, #123f63, var(--app-gold));
         }
         button[data-baseweb="tab"] {
             border: 1px solid transparent;
         }
         button[data-baseweb="tab"][aria-selected="true"] {
-            box-shadow: inset 0 -3px 0 var(--app-green);
+            box-shadow: inset 0 -3px 0 var(--app-gold);
         }
         /* Hide Streamlit built-in page navigation (keep our custom menu) */
         div[data-testid="stSidebarNav"] {
@@ -660,7 +690,7 @@ def section_label(label: str):
 
 
 def kpi_grid(cards: list[dict], columns: int = 3):
-    palette = ["#126447", "#d8a528", "#4d7c8a", "#7a5c96", "#c94b3f"]
+    palette = ["#dcae4f", "#164d73", "#4f86aa", "#2f9f72", "#d45a55"]
     columns = max(1, int(columns))
     for start in range(0, len(cards), columns):
         cols = st.columns(columns)
@@ -778,12 +808,12 @@ def render_cross_insight(insight: dict):
             factor_name = str(factor["factor"])
             column.html(
                 f"""
-                <div class="visual-kpi" style="--kpi-accent:#126447;min-height:7.4rem">
+                <div class="visual-kpi" style="--kpi-accent:#dcae4f;min-height:7.4rem">
                     <div class="visual-kpi-head">
                         <span class="visual-kpi-icon">{_icon_for(factor_name, "📍")}</span>
                         <span>{html.escape(factor_name)}</span>
                     </div>
-                    <div style="margin-top:.45rem;font-weight:850;color:#16201b">
+                    <div style="margin-top:.45rem;font-weight:850;color:#0b2035">
                         {html.escape(str(factor["advantage"]))}
                     </div>
                     <div class="visual-kpi-track">

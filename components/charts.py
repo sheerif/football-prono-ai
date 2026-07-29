@@ -4,20 +4,20 @@ import plotly.graph_objects as go
 from services.season_format import season_period
 
 
-CHART_COLORS = ["#126447", "#d8a528", "#c94b3f", "#4d7c8a", "#7a5c96", "#8a6f3e"]
+CHART_COLORS = ["#dcae4f", "#164d73", "#4f86aa", "#2f9f72", "#d45a55", "#8b6f47"]
 
 
 def _apply_chart_theme(fig, title: str | None = None):
     fig.update_layout(
         title={
             "text": title,
-            "font": {"size": 18, "color": "#16201b"},
+            "font": {"size": 18, "color": "#0b2035"},
             "x": 0.02,
             "xanchor": "left",
         } if title else None,
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
-        font={"family": "Inter, system-ui, sans-serif", "color": "#26352d"},
+        font={"family": "Inter, system-ui, sans-serif", "color": "#263b50"},
         colorway=CHART_COLORS,
         margin={"l": 20, "r": 20, "t": 56 if title else 24, "b": 28},
         legend={
@@ -28,8 +28,8 @@ def _apply_chart_theme(fig, title: str | None = None):
             "x": 1,
         },
     )
-    fig.update_xaxes(showgrid=False, zeroline=False, title_font={"color": "#66736b"})
-    fig.update_yaxes(gridcolor="rgba(22,32,27,0.08)", zeroline=False, title_font={"color": "#66736b"})
+    fig.update_xaxes(showgrid=False, zeroline=False, title_font={"color": "#66768a"})
+    fig.update_yaxes(gridcolor="rgba(10,34,57,0.09)", zeroline=False, title_font={"color": "#66768a"})
     return fig
 
 
@@ -60,7 +60,7 @@ def bar_matches_by_season(df):
         y="matches",
         title="Nombre de matchs par saison sportive",
         labels={"season_label": "Saison sportive", "matches": "Matchs"},
-        color_discrete_sequence=["#126447"],
+        color_discrete_sequence=["#164d73"],
     )
     fig.update_traces(marker_line_width=0, opacity=0.92)
     return _apply_chart_theme(fig, "Nombre de matchs par saison sportive")
@@ -82,8 +82,8 @@ def line_goals_by_season(df):
             y=agg["total_goals"],
             mode="lines+markers",
             name="Buts totaux",
-            line={"color": "#d8a528", "width": 3},
-            marker={"size": 8, "color": "#126447", "line": {"color": "#ffffff", "width": 2}},
+            line={"color": "#dcae4f", "width": 3},
+            marker={"size": 8, "color": "#164d73", "line": {"color": "#ffffff", "width": 2}},
         )
     )
     fig.update_layout(xaxis_title="Saison sportive", yaxis_title="Buts")
@@ -116,8 +116,8 @@ def radar_team_comparison(labels, values_a, values_b, name_a="Equipe A", name_b=
             theta=labels,
             fill="toself",
             name=name_a,
-            line={"color": "#126447", "width": 2},
-            fillcolor="rgba(18, 100, 71, 0.20)",
+            line={"color": "#dcae4f", "width": 2},
+            fillcolor="rgba(220, 174, 79, 0.22)",
         )
     )
     fig.add_trace(
@@ -126,8 +126,8 @@ def radar_team_comparison(labels, values_a, values_b, name_a="Equipe A", name_b=
             theta=labels,
             fill="toself",
             name=name_b,
-            line={"color": "#c94b3f", "width": 2},
-            fillcolor="rgba(201, 75, 63, 0.17)",
+            line={"color": "#4f86aa", "width": 2},
+            fillcolor="rgba(79, 134, 170, 0.19)",
         )
     )
     fig.update_layout(
@@ -138,9 +138,9 @@ def radar_team_comparison(labels, values_a, values_b, name_a="Equipe A", name_b=
                 "range": [0, 100],
                 "tickvals": [25, 50, 75, 100],
                 "ticksuffix": "%",
-                "gridcolor": "rgba(22,32,27,0.10)",
+                "gridcolor": "rgba(10,34,57,0.11)",
             },
-            "angularaxis": {"gridcolor": "rgba(22,32,27,0.10)"},
+            "angularaxis": {"gridcolor": "rgba(10,34,57,0.11)"},
         },
         showlegend=True,
         height=430,

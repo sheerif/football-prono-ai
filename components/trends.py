@@ -27,7 +27,7 @@ def _trend_figure(trend: dict, title: str):
         f"{row.opponent} · {row.label} · {season_period(row.season)}"
         for row in frame.itertuples()
     ]
-    color = STATUS_COLORS.get(trend.get("status"), "#126447")
+    color = STATUS_COLORS.get(trend.get("status"), "#164d73")
     figure = go.Figure()
     figure.add_trace(
         go.Scatter(
@@ -49,7 +49,7 @@ def _trend_figure(trend: dict, title: str):
                 "<br>%{customdata[1]|%d/%m/%Y}<extra></extra>"
             ),
             fill="tozeroy",
-            fillcolor="rgba(18,100,71,0.08)",
+            fillcolor="rgba(22,77,115,0.09)",
         )
     )
     figure.add_hline(
@@ -59,17 +59,17 @@ def _trend_figure(trend: dict, title: str):
         annotation_text="Repère 50",
     )
     figure.update_layout(
-        title={"text": title, "x": 0.02, "font": {"size": 17, "color": "#16201b"}},
+        title={"text": title, "x": 0.02, "font": {"size": 17, "color": "#0b2035"}},
         height=360,
         margin={"l": 30, "r": 20, "t": 55, "b": 35},
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
-        font={"family": "Inter, system-ui, sans-serif", "color": "#26352d"},
+        font={"family": "Inter, system-ui, sans-serif", "color": "#263b50"},
         xaxis={"title": "Du plus ancien au plus récent", "showgrid": False},
         yaxis={
             "title": "Indice de performance",
             "range": [0, 105],
-            "gridcolor": "rgba(22,32,27,0.08)",
+            "gridcolor": "rgba(10,34,57,0.09)",
         },
         showlegend=False,
     )

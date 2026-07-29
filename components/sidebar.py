@@ -166,8 +166,10 @@ def render_app_rail(current: str):
         """
         <style>
         [data-testid="stSidebar"] {
-            background: #f4f7ee;
-            border-right: 1px solid rgba(22, 32, 27, 0.10);
+            background:
+                radial-gradient(circle at 50% 0%, rgba(220,174,79,.12), transparent 17rem),
+                linear-gradient(180deg, #071a2b 0%, #0a243b 100%);
+            border-right: 1px solid rgba(220, 174, 79, 0.28);
         }
         [data-testid="stSidebar"] .stButton > button {
             justify-content: flex-start;
@@ -176,12 +178,12 @@ def render_app_rail(current: str):
             border: 0;
             border-radius: 8px;
             background: transparent;
-            color: #16201b;
+            color: #dce5ed;
             font-weight: 750;
         }
         [data-testid="stSidebar"] .stButton > button:hover {
-            background: rgba(18, 100, 71, 0.08);
-            color: #126447;
+            background: rgba(220, 174, 79, 0.10);
+            color: #f1ca73;
         }
         .app-rail-brand {
             display: flex;
@@ -189,11 +191,12 @@ def render_app_rail(current: str):
             gap: 0.75rem;
             padding: 0.85rem;
             margin-bottom: 0.9rem;
-            border-radius: 8px;
+            border: 1px solid rgba(220,174,79,.30);
+            border-radius: 12px;
             background:
-                linear-gradient(135deg, rgba(20, 37, 29, 0.98), rgba(32, 54, 43, 0.94)),
+                linear-gradient(135deg, rgba(11, 43, 72, 0.98), rgba(7, 26, 43, 0.94)),
                 repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.07) 0 1px, transparent 1px 42px);
-            box-shadow: 0 14px 28px rgba(22, 32, 27, 0.14);
+            box-shadow: 0 14px 28px rgba(0, 0, 0, 0.24);
         }
         .app-rail-mark {
             display: grid;
@@ -202,8 +205,8 @@ def render_app_rail(current: str):
             width: 2.55rem;
             height: 2.55rem;
             border-radius: 8px;
-            background: linear-gradient(135deg, #b9d76f, #d8a528);
-            color: #14251d;
+            background: linear-gradient(135deg, #f1ca73, #dcae4f);
+            color: #071a2b;
             font-size: 0.88rem;
             font-weight: 900;
         }
@@ -224,9 +227,9 @@ def render_app_rail(current: str):
             padding: 0.58rem 0.7rem;
             margin: 0.15rem 0;
             border-radius: 8px;
-            color: #126447;
-            background: rgba(18, 100, 71, 0.12);
-            box-shadow: inset 3px 0 0 #126447;
+            color: #f5d88f;
+            background: linear-gradient(90deg, rgba(220,174,79,.18), rgba(220,174,79,.05));
+            box-shadow: inset 3px 0 0 #dcae4f;
             font-size: 0.94rem;
             font-weight: 750;
         }
