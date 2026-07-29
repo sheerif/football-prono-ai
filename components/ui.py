@@ -531,6 +531,9 @@ def inject_app_style():
             font-weight: 950;
             line-height: 1.05;
             letter-spacing: -.02em;
+            overflow-wrap: normal;
+            word-break: normal;
+            hyphens: none;
         }
         .visual-kpi-caption {
             margin-top: .32rem;

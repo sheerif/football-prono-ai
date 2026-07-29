@@ -9,7 +9,7 @@ from services.season_format import season_period
 STATUS_COLORS = {
     "progression": "#18a66f",
     "regression": "#d55249",
-    "stable": "#d39a1f",
+    "stable": "#2aa198",
     "indisponible": "#718096",
 }
 
