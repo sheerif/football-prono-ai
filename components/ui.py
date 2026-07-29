@@ -351,6 +351,7 @@ def render_page_navigation():
         ("app.py", "Tableau de bord"),
         ("pages/analyse_match.py", "Analyse & comparaison"),
         ("pages/data_management.py", "Mise à jour"),
+        ("pages/joueurs.py", "Joueurs"),
         ("pages/matchs_a_venir.py", "Matchs à venir"),
         ("pages/prediction_ia.py", "Prédictions"),
     ]
@@ -505,6 +506,7 @@ def run_direct_page(title: str, show_func):
         "Prono insight": "Tableau de bord",
         "Widgets Live": "Widgets Live",
         "Mise à jour": "Mise à jour",
+        "Joueurs": "Joueurs",
         "Matchs à venir": "Matchs à venir",
         "Analyse & comparaison": "Analyse & comparaison",
         "Prédictions": "Prédictions",

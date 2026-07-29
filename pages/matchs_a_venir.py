@@ -6,16 +6,16 @@ import re
 import streamlit as st
 from sqlalchemy import text
 
-from components import charts, ui
+from components import charts, tactical, ui
 from database.database import engine
 from services.api_football import ApiFootballClient
-from services import cross_insight_service, prediction_helpers, prediction_service
+from services import analysis_store, cross_insight_service, lineup_service, prediction_helpers, prediction_service
 from services import schema_guard
 from services.season_format import season_period
 
 
 api_client = ApiFootballClient()
-PREVIEW_CACHE_VERSION = "score-outcome-v2"
+PREVIEW_CACHE_VERSION = "player-intelligence-v3"
 
 
 def _load_upcoming_matches(days_ahead: int, league_ids: list[int] | None = None) -> pd.DataFrame:
@@ -711,6 +711,54 @@ def _context_signature(context_df: pd.DataFrame) -> dict:
     }
 
 
+def _intelligence_signature(match) -> dict:
+    params = {
+        "fixture_id": int(match.fixture_id),
+        "home_team": int(match.home_team_id),
+        "away_team": int(match.away_team_id),
+        "season": int(match.season),
+        "match_date": str(match.date),
+    }
+    try:
+        with engine.begin() as conn:
+            season_updated = conn.execute(
+                text(
+                    """
+                    SELECT MAX(updated_at) FROM player_statistics
+                    WHERE team_id IN (:home_team, :away_team)
+                      AND season = :season
+                    """
+                ),
+                params,
+            ).scalar_one_or_none()
+            lineup_updated = conn.execute(
+                text(
+                    "SELECT MAX(updated_at) FROM fixture_lineups "
+                    "WHERE fixture_id = :fixture_id"
+                ),
+                params,
+            ).scalar_one_or_none()
+            recent_updated = conn.execute(
+                text(
+                    """
+                    SELECT MAX(fps.updated_at)
+                    FROM fixture_player_statistics fps
+                    JOIN matches m ON m.fixture_id = fps.fixture_id
+                    WHERE fps.team_id IN (:home_team, :away_team)
+                      AND m.date < :match_date
+                    """
+                ),
+                params,
+            ).scalar_one_or_none()
+        return {
+            "season_players": _clean_hash_value(season_updated),
+            "lineup": _clean_hash_value(lineup_updated),
+            "recent_players": _clean_hash_value(recent_updated),
+        }
+    except Exception:
+        return {}
+
+
 def _preview_source_hash(match, context_df: pd.DataFrame) -> str:
     payload = {
         "cache_version": PREVIEW_CACHE_VERSION,
@@ -731,6 +779,7 @@ def _preview_source_hash(match, context_df: pd.DataFrame) -> str:
         "api_home_logo": _clean_hash_value(getattr(match, "api_home_logo", "")),
         "api_away_logo": _clean_hash_value(getattr(match, "api_away_logo", "")),
         "context": _context_signature(context_df),
+        "player_intelligence": _intelligence_signature(match),
     }
     return hashlib.sha256(_json_dump(payload).encode("utf-8")).hexdigest()
 
@@ -894,14 +943,46 @@ def _build_match_preview(match, context_df: pd.DataFrame) -> dict:
         home_team_id: home_name,
         away_team_id: away_name,
     }
-    prediction, _, _, details = prediction_helpers.predict_match(context_df, home_team_id, away_team_id)
+    player_intelligence = lineup_service.get_match_intelligence(
+        fixture_id=int(match.fixture_id),
+        home_team_id=home_team_id,
+        away_team_id=away_team_id,
+        season=int(match.season),
+        match_date=match.date,
+    )
+    prediction, _, _, details = prediction_helpers.predict_match(
+        context_df,
+        home_team_id,
+        away_team_id,
+        player_intelligence=player_intelligence,
+    )
+    player_reliability = float(player_intelligence.get("reliability") or 0)
     score_prediction = prediction_service.predict_scorelines(
         context_df,
         home_team_id,
         away_team_id,
         home_form_score=details["home_form_score"] / 100,
         away_form_score=details["away_form_score"] / 100,
+        home_player_factor=_player_goal_factor(
+            player_intelligence.get("home"), player_reliability
+        ),
+        away_player_factor=_player_goal_factor(
+            player_intelligence.get("away"), player_reliability
+        ),
         top_n=12,
+    )
+    analysis_store.save_analysis_snapshot(
+        analysis_type="aperçu_match_à_venir",
+        fixture_id=int(match.fixture_id),
+        league_id=int(match.league_id),
+        season=int(match.season),
+        home_team_id=home_team_id,
+        away_team_id=away_team_id,
+        prediction=prediction,
+        score_prediction=score_prediction,
+        player_intelligence=player_intelligence,
+        model_details=details,
+        context={"match_count": int(len(context_df))},
     )
     code, favorite, probability = _favorite_from_prediction(prediction, home_name, away_name)
     scores = _scores_for_outcome(score_prediction.get("scores", []), code)
@@ -1144,6 +1225,108 @@ def _load_fixture_for_analysis(fixture_id: int) -> pd.Series | None:
     return None if rows.empty else rows.iloc[0]
 
 
+def _lineup_position(value) -> str:
+    labels = {
+        "G": "Gardien",
+        "D": "Défenseur",
+        "M": "Milieu",
+        "F": "Attaquant",
+        "Goalkeeper": "Gardien",
+        "Defender": "Défenseur",
+        "Midfielder": "Milieu",
+        "Attacker": "Attaquant",
+    }
+    return labels.get(str(value or ""), str(value or "-"))
+
+
+def _lineup_table(players: list[dict]) -> pd.DataFrame:
+    rows = []
+    for player in players:
+        form_rating = player.get("form_rating")
+        rows.append(
+            {
+                "N°": _display_text(player.get("number"), "-"),
+                "Joueur": _display_text(player.get("player_name"), "Joueur"),
+                "Poste": _lineup_position(player.get("position") or player.get("games_position")),
+                "Note forme": round(float(form_rating), 2) if form_rating is not None else "-",
+                "Matchs récents": int(player.get("recent_matches") or 0),
+                "Buts récents": int(player.get("recent_goals") or 0),
+                "Passes récentes": int(player.get("recent_assists") or 0),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def _render_team_lineup(team: dict | None, team_name: str):
+    with st.container(border=True):
+        st.markdown(f"### {team_name}")
+        if not team:
+            st.info(
+                "Aucune composition officielle ou probable disponible. "
+                "Synchronisez les données joueurs pour construire une projection."
+            )
+            return
+        status = (
+            "Composition officielle"
+            if team.get("official")
+            else "Composition probable — estimation statistique non officielle"
+        )
+        st.caption(
+            f"{status} · dispositif {team.get('formation') or 'indisponible'}"
+            + (f" · {team.get('formation_source')}" if team.get("formation_source") else "")
+            + (f" · entraîneur {team.get('coach_name')}" if team.get("coach_name") else "")
+        )
+        if not team.get("official"):
+            confidence = round(float(team.get("projection_confidence") or 0) * 100)
+            st.caption(
+                f"Confiance de la projection : {confidence} % · "
+                f"joueurs : {team.get('player_source', 'historique disponible')}"
+            )
+        st.metric("Indice de forme du onze", f"{team.get('form_score', 50)} / 100")
+        st.caption(
+            f"Note moyenne : {team.get('average_rating', '-')} · "
+            f"source : {team.get('form_source', 'indisponible')}"
+        )
+        starters = _lineup_table(team.get("starters") or [])
+        if not starters.empty:
+            st.dataframe(starters, hide_index=True, width="stretch")
+        st.markdown("**Stratégie éventuelle**")
+        st.write(team.get("strategy") or "Indisponible")
+        st.caption(
+            "Cette lecture décrit les possibilités habituelles du dispositif. "
+            "Elle ne constitue pas une consigne confirmée de l’entraîneur."
+        )
+        formation_history = team.get("formation_history") or []
+        if formation_history:
+            with st.expander("Historique des dispositifs étudiés"):
+                st.dataframe(
+                    pd.DataFrame(
+                        [
+                            {
+                                "Dispositif": item.get("formation"),
+                                "Matchs observés": int(item.get("uses") or 0),
+                                "Poids statistique": float(item.get("weight") or 0),
+                            }
+                            for item in formation_history
+                        ]
+                    ),
+                    hide_index=True,
+                    width="stretch",
+                )
+        substitutes = team.get("substitutes") or []
+        if substitutes:
+            with st.expander("Remplaçants"):
+                st.dataframe(_lineup_table(substitutes), hide_index=True, width="stretch")
+
+
+def _player_goal_factor(team: dict | None, reliability: float) -> float:
+    if not team:
+        return 1.0
+    score = float(team.get("form_score") or 50)
+    reliability = max(0.0, min(1.0, float(reliability or 0)))
+    return max(0.92, min(1.08, 1 + ((score - 50) / 50) * 0.08 * reliability))
+
+
 def _render_upcoming_match_analysis(fixture: pd.Series):
     from pages import analyse_match as match_analysis
 
@@ -1170,15 +1353,34 @@ def _render_upcoming_match_analysis(fixture: pd.Series):
     team_options = prediction_helpers.fetch_teams(context_df)
     team_options[home_team] = home_name
     team_options[away_team] = away_name
-    prediction, home_stats, away_stats, details = (
-        prediction_helpers.predict_match(context_df, home_team, away_team)
+    player_intelligence = lineup_service.get_match_intelligence(
+        fixture_id=fixture_id,
+        home_team_id=home_team,
+        away_team_id=away_team,
+        season=int(fixture["season"]),
+        match_date=fixture["date"],
     )
+    prediction, home_stats, away_stats, details = (
+        prediction_helpers.predict_match(
+            context_df,
+            home_team,
+            away_team,
+            player_intelligence=player_intelligence,
+        )
+    )
+    player_reliability = float(player_intelligence.get("reliability") or 0)
     score_prediction = prediction_service.predict_scorelines(
         context_df,
         home_team,
         away_team,
         home_form_score=details["home_form_score"] / 100,
         away_form_score=details["away_form_score"] / 100,
+        home_player_factor=_player_goal_factor(
+            player_intelligence.get("home"), player_reliability
+        ),
+        away_player_factor=_player_goal_factor(
+            player_intelligence.get("away"), player_reliability
+        ),
         top_n=6,
     )
     api_prediction = _load_cached_prediction(fixture_id)
@@ -1216,6 +1418,27 @@ def _render_upcoming_match_analysis(fixture: pd.Series):
             for value in context_df["season"].dropna().unique().tolist()
         ),
         api_signal=api_signal,
+        player_intelligence=player_intelligence,
+    )
+    analysis_store.save_analysis_snapshot(
+        analysis_type="analyse_match_à_venir",
+        fixture_id=fixture_id,
+        league_id=int(fixture["league_id"]),
+        season=int(fixture["season"]),
+        home_team_id=home_team,
+        away_team_id=away_team,
+        prediction=prediction,
+        score_prediction=score_prediction,
+        player_intelligence=player_intelligence,
+        model_details=details,
+        cross_insight=cross_insight,
+        context={
+            "match_date": fixture["date"],
+            "league_name": fixture["league_name"],
+            "home_name": home_name,
+            "away_name": away_name,
+            "historical_match_count": int(len(context_df)),
+        },
     )
 
     match_analysis._render_match_header(
@@ -1231,10 +1454,11 @@ def _render_upcoming_match_analysis(fixture: pd.Series):
         score_prediction,
     )
 
-    overview_tab, form_tab, h2h_tab, stats_tab, prediction_tab = st.tabs(
+    overview_tab, form_tab, lineups_tab, h2h_tab, stats_tab, prediction_tab = st.tabs(
         [
             "Vue d'ensemble",
             "Forme",
+            "Compositions",
             "Face-à-face",
             "Statistiques",
             "Prédiction",
@@ -1311,6 +1535,19 @@ def _render_upcoming_match_analysis(fixture: pd.Series):
         probabilities[3].metric(
             "Confiance", f"{prediction['confidence']} %"
         )
+        adjustment = details.get("player_adjustment")
+        if adjustment:
+            shift = float(adjustment.get("probability_shift") or 0)
+            direction = home_name if shift > 0 else away_name if shift < 0 else "aucune équipe"
+            st.info(
+                f"Composition, forme et stratégie intégrées : déplacement de {abs(shift):.2f} point(s) "
+                f"vers {direction}, fiabilité {round(adjustment['reliability'] * 100)} %."
+            )
+        else:
+            st.caption(
+                "La prédiction reste fondée sur les équipes : les données joueurs "
+                "ne sont pas encore assez complètes pour appliquer un ajustement."
+            )
         ui.render_cross_insight(cross_insight)
 
     with form_tab:
@@ -1341,6 +1578,57 @@ def _render_upcoming_match_analysis(fixture: pd.Series):
                         st.info("Aucun match récent disponible.")
                     else:
                         match_analysis._render_recent_matches_list(recent)
+
+    with lineups_tab:
+        st.subheader("Compositions et forme individuelle")
+        sync_result = st.session_state.pop(f"lineup_sync_{fixture_id}", None)
+        if sync_result:
+            if sync_result.get("errors"):
+                st.warning(
+                    "Synchronisation partielle : " + " | ".join(sync_result["errors"][:4])
+                )
+            else:
+                st.success(
+                    f"Synchronisation terminée : {sync_result.get('recent_fixtures', 0)} "
+                    "match(s) récent(s) analysé(s)."
+                )
+        st.caption(
+            "Les compositions officielles sont généralement publiées peu avant le coup d’envoi. "
+            "Avant cela, la projection utilise les titularisations, minutes et blessures connues."
+        )
+        if st.button(
+            "Actualiser compositions et forme des joueurs",
+            type="primary",
+            key=f"sync_lineups_{fixture_id}",
+            width="stretch",
+        ):
+            try:
+                with st.spinner(
+                    "Téléchargement des compositions, effectifs et performances récentes…"
+                ):
+                    result = lineup_service.sync_match_intelligence(
+                        fixture_id=fixture_id,
+                        home_team_id=home_team,
+                        away_team_id=away_team,
+                        season=int(fixture["season"]),
+                        match_date=fixture["date"],
+                    )
+                st.session_state[f"lineup_sync_{fixture_id}"] = result
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Synchronisation impossible : {exc}")
+
+        lineup_columns = st.columns(2)
+        with lineup_columns[0]:
+            _render_team_lineup(player_intelligence.get("home"), home_name)
+        with lineup_columns[1]:
+            _render_team_lineup(player_intelligence.get("away"), away_name)
+        tactical.render_match_intelligence(
+            player_intelligence,
+            home_name,
+            away_name,
+            show_players=False,
+        )
 
     h2h_df = context_df[
         (
@@ -1403,6 +1691,36 @@ def _render_upcoming_match_analysis(fixture: pd.Series):
         )
 
     with prediction_tab:
+        adjustment = details.get("player_adjustment")
+        if adjustment:
+            st.subheader("Impact de la forme des joueurs")
+            impact = st.columns(5)
+            impact[0].metric(
+                f"Indice {home_name}", adjustment["home_player_form_score"]
+            )
+            impact[1].metric(
+                f"Indice {away_name}", adjustment["away_player_form_score"]
+            )
+            impact[2].metric(
+                "Fiabilité joueurs", f"{round(adjustment['reliability'] * 100)} %"
+            )
+            impact[3].metric(
+                "Impact tactique",
+                f"{adjustment['tactical_probability_shift']:+.2f} pt",
+            )
+            impact[4].metric(
+                "Ajustement 1/N/2",
+                f"{adjustment['probability_shift']:+.2f} pt",
+            )
+            base_prediction = details.get("prediction_before_player_adjustment") or {}
+            st.caption(
+                "Probabilités avant joueurs : "
+                f"{base_prediction.get('home_probability', '-')} / "
+                f"{base_prediction.get('draw_probability', '-')} / "
+                f"{base_prediction.get('away_probability', '-')} %. "
+                "L’impact joueurs est plafonné à 6 points, l’impact tactique à 3 points "
+                "et leur effet combiné à 8 points."
+            )
         st.subheader("Scores probables")
         expected = st.columns(2)
         expected[0].metric(

@@ -3,8 +3,8 @@ import html
 import streamlit as st
 import pandas as pd
 from database.database import engine
-from components import charts, ui
-from services import cross_insight_service, stats_service, prediction_service
+from components import charts, tactical, ui
+from services import analysis_store, cross_insight_service, lineup_service, stats_service, prediction_service
 from services import prediction_helpers
 from services.season_format import season_list, season_period, season_range
 from sqlalchemy import text
@@ -1086,7 +1086,7 @@ def _legacy_show():
 def show():
     ui.page_hero(
         "Analyse & comparaison",
-        "Une fiche de match claire pour comparer la forme, les statistiques, les confrontations directes et la prédiction.",
+        "Comparez résultats, joueurs prévus, dispositifs, opposition tactique et probabilités dans une même fiche.",
     )
 
     league_map = _league_options()
@@ -1202,23 +1202,34 @@ def show():
     home_defense = home_stats["goals_against"] / max(1, home_stats["played"])
     away_attack = away_stats["goals_for"] / max(1, away_stats["played"])
     away_defense = away_stats["goals_against"] / max(1, away_stats["played"])
-    home_strength = (
-        0.6 * home_form_score
-        + 0.2 * (home_attack - away_defense)
-        + 0.1
+    analysis_season = lineup_service.resolve_player_season(
+        [home_team, away_team], league_id, seasons_window
     )
-    away_strength = (
-        0.6 * away_form_score
-        + 0.2 * (away_attack - home_defense)
-        + 0.1
+    player_intelligence = lineup_service.get_prediction_intelligence(
+        home_team_id=home_team,
+        away_team_id=away_team,
+        league_id=league_id,
+        season=analysis_season,
     )
-    prediction = prediction_service.predict_simple(home_strength, away_strength)
+    prediction, home_stats, away_stats, prediction_details = (
+        prediction_helpers.predict_match(
+            matches_df,
+            home_team,
+            away_team,
+            player_intelligence=player_intelligence,
+        )
+    )
+    home_player_factor, away_player_factor = lineup_service.player_goal_factors(
+        player_intelligence
+    )
     score_prediction = prediction_service.predict_scorelines(
         matches_df,
         home_team,
         away_team,
         home_form_score=home_form_score,
         away_form_score=away_form_score,
+        home_player_factor=home_player_factor,
+        away_player_factor=away_player_factor,
         top_n=6,
     )
     cross_insight = cross_insight_service.build_cross_insight(
@@ -1234,6 +1245,25 @@ def show():
         home_played=home_stats["played"],
         away_played=away_stats["played"],
         selected_seasons=seasons_window,
+        player_intelligence=player_intelligence,
+    )
+    analysis_store.save_analysis_snapshot(
+        analysis_type="analyse_comparaison",
+        league_id=league_id,
+        season=analysis_season,
+        home_team_id=home_team,
+        away_team_id=away_team,
+        prediction=prediction,
+        score_prediction=score_prediction,
+        player_intelligence=player_intelligence,
+        model_details=prediction_details,
+        cross_insight=cross_insight,
+        context={
+            "selected_seasons": seasons_window,
+            "home_name": home_view["team_name"],
+            "away_name": away_view["team_name"],
+            "historical_match_count": int(len(matches_df)),
+        },
     )
 
     _render_match_header(
@@ -1246,10 +1276,11 @@ def show():
         score_prediction,
     )
 
-    overview_tab, form_tab, h2h_tab, stats_tab, prediction_tab = st.tabs(
+    overview_tab, form_tab, tactical_tab, h2h_tab, stats_tab, prediction_tab = st.tabs(
         [
             "Vue d'ensemble",
             "Forme",
+            "Compositions & tactique",
             "Face-à-face",
             "Statistiques",
             "Prédiction",
@@ -1330,6 +1361,18 @@ def show():
                 width="stretch",
                 key="simple_radar_match_sheet",
             )
+
+    with tactical_tab:
+        st.subheader("Compositions probables et opposition tactique")
+        st.caption(
+            f"Projection construite sur {season_period(analysis_season)}. "
+            "Si un prochain match exact et son onze officiel sont en cache, ils sont prioritaires."
+        )
+        tactical.render_match_intelligence(
+            player_intelligence,
+            home_view["team_name"],
+            away_view["team_name"],
+        )
 
     with form_tab:
         st.subheader("Forme — 5 derniers matchs")
@@ -1510,10 +1553,31 @@ def show():
             reasons.append(
                 f"Défense plus solide pour {away_view['team_name']}"
             )
+        tactical_analysis = prediction_details.get("tactical_analysis") or {}
+        tactical_edge = float(tactical_analysis.get("edge") or 0)
+        if tactical_edge > 0.5:
+            reasons.append(
+                f"Opposition des dispositifs favorable à {home_view['team_name']} "
+                f"({tactical_analysis.get('home_formation')} contre "
+                f"{tactical_analysis.get('away_formation')})."
+            )
+        elif tactical_edge < -0.5:
+            reasons.append(
+                f"Opposition des dispositifs favorable à {away_view['team_name']} "
+                f"({tactical_analysis.get('away_formation')} contre "
+                f"{tactical_analysis.get('home_formation')})."
+            )
 
         st.markdown("#### Pourquoi ce résultat ?")
         for reason in reasons or ["Aucune tendance forte dans les données."]:
             st.write(f"- {reason}")
+        adjustment = prediction_details.get("player_adjustment")
+        if adjustment:
+            st.caption(
+                f"Impact forme du onze : {adjustment['player_probability_shift']:+.2f} point(s) · "
+                f"impact tactique : {adjustment['tactical_probability_shift']:+.2f} point(s) · "
+                f"ajustement combiné : {adjustment['probability_shift']:+.2f} point(s)."
+            )
 
         st.markdown("#### Scores probables")
         expected_columns = st.columns(2)

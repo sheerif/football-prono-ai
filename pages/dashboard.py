@@ -104,6 +104,10 @@ def _load_data_health() -> dict:
         "fixture_details": "SELECT COUNT(*) FROM fixture_api_details",
         "fixture_predictions": "SELECT COUNT(*) FROM fixture_api_predictions",
         "preview_cache": "SELECT COUNT(*) FROM fixture_match_previews",
+        "players": "SELECT COUNT(*) FROM players",
+        "lineups": "SELECT COUNT(*) FROM fixture_lineups",
+        "player_performances": "SELECT COUNT(*) FROM fixture_player_statistics",
+        "analysis_snapshots": "SELECT COUNT(*) FROM match_analysis_snapshots",
     }
     health = {}
     with engine.begin() as conn:
@@ -165,6 +169,8 @@ def _next_action(health: dict, matches_df: pd.DataFrame) -> str:
         return "Ouvrir Matchs à venir pour compléter journées, logos et stades."
     if health["fixture_predictions"] < health["upcoming"]:
         return "Ouvrir une journée dans Matchs à venir pour synchroniser les conseils API."
+    if health["players"] == 0:
+        return "Synchroniser les joueurs pour activer compositions et analyse tactique."
     return "La base est prête pour consulter les matchs à venir."
 
 
@@ -286,7 +292,7 @@ def show():
 
     ui.dashboard_hero(
         "Prono insight",
-        "Vue rapide de la base, des matchs disponibles et des tendances utiles pour cadrer les pronostics.",
+        "Vue rapide des matchs, joueurs, compositions et données tactiques disponibles pour les pronostics.",
         [
             ("Matchs importés", _format_int(matches_count)),
             ("Matchs à venir", _format_int(health["upcoming"])),
@@ -325,6 +331,30 @@ def show():
                 "value": _format_int(health["preview_cache"]),
                 "caption": "Cartes déjà calculées en SQLite",
                 "accent": "#4d7c8a",
+            },
+            {
+                "label": "Joueurs",
+                "value": _format_int(health["players"]),
+                "caption": "Profils disponibles pour les onze probables",
+                "accent": "#126447",
+            },
+            {
+                "label": "Compositions",
+                "value": _format_int(health["lineups"]),
+                "caption": "Dispositifs officiels conservés",
+                "accent": "#d8a528",
+            },
+            {
+                "label": "Performances joueurs",
+                "value": _format_int(health["player_performances"]),
+                "caption": "Lignes de forme par match",
+                "accent": "#4d7c8a",
+            },
+            {
+                "label": "Analyses persistées",
+                "value": _format_int(health["analysis_snapshots"]),
+                "caption": "Prédictions et stratégies conservées",
+                "accent": "#7a5c96",
             },
         ]
     )

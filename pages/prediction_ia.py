@@ -3,8 +3,8 @@ import itertools
 import pandas as pd
 import streamlit as st
 
-from components import ui
-from services import cross_insight_service, prediction_helpers, prediction_service
+from components import tactical, ui
+from services import analysis_store, cross_insight_service, lineup_service, prediction_helpers, prediction_service
 from services.season_format import season_period
 
 
@@ -268,14 +268,33 @@ def _build_reasons(home_name: str, away_name: str, details: dict):
         )
     else:
         reasons.append(f"Score final du modèle: égalité parfaite ({details['home_strength']} chacun).")
+    adjustment = details.get("player_adjustment")
+    tactical_analysis = details.get("tactical_analysis") or {}
+    if adjustment:
+        reasons.append(
+            "Composition prévue : "
+            f"forme du onze {adjustment['home_player_form_score']} / 100 pour {home_name} "
+            f"contre {adjustment['away_player_form_score']} / 100 pour {away_name}."
+        )
+        reasons.append(
+            "Ajustement explicite : "
+            f"{adjustment['player_probability_shift']:+.2f} point(s) pour la forme individuelle "
+            f"et {adjustment['tactical_probability_shift']:+.2f} point(s) pour les dispositifs."
+        )
+    if tactical_analysis:
+        reasons.append(
+            f"Opposition tactique {tactical_analysis.get('home_formation')} / "
+            f"{tactical_analysis.get('away_formation')} : "
+            f"{tactical_analysis.get('structural_reading')}"
+        )
     return reasons
 
 
 def _show_match_prediction():
     st.subheader("Prédiction d'un match")
     st.caption(
-        "Analysez une affiche précise à partir de la forme récente, de "
-        "l'attaque, de la défense et de l'avantage domicile."
+        "Analysez une affiche à partir des résultats, du onze prévu, de la forme "
+        "individuelle et de l’opposition des dispositifs."
     )
 
     leagues = prediction_helpers.fetch_leagues()
@@ -335,15 +354,34 @@ def _show_match_prediction():
         width="stretch",
         key="prediction_match_submit",
     ):
-        pred, home_stats, away_stats, details = prediction_helpers.predict_match(matches_df, home_team, away_team)
+        analysis_season = lineup_service.resolve_player_season(
+            [home_team, away_team], league_id, seasons_with_data
+        )
+        player_intelligence = lineup_service.get_prediction_intelligence(
+            home_team_id=home_team,
+            away_team_id=away_team,
+            league_id=league_id,
+            season=analysis_season,
+        )
+        pred, home_stats, away_stats, details = prediction_helpers.predict_match(
+            matches_df,
+            home_team,
+            away_team,
+            player_intelligence=player_intelligence,
+        )
         home_name = team_options[home_team]
         away_name = team_options[away_team]
+        home_player_factor, away_player_factor = lineup_service.player_goal_factors(
+            player_intelligence
+        )
         score_prediction = prediction_service.predict_scorelines(
             matches_df,
             home_team,
             away_team,
             home_form_score=details["home_form_score"] / 100,
             away_form_score=details["away_form_score"] / 100,
+            home_player_factor=home_player_factor,
+            away_player_factor=away_player_factor,
             top_n=6,
         )
         cross_insight = cross_insight_service.build_cross_insight(
@@ -359,6 +397,25 @@ def _show_match_prediction():
             home_played=home_stats["played"],
             away_played=away_stats["played"],
             selected_seasons=seasons_with_data,
+            player_intelligence=player_intelligence,
+        )
+        analysis_store.save_analysis_snapshot(
+            analysis_type="prédiction_manuelle",
+            league_id=league_id,
+            season=analysis_season,
+            home_team_id=home_team,
+            away_team_id=away_team,
+            prediction=pred,
+            score_prediction=score_prediction,
+            player_intelligence=player_intelligence,
+            model_details=details,
+            cross_insight=cross_insight,
+            context={
+                "selected_seasons": seasons_with_data,
+                "home_name": home_name,
+                "away_name": away_name,
+                "historical_match_count": int(len(matches_df)),
+            },
         )
 
         ui.section_label("Ce que ces informations représentent")
@@ -388,6 +445,13 @@ def _show_match_prediction():
         st.success(_favorite_sentence(favorite, pred["confidence"], home_name, away_name, details))
         ui.render_cross_insight(cross_insight)
 
+        ui.section_label("Compositions et étude tactique")
+        tactical.render_match_intelligence(
+            player_intelligence,
+            home_name,
+            away_name,
+        )
+
         ui.section_label("Pourquoi le modèle arrive à ce résultat ?")
         for reason in _build_reasons(home_name, away_name, details):
             st.write(f"- {reason}")
@@ -396,7 +460,8 @@ def _show_match_prediction():
         st.dataframe(_explanation_table(details), hide_index=True, width="stretch")
         st.caption(
             "La prédiction est une estimation statistique interne. Elle compare les deux équipes dans la période sélectionnée; "
-            "elle ne tient pas encore compte des blessures, suspensions, compositions probables, météo ou cotes de marché."
+            "les compositions, blessures connues, forme individuelle et opposition tactique sont intégrées lorsqu’elles sont disponibles. "
+            "La météo et les cotes de marché ne sont pas utilisées."
         )
 
         ui.section_label("Légende des valeurs analysées")
@@ -481,14 +546,28 @@ def _ranking_argument(
     pick: str,
     details: dict,
 ) -> str:
+    tactical_analysis = details.get("tactical_analysis") or {}
+    tactical_edge = float(tactical_analysis.get("edge") or 0)
     if pick == "Match nul":
         return "Match serré : forces proches."
     if pick == home_name:
+        if tactical_edge > 0.5:
+            return (
+                f"Avantage {home_name} : opposition tactique favorable "
+                f"({tactical_analysis.get('home_formation')} / "
+                f"{tactical_analysis.get('away_formation')})."
+            )
         if details["home_form_score"] >= details["away_form_score"]:
             return f"Avantage {home_name} : meilleure forme."
         if details["home_attack"] >= details["away_attack"]:
             return f"Avantage {home_name} : attaque plus haute."
         return f"Avantage {home_name} : profil plus solide."
+    if tactical_edge < -0.5:
+        return (
+            f"Avantage {away_name} : opposition tactique favorable "
+            f"({tactical_analysis.get('away_formation')} / "
+            f"{tactical_analysis.get('home_formation')})."
+        )
     if details["away_form_score"] >= details["home_form_score"]:
         return f"Avantage {away_name} : meilleure forme."
     if details["away_attack"] >= details["home_attack"]:
@@ -500,11 +579,28 @@ def _build_rankings(
     matches_df: pd.DataFrame,
     team_options: dict[int, str],
     limit: int,
+    league_id: int,
+    season: int,
 ) -> pd.DataFrame:
     rows = []
+    team_intelligence = {
+        team_id: lineup_service.get_projected_team_intelligence(
+            team_id=team_id,
+            league_id=league_id,
+            season=season,
+        )
+        for team_id in team_options
+    }
     for home_team, away_team in itertools.permutations(team_options, 2):
+        player_intelligence = lineup_service.combine_team_intelligence(
+            team_intelligence.get(home_team),
+            team_intelligence.get(away_team),
+        )
         pred, _, _, details = prediction_helpers.predict_match(
-            matches_df, home_team, away_team
+            matches_df,
+            home_team,
+            away_team,
+            player_intelligence=player_intelligence,
         )
         home_name = team_options[home_team]
         away_name = team_options[away_team]
@@ -515,6 +611,23 @@ def _build_rankings(
         ]
         code, market_label, pick, probability = max(
             outcomes, key=lambda item: item[3]
+        )
+        tactical_analysis = details.get("tactical_analysis") or {}
+        adjustment = details.get("player_adjustment") or {}
+        analysis_store.save_analysis_snapshot(
+            analysis_type="classement_prédictif",
+            league_id=league_id,
+            season=season,
+            home_team_id=home_team,
+            away_team_id=away_team,
+            prediction=pred,
+            player_intelligence=player_intelligence,
+            model_details=details,
+            context={
+                "home_name": home_name,
+                "away_name": away_name,
+                "historical_match_count": int(len(matches_df)),
+            },
         )
         rows.append(
             {
@@ -527,6 +640,11 @@ def _build_rankings(
                 "Code 1N2": code,
                 "Probabilité retenue": probability,
                 "Confiance": pred["confidence"],
+                "Dispositifs": (
+                    f"{tactical_analysis.get('home_formation', '-')} / "
+                    f"{tactical_analysis.get('away_formation', '-')}"
+                ),
+                "Impact composition": adjustment.get("probability_shift", 0),
                 "Lecture": _ranking_confidence_label(pred["confidence"]),
                 "Argument principal": _ranking_argument(
                     home_name, away_name, pick, details
@@ -630,7 +748,13 @@ def _show_best_predictions():
         key="prediction_ranking_submit",
     ):
         rankings = _build_rankings(
-            matches_df, selected_options, int(top_limit)
+            matches_df,
+            selected_options,
+            int(top_limit),
+            league_id=league_id,
+            season=lineup_service.resolve_player_season(
+                list(selected_options), league_id, seasons_with_data
+            ),
         )
         ui.section_label("Classement")
         st.caption(
@@ -666,7 +790,7 @@ def _show_best_predictions():
 def show():
     ui.page_hero(
         "Prédictions",
-        "Analysez un match précis ou parcourez les meilleurs signaux du modèle depuis un seul espace.",
+        "Analysez un match ou classez les signaux du modèle avec compositions probables et lecture tactique.",
     )
     match_tab, ranking_tab = st.tabs(
         ["Prédiction d'un match", "Meilleurs pronostics"]

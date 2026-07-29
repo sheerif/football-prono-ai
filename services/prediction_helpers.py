@@ -149,7 +149,12 @@ def form_score(results):
     return points / (3 * len(results))
 
 
-def predict_match(matches_df: pd.DataFrame, home_team: int, away_team: int):
+def predict_match(
+    matches_df: pd.DataFrame,
+    home_team: int,
+    away_team: int,
+    player_intelligence: dict | None = None,
+):
     home_stats = stats_service.compute_basic_stats(matches_df, home_team)
     away_stats = stats_service.compute_basic_stats(matches_df, away_team)
     home_form_results = recent_form(matches_df, home_team)
@@ -183,4 +188,30 @@ def predict_match(matches_df: pd.DataFrame, home_team: int, away_team: int):
             "Contexte domicile/extérieur": "20 %",
         },
     }
-    return prediction_service.predict_simple(home_strength, away_strength), home_stats, away_stats, details
+    prediction = prediction_service.predict_simple(home_strength, away_strength)
+    if player_intelligence and player_intelligence.get("complete"):
+        details["prediction_before_player_adjustment"] = dict(prediction)
+        home_players = player_intelligence.get("home") or {}
+        away_players = player_intelligence.get("away") or {}
+        tactical = player_intelligence.get("tactical") or {}
+        prediction, adjustment = prediction_service.adjust_prediction_for_player_form(
+            prediction,
+            home_form_score=home_players.get("form_score", 50),
+            away_form_score=away_players.get("form_score", 50),
+            reliability=player_intelligence.get("reliability", 0),
+            tactical_edge=tactical.get("edge", 0),
+            tactical_reliability=tactical.get("reliability", 0),
+        )
+        details["player_adjustment"] = adjustment
+        details["tactical_analysis"] = tactical or None
+        details["weights"]["Forme des joueurs prévus"] = (
+            f"ajustement plafonné à ±{adjustment['max_probability_shift']:.0f} points"
+        )
+        details["weights"]["Opposition des dispositifs"] = (
+            f"ajustement plafonné à ±{adjustment['max_tactical_probability_shift']:.0f} points"
+        )
+    else:
+        details["prediction_before_player_adjustment"] = None
+        details["player_adjustment"] = None
+        details["tactical_analysis"] = None
+    return prediction, home_stats, away_stats, details

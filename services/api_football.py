@@ -45,5 +45,23 @@ class ApiFootballClient:
     def get_team_statistics(self, team_id, league_id, season):
         return self._get("/teams/statistics", {"team": team_id, "league": league_id, "season": season})
 
+    def get_players(self, season, league_id=None, team_id=None, player_id=None, search=None, page=1):
+        params = {"season": int(season), "page": int(page)}
+        if league_id is not None:
+            params["league"] = int(league_id)
+        if team_id is not None:
+            params["team"] = int(team_id)
+        if player_id is not None:
+            params["id"] = int(player_id)
+        if search:
+            params["search"] = str(search)
+        return self._get("/players", params)
+
+    def get_fixture_players(self, fixture_id):
+        return self._get("/fixtures/players", {"fixture": int(fixture_id)})
+
+    def get_fixture_lineups(self, fixture_id):
+        return self._get("/fixtures/lineups", {"fixture": int(fixture_id)})
+
     def get_predictions(self, fixture_id):
         return self._get("/predictions", {"fixture": fixture_id})

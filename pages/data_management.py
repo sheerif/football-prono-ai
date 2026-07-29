@@ -3,7 +3,7 @@ import streamlit as st
 
 from components import ui
 from database.database import engine
-from services import background_jobs, import_service
+from services import background_jobs, import_service, sync_registry
 from services.season_format import season_period, season_range
 
 
@@ -23,13 +23,26 @@ def _summary_counts() -> dict[str, int]:
         teams = pd.read_sql("SELECT COUNT(*) AS count FROM teams", engine).iloc[0]["count"]
         matches = pd.read_sql("SELECT COUNT(*) AS count FROM matches", engine).iloc[0]["count"]
         standings = pd.read_sql("SELECT COUNT(*) AS count FROM standings", engine).iloc[0]["count"]
+        players = pd.read_sql("SELECT COUNT(*) AS count FROM players", engine).iloc[0]["count"]
+        lineups = pd.read_sql(
+            """
+            SELECT
+                (SELECT COUNT(*) FROM fixture_lineups)
+                + (SELECT COUNT(*) FROM projected_lineups) AS count
+            """,
+            engine,
+        ).iloc[0]["count"]
+        analyses = pd.read_sql("SELECT COUNT(*) AS count FROM match_analysis_snapshots", engine).iloc[0]["count"]
     except Exception:
-        leagues = teams = matches = standings = 0
+        leagues = teams = matches = standings = players = lineups = analyses = 0
     return {
         "leagues": int(leagues),
         "teams": int(teams),
         "matches": int(matches),
         "standings": int(standings),
+        "players": int(players),
+        "lineups": int(lineups),
+        "analyses": int(analyses),
     }
 
 
@@ -118,13 +131,45 @@ def show():
     )
 
     counts = _summary_counts()
-    cols = st.columns(4)
+    cols = st.columns(7)
     cols[0].metric("Championnats", counts["leagues"])
     cols[1].metric("Équipes", counts["teams"])
     cols[2].metric("Matchs", counts["matches"])
     cols[3].metric("Classements", counts["standings"])
+    cols[4].metric("Joueurs", counts["players"])
+    cols[5].metric("Compositions", counts["lineups"])
+    cols[6].metric("Analyses", counts["analyses"])
 
     _render_jobs()
+
+    ui.section_label("Synchronisation globale")
+    with st.container(border=True):
+        st.markdown("### Tout mettre à jour")
+        st.write(
+            "Complète en arrière-plan uniquement les informations manquantes : "
+            "championnats, équipes, matchs, classements, joueurs, statistiques, "
+            "détails, prédictions, compositions et forme récente."
+        )
+        if st.button(
+            "↻ Tout mettre à jour en arrière-plan",
+            type="primary",
+            width="stretch",
+            disabled=any(job.get("kind") == "full_sync" for job in background_jobs.active_jobs()),
+        ):
+            job_id = background_jobs.start_full_sync()
+            st.success("Synchronisation globale lancée. Vous pouvez continuer à utiliser l’application.")
+            st.caption(f"Job: {job_id}")
+        registry_counts = sync_registry.counts()
+        if registry_counts:
+            st.caption(
+                f"Périmètres mémorisés : {registry_counts.get('complete', 0)} terminés, "
+                f"{registry_counts.get('unavailable', 0)} temporairement indisponibles, "
+                f"{registry_counts.get('error', 0)} à retenter."
+            )
+        st.caption(
+            "Les données déjà présentes ne sont pas retéléchargées. En cas de limite API, "
+            "la progression reste en base et le prochain lancement reprend les éléments manquants."
+        )
 
     ui.section_label("Actions simples")
     config = import_service.get_auto_refresh_config()

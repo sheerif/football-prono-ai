@@ -126,6 +126,7 @@ def build_cross_insight(
     away_played: int,
     selected_seasons=None,
     api_signal: dict | None = None,
+    player_intelligence: dict | None = None,
 ) -> dict:
     home_venue = _venue_record(matches_df, home_team, "home")
     away_venue = _venue_record(matches_df, away_team, "away")
@@ -153,16 +154,34 @@ def build_cross_insight(
         "Face-à-face": _clip(h2h["signal"]),
         "Buts attendus": _clip((expected_home - expected_away) / 3),
     }
+    if player_intelligence and player_intelligence.get("complete"):
+        home_players = player_intelligence.get("home") or {}
+        away_players = player_intelligence.get("away") or {}
+        tactical = player_intelligence.get("tactical") or {}
+        factor_signals["Forme des joueurs prévus"] = _clip(
+            (
+                float(home_players.get("form_score") or 50)
+                - float(away_players.get("form_score") or 50)
+            )
+            / 50
+        )
+        factor_signals["Opposition tactique"] = _clip(
+            float(tactical.get("edge") or 0) / 15
+        )
     weights = {
-        "Modèle statistique": 0.35,
-        "Forme récente": 0.20,
-        "Domicile / extérieur": 0.15,
-        "Face-à-face": 0.15,
-        "Buts attendus": 0.15,
+        "Modèle statistique": 0.30,
+        "Forme récente": 0.18,
+        "Domicile / extérieur": 0.14,
+        "Face-à-face": 0.14,
+        "Buts attendus": 0.14,
+        "Forme des joueurs prévus": 0.05,
+        "Opposition tactique": 0.05,
     }
+    active_weight_total = sum(weights[label] for label in factor_signals)
     internal_edge = sum(
         factor_signals[label] * weight for label, weight in weights.items()
-    )
+        if label in factor_signals
+    ) / max(0.01, active_weight_total)
     api_edge = None
     if api_signal:
         api_edge = _clip(
@@ -188,15 +207,18 @@ def build_cross_insight(
     venue_score = min(
         1.0, min(home_venue["played"], away_venue["played"]) / 10
     )
-    reliability = round(
-        100
-        * (
-            0.50 * sample_score
-            + 0.20 * h2h_score
-            + 0.20 * venue_score
-            + 0.10 * int(api_signal is not None)
-        )
+    base_reliability = (
+        0.50 * sample_score
+        + 0.20 * h2h_score
+        + 0.20 * venue_score
+        + 0.10 * int(api_signal is not None)
     )
+    if player_intelligence and player_intelligence.get("complete"):
+        tactical_reliability = float(
+            (player_intelligence.get("tactical") or {}).get("reliability") or 0
+        )
+        base_reliability = 0.85 * base_reliability + 0.15 * tactical_reliability
+    reliability = round(100 * base_reliability)
     if reliability >= 75:
         reliability_label = "bonne"
     elif reliability >= 50:
@@ -260,6 +282,8 @@ def build_cross_insight(
         caveats.append("Peu de confrontations directes disponibles.")
     if not api_signal:
         caveats.append("Aucun conseil API synchronisé pour une affiche à venir.")
+    if not player_intelligence or not player_intelligence.get("complete"):
+        caveats.append("Compositions probables incomplètes pour au moins une équipe.")
     if selected_seasons and len(selected_seasons) > 5:
         caveats.append(
             "La période couvre plusieurs cycles sportifs ; les données anciennes "

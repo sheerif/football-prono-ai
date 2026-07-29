@@ -35,6 +35,64 @@ def predict_simple(home_strength, away_strength, draw_factor=0.2):
     }
 
 
+def adjust_prediction_for_player_form(
+    prediction: dict,
+    home_form_score: float,
+    away_form_score: float,
+    reliability: float,
+    tactical_edge: float = 0.0,
+    tactical_reliability: float = 0.0,
+    max_adjustment: float = 6.0,
+    max_tactical_adjustment: float = 3.0,
+    max_combined_adjustment: float = 8.0,
+) -> tuple[dict, dict]:
+    """Ajuste 1/N/2 avec des impacts joueurs et tactiques plafonnés."""
+    reliability = max(0.0, min(1.0, float(reliability or 0)))
+    form_edge = float(home_form_score or 50) - float(away_form_score or 50)
+    requested_delta = max(-max_adjustment, min(max_adjustment, form_edge * 0.10))
+    player_delta = requested_delta * reliability
+    tactical_reliability = max(
+        0.0, min(1.0, float(tactical_reliability or 0))
+    )
+    requested_tactical_delta = max(
+        -max_tactical_adjustment,
+        min(max_tactical_adjustment, float(tactical_edge or 0) * 0.20),
+    )
+    tactical_delta = requested_tactical_delta * tactical_reliability
+    applied_delta = max(
+        -max_combined_adjustment,
+        min(max_combined_adjustment, player_delta + tactical_delta),
+    )
+
+    raw = [
+        max(0.1, float(prediction["home_probability"]) + applied_delta),
+        max(0.1, float(prediction["draw_probability"])),
+        max(0.1, float(prediction["away_probability"]) - applied_delta),
+    ]
+    probabilities = normalize_probs(raw)
+    adjusted = {
+        **prediction,
+        "home_probability": probabilities[0],
+        "draw_probability": probabilities[1],
+        "away_probability": probabilities[2],
+        "confidence": float(max(probabilities)),
+    }
+    details = {
+        "home_player_form_score": round(float(home_form_score or 50), 1),
+        "away_player_form_score": round(float(away_form_score or 50), 1),
+        "reliability": round(reliability, 3),
+        "player_probability_shift": round(player_delta, 2),
+        "tactical_edge": round(float(tactical_edge or 0), 2),
+        "tactical_reliability": round(tactical_reliability, 3),
+        "tactical_probability_shift": round(tactical_delta, 2),
+        "probability_shift": round(applied_delta, 2),
+        "max_probability_shift": float(max_adjustment),
+        "max_tactical_probability_shift": float(max_tactical_adjustment),
+        "max_combined_probability_shift": float(max_combined_adjustment),
+    }
+    return adjusted, details
+
+
 def _safe_average(value, fallback):
     try:
         if pd.isna(value):
@@ -55,6 +113,8 @@ def predict_scorelines(
     away_team_id: int,
     home_form_score: float = 0.5,
     away_form_score: float = 0.5,
+    home_player_factor: float = 1.0,
+    away_player_factor: float = 1.0,
     max_goals: int = 6,
     top_n: int = 6,
 ):
@@ -130,6 +190,11 @@ def predict_scorelines(
         expected_home = 0.82 * expected_home + 0.18 * _safe_average(np.mean(h2h_home_goals), expected_home)
         expected_away = 0.82 * expected_away + 0.18 * _safe_average(np.mean(h2h_away_goals), expected_away)
 
+    home_player_factor = max(0.92, min(1.08, float(home_player_factor or 1)))
+    away_player_factor = max(0.92, min(1.08, float(away_player_factor or 1)))
+    expected_home *= home_player_factor
+    expected_away *= away_player_factor
+
     expected_home = max(0.15, min(4.5, expected_home))
     expected_away = max(0.15, min(4.5, expected_away))
 
@@ -154,5 +219,9 @@ def predict_scorelines(
         "expected_home_goals": round(expected_home, 2),
         "expected_away_goals": round(expected_away, 2),
         "scores": score_rows,
-        "method": "Modèle de Poisson alimenté par attaque, défense, moyenne de ligue, forme récente et confrontations directes disponibles.",
+        "player_factors": {
+            "home": round(home_player_factor, 3),
+            "away": round(away_player_factor, 3),
+        },
+        "method": "Modèle de Poisson alimenté par attaque, défense, moyenne de ligue, forme récente, confrontations directes et forme des joueurs lorsqu’elle est disponible.",
     }

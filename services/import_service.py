@@ -36,6 +36,8 @@ def init_db():
     _ensure_update_log_table()
     _ensure_league_seasons_table()
     _ensure_fixture_api_cache_tables()
+    from services import sync_registry
+    sync_registry.ensure_table()
     config = get_auto_refresh_config()
     register_league_seasons(
         config["league_ids"],

@@ -1,2 +1,2 @@
-from . import sidebar, cards, charts, tables
-__all__ = ["sidebar", "cards", "charts", "tables"]
+from . import sidebar, cards, charts, tables, tactical
+__all__ = ["sidebar", "cards", "charts", "tables", "tactical"]
