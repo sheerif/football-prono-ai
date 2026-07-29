@@ -3,20 +3,33 @@ import requests
 from dotenv import load_dotenv
 
 load_dotenv()
-API_KEY = os.getenv("API_FOOTBALL_KEY")
+API_KEY = (os.getenv("API_FOOTBALL_KEY") or "").strip()
 BASE_URL = "https://v3.football.api-sports.io"
 HEADERS = {"x-apisports-key": API_KEY}
 
 class ApiFootballClient:
     def __init__(self):
         self.base = BASE_URL
-        self.headers = HEADERS
+        self.api_key = (os.getenv("API_FOOTBALL_KEY") or "").strip()
+        self.headers = {"x-apisports-key": self.api_key}
 
     def _get(self, path, params=None):
+        if not self.api_key:
+            raise RuntimeError(
+                "Clé API_FOOTBALL_KEY manquante. Ajoutez-la dans .env ou dans les secrets Streamlit avant de lancer une synchronisation."
+            )
         url = f"{self.base}{path}"
         resp = requests.get(url, headers=self.headers, params=params, timeout=30)
         resp.raise_for_status()
-        return resp.json()
+        payload = resp.json()
+        errors = payload.get("errors") if isinstance(payload, dict) else None
+        if errors:
+            if isinstance(errors, dict):
+                detail = "; ".join(f"{k}: {v}" for k, v in errors.items())
+            else:
+                detail = str(errors)
+            raise RuntimeError(f"API-Football a refusé la requête : {detail}")
+        return payload
 
     def get_leagues(self, country=None):
         params = {"country": country} if country else None

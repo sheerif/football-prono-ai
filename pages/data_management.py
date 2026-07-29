@@ -1,5 +1,6 @@
 import pandas as pd
 import streamlit as st
+import os
 
 from components import ui
 from database.database import engine
@@ -154,11 +155,14 @@ def show():
             "L’application ajoute seulement les informations manquantes. "
             "Les données déjà enregistrées restent intactes."
         )
+        api_key_missing = not (os.getenv("API_FOOTBALL_KEY") or "").strip()
+        if api_key_missing:
+            st.error("Synchronisation indisponible : la clé API_FOOTBALL_KEY est absente. Ajoutez-la dans .env ou les secrets Streamlit.")
         if st.button(
             "↻ Tout mettre à jour en arrière-plan",
             type="primary",
             width="stretch",
-            disabled=any(job.get("kind") == "full_sync" for job in background_jobs.active_jobs()),
+            disabled=api_key_missing or any(job.get("kind") == "full_sync" for job in background_jobs.active_jobs()),
         ):
             job_id = background_jobs.start_full_sync()
             st.success("Mise à jour lancée. Vous pouvez continuer à utiliser l’application.")
@@ -172,7 +176,7 @@ def show():
 
     ui.section_label("Actions simples")
     config = import_service.get_auto_refresh_config()
-    end_season = max(2026, config["end_season"])
+    end_season = int(config["end_season"])
     recent_start = max(config["start_season"], end_season - 1)
 
     with st.container(border=True):

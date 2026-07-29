@@ -8,7 +8,7 @@ import json
 import os
 import time
 import requests
-from sqlalchemy import text
+from sqlalchemy import text, inspect
 from requests.exceptions import HTTPError
 from services.season_format import season_range
 
@@ -16,11 +16,19 @@ logger = logging.getLogger(__name__)
 client = ApiFootballClient()
 DEFAULT_LEAGUE_IDS = [61, 39, 140, 135, 78, 2]
 DEFAULT_START_SEASON = 2016
-DEFAULT_END_SEASON = 2026
+# Do not pin the application to a historic season.  The API's current
+# football season is represented by the current calendar year and can still
+# be overridden explicitly with AUTO_REFRESH_END_SEASON.
+DEFAULT_END_SEASON = datetime.datetime.now(datetime.UTC).year
 
 # configure basic logging if not set
 if not logging.getLogger().handlers:
     logging.basicConfig(level=logging.INFO)
+
+
+def _auto_id_definition(conn) -> str:
+    """Return an auto-increment primary-key definition for the active DB."""
+    return "SERIAL PRIMARY KEY" if conn.dialect.name == "postgresql" else "INTEGER PRIMARY KEY AUTOINCREMENT"
 
 
 def utc_now() -> datetime.datetime:
@@ -48,7 +56,8 @@ def init_db():
 
 def _ensure_schema_columns():
     with engine.begin() as conn:
-        match_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(matches)")).fetchall()}
+        inspector = inspect(conn)
+        match_columns = {column["name"] for column in inspector.get_columns("matches")} if inspector.has_table("matches") else set()
         missing_match_columns = {
             "home_goals": "INTEGER",
             "away_goals": "INTEGER",
@@ -59,7 +68,7 @@ def _ensure_schema_columns():
             if column_name not in match_columns:
                 conn.execute(text(f"ALTER TABLE matches ADD COLUMN {column_name} {column_type}"))
 
-        standing_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(standings)")).fetchall()}
+        standing_columns = {column["name"] for column in inspector.get_columns("standings")} if inspector.has_table("standings") else set()
         if "league_id" not in standing_columns:
             conn.execute(text("ALTER TABLE standings ADD COLUMN league_id INTEGER"))
         conn.execute(
@@ -92,11 +101,12 @@ def _ensure_sync_state_table():
 
 def _ensure_connection_log_table():
     with engine.begin() as conn:
+        id_definition = _auto_id_definition(conn)
         conn.execute(
             text(
-                """
+                f"""
                 CREATE TABLE IF NOT EXISTS connection_log (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    id {id_definition},
                     connected_at TEXT NOT NULL,
                     refreshed_current INTEGER NOT NULL DEFAULT 0
                 )
@@ -107,11 +117,12 @@ def _ensure_connection_log_table():
 
 def _ensure_update_log_table():
     with engine.begin() as conn:
+        id_definition = _auto_id_definition(conn)
         conn.execute(
             text(
-                """
+                f"""
                 CREATE TABLE IF NOT EXISTS update_log (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    id {id_definition},
                     event_type TEXT NOT NULL,
                     status TEXT NOT NULL,
                     started_at TEXT NOT NULL,
@@ -301,6 +312,8 @@ def record_update_log(
                 "error": error,
             },
         )
+        if conn.dialect.name == "postgresql":
+            return int(conn.execute(text("SELECT currval(pg_get_serial_sequence('update_log','id'))")).scalar_one())
         return int(result.lastrowid)
 
 
@@ -348,6 +361,11 @@ def _set_sync_value(key: str, value: str):
 def record_connection(connected_at: str) -> int:
     _ensure_connection_log_table()
     with engine.begin() as conn:
+        if conn.dialect.name == "postgresql":
+            return int(conn.execute(
+                text("INSERT INTO connection_log (connected_at, refreshed_current) VALUES (:connected_at, 0) RETURNING id"),
+                {"connected_at": connected_at},
+            ).scalar_one())
         result = conn.execute(
             text("INSERT INTO connection_log (connected_at, refreshed_current) VALUES (:connected_at, 0)"),
             {"connected_at": connected_at},
@@ -385,7 +403,9 @@ def _parse_int_list(value: str, fallback: list[int]) -> list[int]:
 def get_auto_refresh_config() -> dict:
     configured_end_season = os.getenv("AUTO_REFRESH_END_SEASON", "").strip()
     if configured_end_season:
-        end_season = max(int(configured_end_season), DEFAULT_END_SEASON)
+        # An explicit value is authoritative (useful for historical imports);
+        # never silently upgrade it to a hard-coded year.
+        end_season = int(configured_end_season)
     else:
         current_year = utc_now().year
         try:
@@ -401,10 +421,10 @@ def get_auto_refresh_config() -> dict:
                         """
                     )
                 ).scalar_one_or_none()
-            stored_end_season = int(stored_end_season) if stored_end_season else DEFAULT_END_SEASON
+            stored_end_season = int(stored_end_season) if stored_end_season else current_year
             end_season = max(current_year, stored_end_season)
         except Exception:
-            end_season = max(current_year, DEFAULT_END_SEASON)
+            end_season = current_year
     return {
         "enabled": os.getenv("AUTO_REFRESH_ON_CONNECTION", "true").lower() in {"1", "true", "yes", "oui"},
         "current_enabled": os.getenv("AUTO_REFRESH_CURRENT_ON_CONNECTION", "true").lower() in {"1", "true", "yes", "oui"},
@@ -866,20 +886,26 @@ def import_leagues_cautious(
                 _sync_league_metadata(session, lid, season)
                 # Check existing
                 existing_count = session.query(models.Match).filter_by(league_id=lid, season=season).count()
-                if existing_count > 0 and season not in force_refresh_seasons:
-                    logging.info(f"Season {season} already has {existing_count} matches — skipping")
+                team_count = session.query(models.Team).filter_by(league_id=lid).count()
+                standing_count = session.query(models.Standing).filter_by(league_id=lid, season=season).count()
+                complete_core = existing_count > 0 and team_count > 0 and standing_count > 0
+                if complete_core and season not in force_refresh_seasons:
+                    logging.info(f"Season {season} déjà complète ({existing_count} matchs, {team_count} équipes, {standing_count} classements) — ignorée")
                     _progress(f"Ligue {lid} - {season}: déjà en base ({existing_count} matchs)", increment=3)
                     continue
 
                 # Teams
                 _progress(f"Ligue {lid} - {season}: téléchargement des équipes")
                 tries = 0
+                teams_ok = False
                 while tries < max_retries:
                     try:
                         resp = client.get_teams(lid, season)
-                        for t in resp.get('response', []):
+                        team_items = resp.get('response', [])
+                        for t in team_items:
                             team_info = t.get('team') if 'team' in t else t
                             _get_or_create_team(session, team_info, league_id=lid)
+                        teams_ok = bool(team_items)
                         break
                     except HTTPError as e:
                         tries += 1
@@ -889,6 +915,8 @@ def import_leagues_cautious(
                         tries += 1
                         logging.warning(f"Error fetching teams {lid}/{season}: {e} — retry {tries}")
                         time.sleep(pause * tries)
+                if not teams_ok:
+                    raise RuntimeError(f"Échec du téléchargement des équipes ({lid}/{season}) après {max_retries} tentatives.")
                 _progress(f"Ligue {lid} - {season}: équipes traitées", increment=1)
 
                 time.sleep(pause)
@@ -896,6 +924,7 @@ def import_leagues_cautious(
                 # Fixtures
                 _progress(f"Ligue {lid} - {season}: téléchargement des matchs")
                 tries = 0
+                fixtures_ok = False
                 while tries < max_retries:
                     try:
                         resp = client.get_fixtures(lid, season)
@@ -918,6 +947,10 @@ def import_leagues_cautious(
                             page += 1
                             resp = client._get('/fixtures', {'league': lid, 'season': season, 'page': page})
                             items = resp.get('response', [])
+                        # An empty response is valid only for a genuinely empty
+                        # competition; keep it retryable so missing data is not
+                        # silently marked complete.
+                        fixtures_ok = bool(items) or bool(session.query(models.Match).filter_by(league_id=lid, season=season).count())
                         break
                     except HTTPError as e:
                         tries += 1
@@ -927,6 +960,8 @@ def import_leagues_cautious(
                         tries += 1
                         logging.warning(f"Error fetching fixtures {lid}/{season}: {e} — retry {tries}")
                         time.sleep(pause * tries)
+                if not fixtures_ok:
+                    raise RuntimeError(f"Échec du téléchargement des matchs ({lid}/{season}) après {max_retries} tentatives.")
                 _progress(f"Ligue {lid} - {season}: matchs traités", increment=1)
 
                 time.sleep(pause)
@@ -934,6 +969,7 @@ def import_leagues_cautious(
                 # Standings
                 _progress(f"Ligue {lid} - {season}: téléchargement du classement")
                 tries = 0
+                standings_ok = False
                 while tries < max_retries:
                     try:
                         resp = client.get_standings(lid, season)
@@ -976,6 +1012,7 @@ def import_leagues_cautious(
                                                                    goals_against=ga, goal_difference=gd)
                                             session.add(srec)
                                 session.commit()
+                        standings_ok = bool(session.query(models.Standing).filter_by(league_id=lid, season=season).count())
                         break
                     except HTTPError as e:
                         tries += 1
@@ -985,6 +1022,8 @@ def import_leagues_cautious(
                         tries += 1
                         logging.warning(f"Error fetching standings {lid}/{season}: {e} — retry {tries}")
                         time.sleep(pause * tries)
+                if not standings_ok:
+                    raise RuntimeError(f"Échec du téléchargement du classement ({lid}/{season}) après {max_retries} tentatives.")
                 _progress(f"Ligue {lid} - {season}: classement traité", increment=1)
 
                 # polite pause between seasons

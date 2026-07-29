@@ -1,17 +1,15 @@
-from sqlalchemy import text
+from sqlalchemy import text, inspect
 
 from database.database import engine
 
 
 def ensure_match_score_columns() -> None:
     with engine.begin() as conn:
-        table_exists = conn.execute(
-            text("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'matches'")
-        ).fetchone()
-        if not table_exists:
+        inspector = inspect(conn)
+        if not inspector.has_table("matches"):
             return
 
-        match_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(matches)")).fetchall()}
+        match_columns = {column["name"] for column in inspector.get_columns("matches")}
         missing_match_columns = {
             "home_goals": "INTEGER",
             "away_goals": "INTEGER",
