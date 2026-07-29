@@ -1908,6 +1908,10 @@ def _render_upcoming_match_analysis(fixture: pd.Series):
         st.plotly_chart(
             radar, width="stretch", key=f"upcoming_radar_{fixture_id}"
         )
+        st.caption(
+            "Résumé du graphique : comparaison des victoires, de l’attaque, "
+            "de la défense et de la forme des deux équipes (0 = faible, 100 = fort)."
+        )
 
     with prediction_tab:
         adjustment = details.get("player_adjustment")

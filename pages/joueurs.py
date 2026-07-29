@@ -300,6 +300,10 @@ def _render_visual_analysis(selected: pd.Series, players: pd.DataFrame):
                 config={"displayModeBar": False},
                 key=f"player_wheel_{int(selected.get('player_id', 0))}_{index}",
             )
+            column.caption(
+                "Résumé : chaque rayon représente un indicateur. Plus il est long, "
+                "meilleur est le résultat (score sur 100)."
+            )
 
     ranked = sorted(all_metrics, key=lambda item: item["percentile"], reverse=True)
     strengths = ranked[: min(4, len(ranked))]

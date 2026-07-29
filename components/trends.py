@@ -38,7 +38,8 @@ def _trend_figure(trend: dict, title: str):
             marker={
                 "size": 11,
                 "color": frame["score"],
-                "colorscale": [[0, "#e65b55"], [0.5, "#e7b631"], [1, "#18a66f"]],
+                # Palette sans jaune : rouge = faible, bleu = moyen, turquoise = fort.
+                "colorscale": [[0, "#e65b55"], [0.5, "#4f86aa"], [1, "#18a66f"]],
                 "cmin": 0,
                 "cmax": 100,
                 "line": {"color": "#ffffff", "width": 2},
@@ -126,6 +127,13 @@ def render_trend(trend: dict, title: str, key: str):
             config={"displayModeBar": False},
             key=key,
         )
+        recent = trend.get("recent_average")
+        previous = trend.get("previous_average")
+        if recent is not None and previous is not None:
+            st.caption(
+                f"Résumé : indice moyen {float(recent):.1f}/100 sur les matchs récents "
+                f"contre {float(previous):.1f}/100 auparavant."
+            )
     if status == "progression":
         st.success(
             "Les performances des matchs les plus récents sont supérieures à "

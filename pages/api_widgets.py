@@ -31,10 +31,23 @@ def _widget_html(api_key: str) -> str:
             justify-content: center;
           }}
           .widget-wrap {{
-            width: min(760px, 100vw);
+            width: 100%;
+            max-width: 760px;
+            min-width: 0;
             height: 860px;
             overflow: hidden;
             background: #f5f7f2;
+          }}
+          /* API-Sports injects a wide table on desktop. Keep it inside the
+             iframe on phones instead of forcing horizontal page scrolling. */
+          api-sports-widget {{
+            display: block;
+            max-width: 100%;
+            overflow-x: auto;
+          }}
+          @media (max-width: 600px) {{
+            .widget-wrap {{ height: 760px; }}
+            body {{ width: 100%; overflow-x: hidden; }}
           }}
         </style>
       </head>
@@ -72,9 +85,9 @@ def show():
         st.error("API_FOOTBALL_KEY est absent du fichier .env.")
         return
 
-    _, center, _ = st.columns([1, 8, 1])
-    with center:
-        st.iframe(_widget_html(api_key), height=880, width=780)
+    # ``width=780`` caused a horizontal overflow on phones.  Stretch lets
+    # Streamlit size the iframe to the available content width.
+    st.iframe(_widget_html(api_key), height=880, width="stretch")
 
 
 if __name__ == "__main__":

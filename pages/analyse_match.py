@@ -887,6 +887,10 @@ def _legacy_show():
         )
         if radar is not None:
             st.plotly_chart(radar, width="stretch", key="radar_match_analysis")
+            st.caption(
+                "Résumé du graphique : comparaison des victoires, de l’attaque, "
+                "de la défense, de la forme et de l’expérience sur une échelle de 0 à 100."
+            )
 
         st.subheader("Forme récente")
         home_recent_10 = home_form
@@ -1371,6 +1375,10 @@ def show():
                 radar,
                 width="stretch",
                 key="simple_radar_match_sheet",
+            )
+            st.caption(
+                "Résumé du graphique : la zone la plus étendue indique les domaines "
+                "où l’équipe est la plus forte, sur 100."
             )
 
     with tactical_tab:

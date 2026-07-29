@@ -397,6 +397,7 @@ def show():
                 color="#164d73",
                 height=300,
             )
+            st.caption("Résumé : chaque barre indique le nombre de matchs à venir par championnat.")
             with st.expander("Voir les dates précises"):
                 st.dataframe(upcoming_table, width="stretch", hide_index=True)
 
@@ -415,6 +416,7 @@ def show():
                 color=["#2aa198", "#164d73"],
                 height=300,
             )
+            st.caption("Résumé : les barres comparent les matchs importés et les matchs déjà joués.")
             with st.expander("Voir le détail des saisons"):
                 st.dataframe(readiness_table, width="stretch", hide_index=True)
 

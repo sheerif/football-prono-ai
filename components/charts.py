@@ -117,7 +117,7 @@ def radar_team_comparison(labels, values_a, values_b, name_a="Equipe A", name_b=
             fill="toself",
             name=name_a,
             line={"color": "#2aa198", "width": 2},
-            fillcolor="rgba(220, 174, 79, 0.22)",
+            fillcolor="rgba(42, 161, 152, 0.22)",
         )
     )
     fig.add_trace(

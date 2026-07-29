@@ -133,7 +133,7 @@ def inject_app_style():
         }
         html, body, [data-testid="stAppViewContainer"] {
             background:
-                radial-gradient(circle at 8% -5%, rgba(220, 174, 79, 0.18), transparent 28rem),
+                radial-gradient(circle at 8% -5%, rgba(42, 161, 152, 0.18), transparent 28rem),
                 linear-gradient(180deg, #ffffff 0%, var(--app-bg) 74%, #e8eef4 100%);
             color: var(--app-ink);
         }
@@ -231,14 +231,14 @@ def inject_app_style():
             display: inline-block;
             padding: 0.32rem 0.7rem;
             border-radius: 999px;
-            background: rgba(220, 174, 79, 0.14);
+            background: rgba(42, 161, 152, 0.14);
             color: #176b73;
             font-size: 0.78rem;
             font-weight: 800;
             letter-spacing: 0.04em;
             text-transform: uppercase;
             margin: 0.65rem 0 0.55rem 0;
-            border: 1px solid rgba(220, 174, 79, 0.26);
+            border: 1px solid rgba(42, 161, 152, 0.26);
         }
         div[data-testid="stVerticalBlockBorderWrapper"] > div {
             border-color: var(--app-line);
@@ -299,7 +299,7 @@ def inject_app_style():
         }
         .stButton > button {
             border-radius: 10px;
-            border: 1px solid rgba(220, 174, 79, 0.50);
+            border: 1px solid rgba(42, 161, 152, 0.50);
             font-weight: 800;
             min-height: 2.75rem;
             box-shadow: 0 10px 24px rgba(7, 26, 43, 0.12);
@@ -315,7 +315,7 @@ def inject_app_style():
         }
         [data-testid="stSidebar"] {
             background:
-                radial-gradient(circle at 50% 0%, rgba(220,174,79,.12), transparent 17rem),
+                radial-gradient(circle at 50% 0%, rgba(42,161,152,.12), transparent 17rem),
                 linear-gradient(180deg, #071a2b 0%, #0a243b 100%);
             color: #e8eef4;
         }
@@ -328,7 +328,7 @@ def inject_app_style():
             color: #d7e1ea;
         }
         [data-testid="stSidebar"] hr {
-            border-color: rgba(220, 174, 79, 0.24);
+            border-color: rgba(42, 161, 152, 0.24);
         }
         [data-testid="stSidebar"] [role="radiogroup"] {
             gap: 0.35rem;
@@ -338,7 +338,7 @@ def inject_app_style():
             border-radius: 8px;
         }
         [data-testid="stSidebar"] [role="radiogroup"] label:hover {
-            background: rgba(220, 174, 79, 0.10);
+            background: rgba(42, 161, 152, 0.10);
         }
         div[data-baseweb="select"] > div,
         div[data-baseweb="input"] > div,
@@ -352,7 +352,7 @@ def inject_app_style():
             font-weight: 800;
         }
         button[data-baseweb="tab"][aria-selected="true"] {
-            background: rgba(220, 174, 79, 0.13);
+            background: rgba(42, 161, 152, 0.13);
             color: var(--app-green);
         }
         div[data-testid="stAlert"] {
@@ -368,7 +368,7 @@ def inject_app_style():
             margin: .2rem 0 1.35rem;
             padding: 1.15rem 1.3rem;
             overflow: hidden;
-            border: 1px solid rgba(220,174,79,.42);
+            border: 1px solid rgba(42,161,152,.42);
             border-radius: 22px;
             background:
                 linear-gradient(90deg, rgba(15,20,20,.78) 0%, rgba(28,34,30,.68) 52%, rgba(20,25,22,.58) 100%),
@@ -396,7 +396,7 @@ def inject_app_style():
             bottom: -70px;
             width: 180px;
             height: 180px;
-            border: 2px solid rgba(220,174,79,.32);
+            border: 2px solid rgba(42,161,152,.32);
             border-radius: 50%;
             box-shadow: 0 0 0 22px rgba(255,255,255,.04);
         }
@@ -418,7 +418,7 @@ def inject_app_style():
             place-items: center;
             width: 4.4rem;
             height: 4.4rem;
-            border: 1px solid rgba(220,174,79,.72);
+            border: 1px solid rgba(42,161,152,.72);
             border-radius: 18px;
             background: linear-gradient(145deg, #0f3555, #071a2b);
             color: var(--app-gold);
@@ -468,14 +468,14 @@ def inject_app_style():
             border-radius: 10px;
             background: linear-gradient(135deg, #0b2b48, #164d73);
             color: var(--app-gold);
-            box-shadow: inset 0 0 0 1px rgba(220,174,79,.24);
+            box-shadow: inset 0 0 0 1px rgba(42,161,152,.24);
             font-size: 1rem;
         }
         .visual-section::after {
             content: "";
             flex: 1;
             height: 1px;
-            background: linear-gradient(90deg, rgba(220,174,79,.50), transparent);
+            background: linear-gradient(90deg, rgba(42,161,152,.50), transparent);
         }
         .visual-kpi {
             position: relative;
@@ -573,7 +573,7 @@ def inject_app_style():
             margin: 0 0 .28rem 0;
         }
         [data-testid="stDownloadButton"] > button {
-            border-color: rgba(220,174,79,.48);
+            border-color: rgba(42,161,152,.48);
             color: var(--app-navy);
         }
         button[data-baseweb="tab"] {
@@ -605,6 +605,25 @@ def inject_app_style():
         }
         /* Mobile portrait and small phones */
         @media (max-width: 600px) {
+            /* Stack Streamlit columns on phones so labels and values keep
+               their full width. This also prevents cards/tables creating a
+               horizontal page scrollbar. */
+            [data-testid="stHorizontalBlock"] {
+                flex-wrap: wrap !important;
+                gap: .65rem !important;
+            }
+            [data-testid="stHorizontalBlock"] > [data-testid="column"] {
+                flex: 1 1 100% !important;
+                width: 100% !important;
+                min-width: 0 !important;
+                max-width: 100% !important;
+            }
+            [data-testid="stAppViewContainer"],
+            [data-testid="stAppViewContainer"] > .main,
+            .block-container {
+                max-width: 100%;
+                overflow-x: hidden;
+            }
             .visual-hero {
                 grid-template-columns: auto 1fr;
                 gap: .75rem;
@@ -669,6 +688,14 @@ def inject_app_style():
 
         /* Tablets and large phones */
         @media (min-width: 601px) and (max-width: 900px) {
+            [data-testid="stHorizontalBlock"] {
+                flex-wrap: wrap !important;
+                gap: .8rem !important;
+            }
+            [data-testid="stHorizontalBlock"] > [data-testid="column"] {
+                flex: 1 1 calc(50% - .8rem) !important;
+                min-width: min(100%, 280px) !important;
+            }
             .block-container {
                 padding-top: 0.9rem;
                 padding-left: 0.9rem;
@@ -685,6 +712,18 @@ def inject_app_style():
 
         /* Shared touch layout */
         @media (max-width: 900px) {
+            iframe,
+            [data-testid="stIFrame"] {
+                display: block;
+                width: 100% !important;
+                max-width: 100% !important;
+                border: 0;
+            }
+            img,
+            [data-testid="stImage"] img {
+                max-width: 100% !important;
+                height: auto;
+            }
             [data-testid="stSidebar"] {
                 width: 100% !important;
                 min-width: 0 !important;
@@ -700,23 +739,19 @@ def inject_app_style():
                 margin: 0.16rem 0;
                 font-size: 0.9rem;
             }
-            .app-rail-brand,
-            .sidebar-brand {
+            .app-rail-brand {
                 margin-bottom: 0.55rem !important;
                 padding: 0.65rem !important;
             }
-            .app-rail-mark,
-            .sidebar-mark {
+            .app-rail-mark {
                 width: 2.15rem !important;
                 height: 2.15rem !important;
                 font-size: 0.78rem !important;
             }
-            .app-rail-title,
-            .sidebar-brand h2 {
+            .app-rail-title {
                 font-size: 0.95rem !important;
             }
-            .app-rail-subtitle,
-            .sidebar-brand p {
+            .app-rail-subtitle {
                 font-size: 0.72rem !important;
             }
         }
@@ -738,21 +773,14 @@ def inject_app_style():
 
 
 def render_page_navigation():
-    st.sidebar.title("Prono insight")
-    st.sidebar.markdown("---")
-    links = [
-        ("app.py", "Tableau de bord"),
-        ("pages/analyse_match.py", "Analyse & comparaison"),
-        ("pages/data_management.py", "Mise à jour"),
-        ("pages/joueurs.py", "Joueurs"),
-        ("pages/matchs_a_venir.py", "Matchs à venir"),
-        ("pages/prediction_ia.py", "Prédictions"),
-    ]
-    for page, label in links:
-        try:
-            st.sidebar.page_link(page, label=label)
-        except Exception:
-            pass
+    """Deprecated navigation hook.
+
+    Navigation is rendered once by ``sidebar.render_app_rail`` from
+    :func:`run_direct_page`.  The previous implementation built a second
+    sidebar menu, which caused duplicate links and inconsistent active states.
+    Kept as a no-op for third-party imports during the transition.
+    """
+    return None
 
 
 def page_hero(title: str, description: str):
