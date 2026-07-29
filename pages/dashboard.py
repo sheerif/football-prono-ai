@@ -391,7 +391,14 @@ def show():
         if upcoming_table.empty:
             st.info("Aucun match à venir enregistré.")
         else:
-            st.dataframe(upcoming_table, width="stretch", hide_index=True)
+            st.bar_chart(
+                upcoming_table.set_index("Championnat")[["Matchs à venir"]],
+                horizontal=True,
+                color="#126447",
+                height=300,
+            )
+            with st.expander("Voir les dates précises"):
+                st.dataframe(upcoming_table, width="stretch", hide_index=True)
 
     readiness_table = _league_readiness_table(matches_df, league_seasons_df)
     with table_cols[1].container(border=True):
@@ -400,7 +407,16 @@ def show():
         if readiness_table.empty:
             st.info("Aucun championnat alimenté.")
         else:
-            st.dataframe(readiness_table, width="stretch", hide_index=True)
+            st.bar_chart(
+                readiness_table.set_index("Championnat")[
+                    ["Matchs importés", "Matchs joués"]
+                ],
+                horizontal=True,
+                color=["#d8a528", "#126447"],
+                height=300,
+            )
+            with st.expander("Voir le détail des saisons"):
+                st.dataframe(readiness_table, width="stretch", hide_index=True)
 
     st.caption("Les indicateurs sont calculés à partir des matchs présents dans SQLite. Si les données sont vides, allez dans 'Mise à jour'.")
 

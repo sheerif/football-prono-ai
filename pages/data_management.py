@@ -131,14 +131,18 @@ def show():
     )
 
     counts = _summary_counts()
-    cols = st.columns(7)
-    cols[0].metric("Championnats", counts["leagues"])
-    cols[1].metric("Équipes", counts["teams"])
-    cols[2].metric("Matchs", counts["matches"])
-    cols[3].metric("Classements", counts["standings"])
-    cols[4].metric("Joueurs", counts["players"])
-    cols[5].metric("Compositions", counts["lineups"])
-    cols[6].metric("Analyses", counts["analyses"])
+    ui.kpi_grid(
+        [
+            {"label": "Championnats", "value": counts["leagues"], "caption": "Compétitions suivies"},
+            {"label": "Équipes", "value": counts["teams"], "caption": "Clubs enregistrés"},
+            {"label": "Matchs", "value": counts["matches"], "caption": "Rencontres en base"},
+            {"label": "Classements", "value": counts["standings"], "caption": "Positions disponibles"},
+            {"label": "Joueurs", "value": counts["players"], "caption": "Profils persistés"},
+            {"label": "Compositions", "value": counts["lineups"], "caption": "Onze officiels ou projetés"},
+            {"label": "Analyses", "value": counts["analyses"], "caption": "Études conservées"},
+        ],
+        columns=4,
+    )
 
     _render_jobs()
 

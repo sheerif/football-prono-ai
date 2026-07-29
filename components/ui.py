@@ -1,6 +1,78 @@
+import html
+import re
+
 import streamlit as st
 
 from services.season_format import season_period
+
+
+PAGE_ICONS = {
+    "Prono insight": "⚽",
+    "Tableau de bord": "📊",
+    "Mise à jour": "🔄",
+    "Joueurs": "👤",
+    "Matchs à venir": "🗓️",
+    "Analyse": "🔎",
+    "Analyse & comparaison": "⚔️",
+    "Prédictions": "🎯",
+    "Widgets Live": "📡",
+}
+
+LABEL_ICONS = {
+    "match": "⚽",
+    "joueur": "👤",
+    "équipe": "🛡️",
+    "composition": "🧩",
+    "forme": "🔥",
+    "but": "🥅",
+    "passe": "🎯",
+    "minute": "⏱️",
+    "victoire": "🏆",
+    "nul": "🤝",
+    "défaite": "📉",
+    "saison": "📅",
+    "championnat": "🌍",
+    "prédiction": "🔮",
+    "probabilité": "📈",
+    "confiance": "✅",
+    "analyse": "🔎",
+    "statistique": "📊",
+    "tactique": "🧠",
+    "stratégie": "♟️",
+    "téléchargement": "⬇️",
+    "synchronisation": "🔄",
+    "base": "🗄️",
+    "carton": "🟨",
+    "note": "⭐",
+    "attaque": "⚡",
+    "défense": "🧱",
+}
+
+
+def _icon_for(label: str, fallback: str = "◆") -> str:
+    normalized = str(label or "").lower()
+    for token, icon in LABEL_ICONS.items():
+        if token in normalized:
+            return icon
+    return fallback
+
+
+def _page_icon(title: str) -> str:
+    for token, icon in PAGE_ICONS.items():
+        if token.lower() in str(title).lower():
+            return icon
+    return "⚽"
+
+
+def _progress_value(value) -> float | None:
+    raw = str(value or "").replace(",", ".")
+    percent = re.search(r"(-?\d+(?:\.\d+)?)\s*%", raw)
+    if percent:
+        return max(0.0, min(100.0, float(percent.group(1))))
+    score = re.search(r"(-?\d+(?:\.\d+)?)\s*/\s*100", raw)
+    if score:
+        return max(0.0, min(100.0, float(score.group(1))))
+    return None
 
 
 def inject_app_style():
@@ -135,6 +207,18 @@ def inject_app_style():
             overflow-wrap: anywhere;
             white-space: normal;
         }
+        div[data-testid="stMetric"] label::before {
+            content: "◆";
+            display: inline-grid;
+            place-items: center;
+            width: 1.35rem;
+            height: 1.35rem;
+            margin-right: .38rem;
+            border-radius: 7px;
+            background: rgba(18,100,71,.10);
+            color: var(--app-green);
+            font-size: .65rem;
+        }
         div[data-testid="stDataFrame"],
         div[data-testid="stTable"] {
             border-radius: 8px;
@@ -199,6 +283,168 @@ def inject_app_style():
             border-radius: 8px;
             border: 1px solid rgba(22, 32, 27, 0.08);
         }
+        .visual-hero {
+            position: relative;
+            display: grid;
+            grid-template-columns: auto minmax(0, 1fr) auto;
+            align-items: center;
+            gap: 1.15rem;
+            margin: .2rem 0 1.35rem;
+            padding: 1.15rem 1.3rem;
+            overflow: hidden;
+            border: 1px solid rgba(18,100,71,.18);
+            border-radius: 18px;
+            background:
+                radial-gradient(circle at 85% 20%, rgba(216,165,40,.26), transparent 13rem),
+                linear-gradient(135deg, #102f24, #18563f 62%, #244c3b);
+            box-shadow: 0 20px 44px rgba(16,47,36,.18);
+            color: white;
+        }
+        .visual-hero::after {
+            content: "";
+            position: absolute;
+            right: -35px;
+            bottom: -70px;
+            width: 180px;
+            height: 180px;
+            border: 2px solid rgba(255,255,255,.16);
+            border-radius: 50%;
+            box-shadow: 0 0 0 22px rgba(255,255,255,.04);
+        }
+        .visual-hero-icon {
+            display: grid;
+            place-items: center;
+            width: 4.4rem;
+            height: 4.4rem;
+            border: 1px solid rgba(255,255,255,.28);
+            border-radius: 18px;
+            background: linear-gradient(135deg, rgba(185,215,111,.95), rgba(216,165,40,.96));
+            box-shadow: 0 12px 28px rgba(0,0,0,.22);
+            font-size: 2rem;
+        }
+        .visual-hero-eyebrow {
+            color: #d8e9ab;
+            font-size: .68rem;
+            font-weight: 900;
+            letter-spacing: .12em;
+            text-transform: uppercase;
+        }
+        .visual-hero h1 {
+            margin: .15rem 0 .3rem;
+            color: white;
+            font-size: clamp(1.8rem, 4vw, 3.45rem);
+            line-height: 1;
+        }
+        .visual-hero p {
+            max-width: 52rem;
+            margin: 0;
+            color: rgba(255,255,255,.76);
+            line-height: 1.45;
+        }
+        .visual-hero-ball {
+            position: relative;
+            z-index: 1;
+            font-size: 3.2rem;
+            opacity: .82;
+            transform: rotate(-12deg);
+        }
+        .visual-section {
+            display: flex;
+            align-items: center;
+            gap: .55rem;
+            margin: 1.25rem 0 .65rem;
+            color: var(--app-ink);
+            font-size: 1.3rem;
+            font-weight: 900;
+        }
+        .visual-section-icon {
+            display: grid;
+            place-items: center;
+            width: 2rem;
+            height: 2rem;
+            border-radius: 10px;
+            background: linear-gradient(135deg, rgba(18,100,71,.14), rgba(216,165,40,.18));
+            box-shadow: inset 0 0 0 1px rgba(18,100,71,.10);
+            font-size: 1rem;
+        }
+        .visual-section::after {
+            content: "";
+            flex: 1;
+            height: 1px;
+            background: linear-gradient(90deg, rgba(18,100,71,.22), transparent);
+        }
+        .visual-kpi {
+            position: relative;
+            min-height: 8.2rem;
+            padding: .92rem 1rem;
+            overflow: hidden;
+            border: 1px solid rgba(22,32,27,.10);
+            border-radius: 15px;
+            background: linear-gradient(145deg, rgba(255,255,255,.98), rgba(245,249,239,.95));
+            box-shadow: 0 12px 28px rgba(22,32,27,.08);
+        }
+        .visual-kpi::after {
+            content: "";
+            position: absolute;
+            width: 70px;
+            height: 70px;
+            right: -24px;
+            top: -26px;
+            border-radius: 50%;
+            background: var(--kpi-accent);
+            opacity: .10;
+        }
+        .visual-kpi-head {
+            display: flex;
+            align-items: center;
+            gap: .45rem;
+            color: var(--app-muted);
+            font-size: .75rem;
+            font-weight: 800;
+        }
+        .visual-kpi-icon {
+            display: grid;
+            place-items: center;
+            width: 1.85rem;
+            height: 1.85rem;
+            border-radius: 9px;
+            background: color-mix(in srgb, var(--kpi-accent) 16%, white);
+            font-size: .95rem;
+        }
+        .visual-kpi-value {
+            margin-top: .36rem;
+            color: var(--app-ink);
+            font-size: clamp(1.35rem, 2.4vw, 2rem);
+            font-weight: 950;
+            line-height: 1.05;
+        }
+        .visual-kpi-caption {
+            margin-top: .32rem;
+            color: var(--app-muted);
+            font-size: .69rem;
+            line-height: 1.25;
+        }
+        .visual-kpi-track {
+            height: 5px;
+            margin-top: .55rem;
+            overflow: hidden;
+            border-radius: 999px;
+            background: rgba(22,32,27,.08);
+        }
+        .visual-kpi-fill {
+            height: 100%;
+            border-radius: inherit;
+            background: var(--kpi-accent);
+        }
+        [data-testid="stProgress"] > div > div > div {
+            background: linear-gradient(90deg, var(--app-green), var(--app-gold));
+        }
+        button[data-baseweb="tab"] {
+            border: 1px solid transparent;
+        }
+        button[data-baseweb="tab"][aria-selected="true"] {
+            box-shadow: inset 0 -3px 0 var(--app-green);
+        }
         /* Hide Streamlit built-in page navigation (keep our custom menu) */
         div[data-testid="stSidebarNav"] {
             display: none !important;
@@ -222,6 +468,16 @@ def inject_app_style():
         }
         /* Mobile portrait and small phones */
         @media (max-width: 600px) {
+            .visual-hero {
+                grid-template-columns: auto 1fr;
+                gap: .75rem;
+                padding: .85rem;
+                border-radius: 14px;
+            }
+            .visual-hero-icon { width: 3.2rem; height: 3.2rem; font-size: 1.45rem; }
+            .visual-hero-ball { display: none; }
+            .visual-hero h1 { font-size: 1.65rem !important; }
+            .visual-kpi { min-height: 7rem; padding: .75rem; }
             .block-container {
                 padding-top: 0.65rem;
                 padding-left: 0.62rem;
@@ -364,36 +620,75 @@ def render_page_navigation():
 
 def page_hero(title: str, description: str):
     inject_app_style()
-    st.caption("Football intelligence")
-    st.title(title)
-    st.write(description)
-    st.divider()
+    safe_title = html.escape(str(title))
+    safe_description = html.escape(str(description))
+    st.html(
+        f"""
+        <div class="visual-hero">
+            <div class="visual-hero-icon">{_page_icon(title)}</div>
+            <div>
+                <div class="visual-hero-eyebrow">Football intelligence</div>
+                <h1>{safe_title}</h1>
+                <p>{safe_description}</p>
+            </div>
+            <div class="visual-hero-ball">⚽</div>
+        </div>
+        """
+    )
 
 
 def dashboard_hero(title: str, description: str, stats: list[tuple[str, str]]):
-    inject_app_style()
-    st.caption("Football intelligence")
-    st.title(title)
-    st.write(description)
-    cols = st.columns(len(stats))
-    for col, (label, value) in zip(cols, stats):
-        col.metric(label, value)
-    st.divider()
+    page_hero(title, description)
+    kpi_grid(
+        [
+            {"label": label, "value": value, "caption": "Vue synthétique"}
+            for label, value in stats
+        ],
+        columns=min(4, max(1, len(stats))),
+    )
 
 
 def section_label(label: str):
-    st.markdown(f"### {label}")
+    st.html(
+        f"""
+        <div class="visual-section">
+            <span class="visual-section-icon">{_icon_for(label)}</span>
+            <span>{html.escape(str(label))}</span>
+        </div>
+        """
+    )
 
 
-def kpi_grid(cards: list[dict]):
-    for start in range(0, len(cards), 3):
-        cols = st.columns(3)
-        for col, card in zip(cols, cards[start:start + 3]):
-            with col.container(border=True):
-                st.metric(str(card.get("label", "")), str(card.get("value", "")))
-                caption = card.get("caption")
-                if caption:
-                    st.caption(str(caption))
+def kpi_grid(cards: list[dict], columns: int = 3):
+    palette = ["#126447", "#d8a528", "#4d7c8a", "#7a5c96", "#c94b3f"]
+    columns = max(1, int(columns))
+    for start in range(0, len(cards), columns):
+        cols = st.columns(columns)
+        for offset, (col, card) in enumerate(zip(cols, cards[start:start + columns])):
+            label = str(card.get("label", ""))
+            value = str(card.get("value", ""))
+            caption = str(card.get("caption") or "")
+            accent = str(card.get("accent") or palette[(start + offset) % len(palette)])
+            progress = _progress_value(value)
+            track = (
+                f'<div class="visual-kpi-track"><div class="visual-kpi-fill" '
+                f'style="width:{progress:.1f}%"></div></div>'
+                if progress is not None
+                else ""
+            )
+            col.html(
+                f"""
+                <div class="visual-kpi" style="--kpi-accent:{html.escape(accent, quote=True)}">
+                    <div class="visual-kpi-head">
+                        <span class="visual-kpi-icon">{card.get("icon") or _icon_for(label)}</span>
+                        <span>{html.escape(label)}</span>
+                    </div>
+                    <div class="visual-kpi-value">{html.escape(value)}</div>
+                    {track}
+                    <div class="visual-kpi-caption">{html.escape(caption)}</div>
+                </div>
+                """
+            )
 
 
 def dashboard_band(insight: str, scope_items: list[tuple[str, str]]):
@@ -433,17 +728,27 @@ def render_cross_insight(insight: dict):
         "Synthèse commune de la forme, du rendement domicile/extérieur, des "
         "face-à-face, du modèle probabiliste et des buts attendus."
     )
-    columns = st.columns(3)
-    columns[0].metric("Tendance", insight["verdict"])
-    columns[1].metric(
-        "Écart synthétique",
-        f"{abs(insight['edge'])} points",
-        help="Amplitude de l'avantage après combinaison des différents signaux.",
-    )
-    columns[2].metric(
-        "Fiabilité des données",
-        f"{insight['reliability']} %",
-        insight["reliability_label"],
+    kpi_grid(
+        [
+            {
+                "label": "Tendance",
+                "value": insight["verdict"],
+                "caption": "Synthèse des signaux",
+                "icon": "🧭",
+            },
+            {
+                "label": "Écart synthétique",
+                "value": f"{abs(insight['edge'])} points",
+                "caption": "Amplitude de l’avantage",
+                "icon": "⚖️",
+            },
+            {
+                "label": "Fiabilité des données",
+                "value": f"{insight['reliability']} %",
+                "caption": insight["reliability_label"],
+                "icon": "✅",
+            },
+        ]
     )
 
     if insight["verdict"] == "Match équilibré":
@@ -460,16 +765,34 @@ def render_cross_insight(insight: dict):
             f"{insight['verdict']} : les principaux indicateurs convergent."
         )
 
-    st.markdown("#### Détail des signaux")
-    for factor in insight["factors"]:
-        strength = factor["strength"]
-        intensity = (
-            "marqué" if strength >= 35 else "modéré" if strength >= 15 else "léger"
-        )
-        st.write(
-            f"- **{factor['factor']}** : {factor['advantage']} "
-            f"— signal {intensity} ({strength}/100)"
-        )
+    st.markdown("#### Détail visuel des signaux")
+    for start in range(0, len(insight["factors"]), 2):
+        columns = st.columns(2)
+        for column, factor in zip(columns, insight["factors"][start:start + 2]):
+            strength = max(0.0, min(100.0, float(factor["strength"])))
+            intensity = (
+                "Signal marqué" if strength >= 35
+                else "Signal modéré" if strength >= 15
+                else "Signal léger"
+            )
+            factor_name = str(factor["factor"])
+            column.html(
+                f"""
+                <div class="visual-kpi" style="--kpi-accent:#126447;min-height:7.4rem">
+                    <div class="visual-kpi-head">
+                        <span class="visual-kpi-icon">{_icon_for(factor_name, "📍")}</span>
+                        <span>{html.escape(factor_name)}</span>
+                    </div>
+                    <div style="margin-top:.45rem;font-weight:850;color:#16201b">
+                        {html.escape(str(factor["advantage"]))}
+                    </div>
+                    <div class="visual-kpi-track">
+                        <div class="visual-kpi-fill" style="width:{strength:.1f}%"></div>
+                    </div>
+                    <div class="visual-kpi-caption">{intensity} · {strength:.0f}/100</div>
+                </div>
+                """
+            )
 
     with st.expander("Réserves et limites de cette lecture"):
         if insight["caveats"]:

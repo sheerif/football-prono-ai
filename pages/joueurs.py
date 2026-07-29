@@ -491,11 +491,31 @@ def show():
     if selected_positions:
         filtered = filtered[filtered["games_position"].isin(selected_positions)]
 
-    totals = st.columns(4)
-    totals[0].metric("Joueurs", filtered["player_id"].nunique())
-    totals[1].metric("Buts", _integer(filtered["goals_total"].sum()))
-    totals[2].metric("Passes décisives", _integer(filtered["goals_assists"].sum()))
-    totals[3].metric("Minutes", f"{_integer(filtered['games_minutes'].sum()):,}".replace(",", " "))
+    ui.kpi_grid(
+        [
+            {
+                "label": "Joueurs",
+                "value": filtered["player_id"].nunique(),
+                "caption": "Profils dans le filtre",
+            },
+            {
+                "label": "Buts",
+                "value": _integer(filtered["goals_total"].sum()),
+                "caption": "Production offensive",
+            },
+            {
+                "label": "Passes décisives",
+                "value": _integer(filtered["goals_assists"].sum()),
+                "caption": "Occasions converties",
+            },
+            {
+                "label": "Minutes",
+                "value": f"{_integer(filtered['games_minutes'].sum()):,}".replace(",", " "),
+                "caption": "Temps de jeu cumulé",
+            },
+        ],
+        columns=4,
+    )
 
     st.caption(
         "Sélection interactive : cliquez directement sur une ligne pour afficher "

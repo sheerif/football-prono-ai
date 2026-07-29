@@ -426,11 +426,35 @@ def _show_match_prediction():
         )
 
         ui.section_label("Résultat")
-        cols = st.columns(4)
-        cols[0].metric(f"Victoire {home_name}", f"{pred['home_probability']} %")
-        cols[1].metric("Match nul", f"{pred['draw_probability']} %")
-        cols[2].metric(f"Victoire {away_name}", f"{pred['away_probability']} %")
-        cols[3].metric("Confiance", f"{pred['confidence']} %")
+        ui.kpi_grid(
+            [
+                {
+                    "label": f"Victoire {home_name}",
+                    "value": f"{pred['home_probability']} %",
+                    "caption": "Scénario domicile",
+                    "icon": "🏠",
+                },
+                {
+                    "label": "Match nul",
+                    "value": f"{pred['draw_probability']} %",
+                    "caption": "Scénario équilibré",
+                    "icon": "🤝",
+                },
+                {
+                    "label": f"Victoire {away_name}",
+                    "value": f"{pred['away_probability']} %",
+                    "caption": "Scénario extérieur",
+                    "icon": "✈️",
+                },
+                {
+                    "label": "Confiance",
+                    "value": f"{pred['confidence']} %",
+                    "caption": "Force du scénario dominant",
+                    "icon": "🎯",
+                },
+            ],
+            columns=4,
+        )
 
         st.dataframe(_glossary_table(), hide_index=True, width="stretch")
 
@@ -771,15 +795,26 @@ def _show_best_predictions():
 
         if not rankings.empty:
             best = rankings.iloc[0]
-            columns = st.columns(3)
-            columns[0].metric(
-                "Meilleur pronostic", best["Pronostic conseillé"]
+            ui.kpi_grid(
+                [
+                    {
+                        "label": "Meilleur pronostic",
+                        "value": best["Pronostic conseillé"],
+                        "caption": best["Match"],
+                        "icon": "🏆",
+                    },
+                    {
+                        "label": "Probabilité retenue",
+                        "value": f"{best['Probabilité retenue']} %",
+                        "caption": "Issue recommandée",
+                    },
+                    {
+                        "label": "Confiance",
+                        "value": f"{best['Confiance']} %",
+                        "caption": "Robustesse du signal",
+                    },
+                ]
             )
-            columns[1].metric(
-                "Probabilité retenue",
-                f"{best['Probabilité retenue']} %",
-            )
-            columns[2].metric("Confiance", f"{best['Confiance']} %")
             st.success(
                 f"Meilleur choix : {best['Pronostic conseillé']} sur "
                 f"{best['Match']} ({best['Confiance']} % de confiance). "

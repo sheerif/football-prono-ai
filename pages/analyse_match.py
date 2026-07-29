@@ -1318,17 +1318,27 @@ def show():
                         )
                     )
 
-        probability_columns = st.columns(3)
-        probability_columns[0].metric(
-            f"Victoire {home_view['team_name']}",
-            f"{prediction['home_probability']} %",
-        )
-        probability_columns[1].metric(
-            "Match nul", f"{prediction['draw_probability']} %"
-        )
-        probability_columns[2].metric(
-            f"Victoire {away_view['team_name']}",
-            f"{prediction['away_probability']} %",
+        ui.kpi_grid(
+            [
+                {
+                    "label": f"Victoire {home_view['team_name']}",
+                    "value": f"{prediction['home_probability']} %",
+                    "caption": "Projection domicile",
+                    "icon": "🏠",
+                },
+                {
+                    "label": "Match nul",
+                    "value": f"{prediction['draw_probability']} %",
+                    "caption": "Équilibre statistique",
+                    "icon": "🤝",
+                },
+                {
+                    "label": f"Victoire {away_view['team_name']}",
+                    "value": f"{prediction['away_probability']} %",
+                    "caption": "Projection extérieur",
+                    "icon": "✈️",
+                },
+            ]
         )
 
         ui.render_cross_insight(cross_insight)
