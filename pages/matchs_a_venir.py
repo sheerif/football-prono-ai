@@ -1320,6 +1320,8 @@ def _render_lineup_pitch(team: dict):
             photo = _display_text(player.get("player_photo"))
             rating = player.get("form_rating")
             rating_label = f"{float(rating):.1f}" if rating is not None else "–"
+            trend_status = player.get("trend_status", "stable")
+            trend_icon = {"progression": "↗", "regression": "↘", "stable": "→"}.get(trend_status, "→")
             if photo:
                 portrait = (
                     f'<img src="{html.escape(photo, quote=True)}" '
@@ -1333,7 +1335,7 @@ def _render_lineup_pitch(team: dict):
                 <div class="pitch-player">
                     <div class="pitch-photo">{portrait}</div>
                     <div class="pitch-name">{name}</div>
-                    <div class="pitch-rating">★ {rating_label}</div>
+                    <div class="pitch-rating">★ {rating_label} {trend_icon}</div>
                 </div>
                 """
             )
@@ -1429,7 +1431,7 @@ def _render_lineup_pitch(team: dict):
             padding: .08rem .28rem;
             border-radius: 999px;
             background: rgba(12,41,27,.82);
-            color: #f7d76b;
+            color: #9be5dc;
             font-size: .62rem;
             font-weight: 900;
         }}
@@ -1481,6 +1483,13 @@ def _render_team_lineup(team: dict | None, team_name: str):
             max(0.0, min(1.0, form_score / 100)),
             text=f"Forme estimée du onze · {form_score:.1f} / 100",
         )
+        trend_delta = float(team.get("form_trend_delta") or 0)
+        trend_icon = "↗" if trend_delta >= 0.3 else "↘" if trend_delta <= -0.3 else "→"
+        st.caption(
+            f"Progression récente du onze : {trend_icon} {trend_delta:+.2f} point(s) de note "
+            "entre le début et la fin des matchs observés."
+        )
+        st.caption("Sur le terrain : ↗ en progression · → stable · ↘ en régression")
         st.caption(
             f"Note moyenne : {team.get('average_rating', '-')} · "
             f"source : {team.get('form_source', 'indisponible')}"

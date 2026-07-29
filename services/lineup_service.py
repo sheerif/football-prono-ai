@@ -1077,13 +1077,26 @@ def _recent_player_form(team_id: int, before_date, limit: int = 5) -> dict[int, 
         return {}
     result = {}
     for player_id, group in frame.groupby("player_id"):
-        ratings = pd.to_numeric(group["rating"], errors="coerce").dropna()
+        ordered = group.copy()
+        ordered["rating_num"] = pd.to_numeric(ordered["rating"], errors="coerce")
+        rated = ordered.dropna(subset=["rating_num"]).sort_values("date")
+        ratings = rated["rating_num"]
+        trend_delta = 0.0
+        if len(ratings) >= 2:
+            half = max(1, len(ratings) // 2)
+            trend_delta = float(ratings.tail(half).mean() - ratings.head(half).mean())
         result[int(player_id)] = {
             "recent_rating": round(float(ratings.mean()), 2) if not ratings.empty else None,
             "recent_matches": int(len(ratings)),
             "recent_minutes": int(pd.to_numeric(group["minutes"], errors="coerce").fillna(0).sum()),
             "recent_goals": int(pd.to_numeric(group["goals_total"], errors="coerce").fillna(0).sum()),
             "recent_assists": int(pd.to_numeric(group["goals_assists"], errors="coerce").fillna(0).sum()),
+            "trend_delta": round(trend_delta, 2),
+            "trend_status": (
+                "progression" if trend_delta >= 0.3
+                else "regression" if trend_delta <= -0.3
+                else "stable"
+            ),
         }
     return result
 
@@ -1133,6 +1146,7 @@ def _enrich_lineup(
         season_ratings = {}
 
     starter_ratings = []
+    starter_trends = []
     line_values = defaultdict(list)
     recent_starters = 0
     recent_depth = []
@@ -1158,6 +1172,7 @@ def _enrich_lineup(
                 if form.get("recent_matches"):
                     recent_starters += 1
                     recent_depth.append(int(form["recent_matches"]))
+                    starter_trends.append(float(form.get("trend_delta") or 0.0))
             enriched.append(player)
         lineup[collection_name] = enriched
 
@@ -1175,6 +1190,10 @@ def _enrich_lineup(
         source = "moyennes de la saison"
     lineup["average_rating"] = round(average, 2)
     lineup["form_score"] = round(form_score, 1)
+    lineup["form_trend_delta"] = round(
+        sum(starter_trends) / len(starter_trends) if starter_trends else 0.0,
+        2,
+    )
     lineup["form_reliability"] = round(max(0.0, min(1.0, reliability)), 3)
     lineup["form_source"] = source
     composition_reliability = (
