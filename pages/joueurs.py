@@ -563,7 +563,7 @@ def _render_player_stats(row: pd.Series):
                 ("Note moyenne", "games_rating", None),
                 ("Entrées", "substitutes_in", None),
                 ("Sorties", "substitutes_out", None),
-                ("Sur le banc", "substitutes_bench", None),
+                ("Présences sur le banc", "substitutes_bench", None),
                 ("Capitaine", "games_captain", None),
                 ("Numéro", "games_number", None),
             ],

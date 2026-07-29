@@ -262,10 +262,12 @@ def inject_app_style():
         div[data-testid="stMetric"] label {
             color: var(--app-muted);
             font-weight: 700;
+            font-size: .88rem;
+            line-height: 1.25;
         }
         div[data-testid="stMetric"] [data-testid="stMetricValue"] {
             color: var(--app-ink);
-            font-size: 1.75rem;
+            font-size: 1.95rem;
             font-weight: 800;
             overflow-wrap: anywhere;
             white-space: normal;
@@ -505,8 +507,9 @@ def inject_app_style():
             align-items: center;
             gap: .45rem;
             color: var(--app-muted);
-            font-size: .75rem;
+            font-size: .9rem;
             font-weight: 800;
+            line-height: 1.25;
         }
         .visual-kpi-icon {
             display: grid;
@@ -521,15 +524,16 @@ def inject_app_style():
         .visual-kpi-value {
             margin-top: .36rem;
             color: var(--app-ink);
-            font-size: clamp(1.35rem, 2.4vw, 2rem);
+            font-size: clamp(1.65rem, 2.8vw, 2.35rem);
             font-weight: 950;
             line-height: 1.05;
+            letter-spacing: -.02em;
         }
         .visual-kpi-caption {
             margin-top: .32rem;
             color: var(--app-muted);
-            font-size: .69rem;
-            line-height: 1.25;
+            font-size: .8rem;
+            line-height: 1.35;
         }
         .visual-kpi-track {
             height: 5px;
