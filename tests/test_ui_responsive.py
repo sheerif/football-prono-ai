@@ -23,6 +23,7 @@ class ResponsiveUiContractTests(unittest.TestCase):
         self.assertIn("@media (max-width: 600px)", css)
         self.assertIn("flex: 1 1 100% !important", css)
         self.assertIn("max-width: 100% !important", css)
+        self.assertIn("background: rgba(248, 251, 252, .86)", css)
 
     def test_chart_summaries_are_rendered(self):
         files = [

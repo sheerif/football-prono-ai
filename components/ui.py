@@ -155,6 +155,13 @@ def inject_app_style():
             padding-left: 1.5rem;
             padding-right: 1.5rem;
         }
+        /* Stable reading surface above the stadium image. */
+        [data-testid="stAppViewContainer"] .main .block-container {
+            background: rgba(248, 251, 252, .86);
+            border-radius: 20px;
+            box-shadow: 0 10px 36px rgba(7, 26, 43, .08);
+            backdrop-filter: blur(5px);
+        }
         h1, h2, h3 {
             color: var(--app-ink);
             letter-spacing: 0;
