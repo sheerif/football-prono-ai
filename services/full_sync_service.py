@@ -415,7 +415,23 @@ def run_full_sync(progress_callback=None) -> dict:
         else:
             try:
                 sync_registry.mark(key, "season_players", "running")
-                data = player_service.sync_players(league_id, season)
+                data = player_service.sync_players(
+                    league_id,
+                    season,
+                    progress_callback=lambda page, pages, page_label: progress(
+                        15
+                        + int(
+                            (
+                                completed
+                                + page / max(1, pages)
+                            )
+                            / total_items
+                            * 85
+                        ),
+                        100,
+                        page_label,
+                    ),
+                )
                 count = int(data.get("statistics") or 0)
                 if data.get("truncated"):
                     status = "partial"

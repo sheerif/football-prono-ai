@@ -444,8 +444,24 @@ def _render_sync(
             st.warning(notice)
         if st.button("Synchroniser les joueurs", type="primary", width="stretch"):
             try:
-                with st.spinner("Téléchargement et enregistrement des joueurs…"):
-                    result = player_service.sync_players(league_id, season, team_id=team_id)
+                progress_bar = st.progress(
+                    0.0,
+                    text="0 % — Préparation du téléchargement des joueurs",
+                )
+
+                def update_progress(current, total, label):
+                    ratio = min(1.0, current / max(1, total))
+                    progress_bar.progress(
+                        ratio,
+                        text=f"{int(round(ratio * 100))} % — {label}",
+                    )
+
+                result = player_service.sync_players(
+                    league_id,
+                    season,
+                    team_id=team_id,
+                    progress_callback=update_progress,
+                )
                 if result["profiles"] == 0:
                     if fallback_season is not None:
                         st.session_state[season_key] = int(fallback_season)

@@ -1058,8 +1058,10 @@ def _build_previews(upcoming: pd.DataFrame, max_per_league: int, progress_callba
 
 
 def _update_progress(progress_bar, status_slot, current: int, total: int, label: str):
-    progress_bar.progress(min(1.0, current / max(1, total)))
-    status_slot.caption(label)
+    ratio = min(1.0, current / max(1, total))
+    percent = int(round(ratio * 100))
+    progress_bar.progress(ratio, text=f"{percent} % — {label}")
+    status_slot.caption(f"Progression : {percent} %")
 
 
 def _api_probability_line(prediction: dict) -> str:
@@ -1117,8 +1119,10 @@ def _render_match_detail(row: pd.Series, force_api_refresh: bool = False):
 
     st.info(row.get("Résumé") or "Résumé non disponible.")
 
-    with st.spinner("Chargement du conseil API si nécessaire..."):
-        api_prediction = _api_prediction(int(row["fixture_id"]), force_refresh=force_api_refresh)
+    api_progress = st.progress(0.0, text="0 % — Vérification du conseil API")
+    api_progress.progress(25 / 100, text="25 % — Lecture des données enregistrées")
+    api_prediction = _api_prediction(int(row["fixture_id"]), force_refresh=force_api_refresh)
+    api_progress.progress(100 / 100, text="100 % — Conseil API disponible")
 
     if api_prediction:
         st.markdown("#### Conseil API")
@@ -1799,16 +1803,26 @@ def _render_upcoming_match_analysis(fixture: pd.Series):
             width="stretch",
         ):
             try:
-                with st.spinner(
-                    "Téléchargement des compositions, effectifs et performances récentes…"
-                ):
-                    result = lineup_service.sync_match_intelligence(
-                        fixture_id=fixture_id,
-                        home_team_id=home_team,
-                        away_team_id=away_team,
-                        season=int(fixture["season"]),
-                        match_date=fixture["date"],
+                lineup_progress = st.progress(
+                    0.0,
+                    text="0 % — Préparation des compositions et performances",
+                )
+
+                def update_lineup_progress(current, total, label):
+                    ratio = min(1.0, current / max(1, total))
+                    lineup_progress.progress(
+                        ratio,
+                        text=f"{int(round(ratio * 100))} % — {label}",
                     )
+
+                result = lineup_service.sync_match_intelligence(
+                    fixture_id=fixture_id,
+                    home_team_id=home_team,
+                    away_team_id=away_team,
+                    season=int(fixture["season"]),
+                    match_date=fixture["date"],
+                    progress_callback=update_lineup_progress,
+                )
                 st.session_state[f"lineup_sync_{fixture_id}"] = result
                 st.rerun()
             except Exception as exc:
@@ -2013,7 +2027,7 @@ def show():
         st.info("Aucun match à venir ne correspond aux filtres sélectionnés.")
         return
 
-    progress_bar = st.progress(0, text="Préparation du téléchargement...")
+    progress_bar = st.progress(0, text="0 % — Préparation du téléchargement")
     status_slot = st.empty()
 
     _sync_missing_fixture_details(
@@ -2050,7 +2064,10 @@ def show():
             "les données identiques restent inchangées, les différences sont mises à jour."
         )
         if st.button("Synchroniser toutes les journées", type="primary", width="stretch"):
-            bulk_progress = st.progress(0, text="Synchronisation des détails des matchs...")
+            bulk_progress = st.progress(
+                0,
+                text="0 % — Synchronisation des détails des matchs",
+            )
             bulk_status = st.empty()
             fixture_stats = _sync_fixture_details(
                 upcoming,
@@ -2102,7 +2119,7 @@ def show():
     selected_round = st.selectbox("Journée", options=round_options, key="upcoming_round")
     round_rows = league_rows[league_rows["Journée"] == selected_round].copy().sort_values(["Date", "Heure", "Match"])
 
-    api_progress = st.progress(0, text="Vérification des conseils API...")
+    api_progress = st.progress(0, text="0 % — Vérification des conseils API")
     api_status = st.empty()
     api_stats = _prefetch_api_predictions(
         round_rows["fixture_id"].tolist(),

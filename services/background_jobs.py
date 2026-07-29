@@ -32,7 +32,7 @@ def _create_job(kind: str, label: str, details: dict | None = None) -> str:
             "label": label,
             "status": "running",
             "progress": 0.0,
-            "message": "Préparation...",
+            "message": "0 % — Préparation...",
             "details": details or {},
             "started_at": _now(),
             "finished_at": None,
@@ -56,7 +56,8 @@ def active_jobs() -> list[dict]:
 
 def _progress(job_id: str, current: int, total: int, label: str):
     ratio = min(1.0, current / max(1, total))
-    _set_job(job_id, progress=ratio, message=label)
+    percent = int(round(ratio * 100))
+    _set_job(job_id, progress=ratio, message=f"{percent} % — {label}")
 
 
 def start_manual_import(

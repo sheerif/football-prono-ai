@@ -397,6 +397,7 @@ def sync_match_intelligence(
     season: int,
     match_date,
     recent_limit: int = 5,
+    progress_callback=None,
 ) -> dict:
     """Synchronise composition, effectifs de saison et performances récentes."""
     from services import player_service
@@ -410,12 +411,20 @@ def sync_match_intelligence(
         "errors": [],
     }
     league_id = _fixture_league_id(int(fixture_id))
+
+    def progress(current: int, total: int, label: str):
+        if progress_callback:
+            progress_callback(current, max(1, total), label)
+
+    progress(0, 100, "Préparation des compositions et performances")
     try:
         result["lineups"] = sync_lineups(int(fixture_id))
     except Exception as exc:
         result["errors"].append(f"Compositions : {exc}")
+    progress(15, 100, "Composition du match vérifiée")
 
-    for team_id in (int(home_team_id), int(away_team_id)):
+    for team_index, team_id in enumerate((int(home_team_id), int(away_team_id))):
+        team_start = 15 + team_index * 15
         with engine.begin() as conn:
             existing = int(
                 conn.execute(
@@ -433,23 +442,36 @@ def sync_match_intelligence(
                     league_id=league_id,
                     season=int(season),
                     team_id=team_id,
+                    progress_callback=lambda current, total, label, start=team_start: progress(
+                        start + int((current / max(1, total)) * 15),
+                        100,
+                        label,
+                    ),
                 )
                 result["season_players"] += int(synced.get("profiles") or 0)
             except Exception as exc:
                 result["errors"].append(f"Effectif {team_id} : {exc}")
+        progress(team_start + 15, 100, f"Effectif de l’équipe {team_id} vérifié")
 
     fixture_ids = []
     for team_id in (int(home_team_id), int(away_team_id)):
         fixture_ids.extend(_recent_fixture_ids(team_id, match_date, recent_limit))
     fixture_ids = list(dict.fromkeys(fixture_ids))
     result["recent_fixtures"] = len(fixture_ids)
-    for recent_fixture_id in fixture_ids:
+    total_recent = max(1, len(fixture_ids))
+    for fixture_index, recent_fixture_id in enumerate(fixture_ids, start=1):
         try:
             saved = sync_fixture_players(recent_fixture_id)
             result["recent_players"] += int(saved.get("players") or 0)
         except Exception as exc:
             result["errors"].append(f"Match {recent_fixture_id} : {exc}")
+        progress(
+            45 + int((fixture_index / total_recent) * 55),
+            100,
+            f"Performance récente {fixture_index}/{len(fixture_ids)} enregistrée",
+        )
         time.sleep(0.35)
+    progress(100, 100, "Compositions et forme des joueurs synchronisées")
     return result
 
 

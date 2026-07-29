@@ -161,7 +161,13 @@ def _upsert_player(session, payload: dict, now: datetime.datetime):
     return saved
 
 
-def sync_players(league_id: int, season: int, team_id: int | None = None, max_pages: int = 100) -> dict:
+def sync_players(
+    league_id: int,
+    season: int,
+    team_id: int | None = None,
+    max_pages: int = 100,
+    progress_callback=None,
+) -> dict:
     """Synchronise tous les profils paginés pour une ligue/saison ou une équipe."""
     models.Base.metadata.create_all(bind=engine)
     session = SessionLocal()
@@ -170,8 +176,16 @@ def sync_players(league_id: int, season: int, team_id: int | None = None, max_pa
     statistics = 0
     total_pages = 1
     try:
+        if progress_callback:
+            progress_callback(0, 1, "Préparation de la synchronisation des joueurs")
         page = 1
         while page <= total_pages and page <= max_pages:
+            if progress_callback:
+                progress_callback(
+                    max(0, page - 1),
+                    max(1, total_pages),
+                    f"Téléchargement de la page {page}",
+                )
             response = client.get_players(
                 league_id=int(league_id),
                 season=int(season),
@@ -192,11 +206,23 @@ def sync_players(league_id: int, season: int, team_id: int | None = None, max_pa
             pages += 1
             paging = response.get("paging") or {}
             total_pages = max(1, _as_int(paging.get("total")) or 1)
+            if progress_callback:
+                progress_callback(
+                    pages,
+                    min(total_pages, max_pages),
+                    f"Page {pages}/{min(total_pages, max_pages)} enregistrée · {profiles} joueur(s)",
+                )
             page += 1
             if page <= total_pages:
                 time.sleep(0.35)
 
         truncated = total_pages > max_pages
+        if progress_callback:
+            progress_callback(
+                min(total_pages, max_pages),
+                min(total_pages, max_pages),
+                f"Synchronisation terminée · {profiles} joueur(s) enregistré(s)",
+            )
         return {
             "profiles": profiles,
             "statistics": statistics,
