@@ -134,13 +134,12 @@ def inject_app_style():
         html, body, [data-testid="stAppViewContainer"] {
             background:
                 radial-gradient(circle at 8% -5%, rgba(220, 174, 79, 0.18), transparent 28rem),
-                radial-gradient(circle at 94% 4%, rgba(42, 102, 145, 0.13), transparent 32rem),
                 linear-gradient(180deg, #ffffff 0%, var(--app-bg) 74%, #e8eef4 100%);
             color: var(--app-ink);
         }
         [data-testid="stAppViewContainer"] {
             background-image:
-                linear-gradient(180deg, rgba(7, 26, 43, .30) 0%, rgba(238, 243, 247, .78) 38%, rgba(238, 243, 247, .96) 100%),
+                linear-gradient(180deg, rgba(255, 255, 255, .10) 0%, rgba(238, 243, 247, .72) 42%, rgba(238, 243, 247, .96) 100%),
                 __STADIUM_BACKGROUND__;
             background-size: cover;
             background-position: center 18%;
@@ -364,10 +363,10 @@ def inject_app_style():
             border: 1px solid rgba(220,174,79,.42);
             border-radius: 22px;
             background:
-                linear-gradient(90deg, rgba(5,20,35,.78) 0%, rgba(7,31,52,.68) 52%, rgba(7,26,43,.58) 100%),
+                linear-gradient(90deg, rgba(15,20,20,.78) 0%, rgba(28,34,30,.68) 52%, rgba(20,25,22,.58) 100%),
                 repeating-linear-gradient(90deg, transparent 0 10%, rgba(255,255,255,.035) 10% 10.2%),
                 repeating-linear-gradient(0deg, transparent 0 18px, rgba(255,255,255,.022) 18px 19px),
-                radial-gradient(ellipse at 72% 110%, rgba(49,98,70,.72) 0%, rgba(23,57,77,.78) 43%, rgba(7,26,43,.86) 78%),
+                radial-gradient(ellipse at 72% 110%, rgba(70,105,69,.64) 0%, rgba(47,62,51,.72) 43%, rgba(25,30,26,.82) 78%),
                 __STADIUM_BACKGROUND__;
             background-size: cover, auto, auto, cover, cover;
             background-position: center, center, center, center, 50% 35%;
