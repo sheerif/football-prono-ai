@@ -316,6 +316,14 @@ def _render_visual_analysis(selected: pd.Series, players: pd.DataFrame):
 
 
 def _metric_rows(groups: list[tuple[str, str, str | None]], row: pd.Series):
+    units = {
+        "Apparitions": " matchs",
+        "Titularisations": " matchs",
+        "Entrées": " fois",
+        "Sorties": " fois",
+        "Présences sur le banc": " fois",
+        "Minutes": " min",
+    }
     cards = []
     for label, field, suffix in groups:
         raw = row.get(field)
@@ -325,7 +333,7 @@ def _metric_rows(groups: list[tuple[str, str, str | None]], row: pd.Series):
         cards.append(
             {
                 "label": label,
-                "value": f"{value}{suffix or ''}",
+                "value": f"{value}{suffix or units.get(label, '')}",
                 "caption": None,
             }
         )

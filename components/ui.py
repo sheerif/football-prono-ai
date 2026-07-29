@@ -163,6 +163,9 @@ def inject_app_style():
         p, span, label, div {
             overflow-wrap: anywhere;
         }
+        .main p, .main label, .main [data-testid="stCaptionContainer"] {
+            text-shadow: 0 1px 2px rgba(255,255,255,.72);
+        }
         [data-testid="stCaptionContainer"] {
             color: #486074;
             font-size: .88rem;
