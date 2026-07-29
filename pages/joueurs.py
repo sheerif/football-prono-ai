@@ -1,6 +1,7 @@
 import math
 
 import pandas as pd
+import plotly.graph_objects as go
 import streamlit as st
 
 from components import ui
@@ -14,6 +15,62 @@ POSITION_LABELS = {
     "Midfielder": "Milieu",
     "Attacker": "Attaquant",
 }
+
+OUTFIELD_ANALYSIS_GROUPS = [
+    (
+        "Technique et influence",
+        [
+            {"label": "Note moyenne", "kind": "direct", "fields": ["games_rating"], "digits": 2},
+            {"label": "Buts / 90", "kind": "per90", "fields": ["goals_total"], "digits": 2},
+            {"label": "Passes déc. / 90", "kind": "per90", "fields": ["goals_assists"], "digits": 2},
+            {"label": "Tirs cadrés", "kind": "ratio", "fields": ["shots_on"], "denominator": "shots_total", "digits": 0, "suffix": " %"},
+            {"label": "Passes clés / 90", "kind": "per90", "fields": ["passes_key"], "digits": 2},
+            {"label": "Précision passes", "kind": "direct", "fields": ["passes_accuracy"], "digits": 0, "suffix": " %"},
+            {"label": "Dribbles réussis", "kind": "ratio", "fields": ["dribbles_success"], "denominator": "dribbles_attempts", "digits": 0, "suffix": " %"},
+            {"label": "Fautes obtenues / 90", "kind": "per90", "fields": ["fouls_drawn"], "digits": 2},
+        ],
+    ),
+    (
+        "Engagement et maîtrise",
+        [
+            {"label": "Tacles / 90", "kind": "per90", "fields": ["tackles_total"], "digits": 2},
+            {"label": "Interceptions / 90", "kind": "per90", "fields": ["tackles_interceptions"], "digits": 2},
+            {"label": "Tirs bloqués / 90", "kind": "per90", "fields": ["tackles_blocks"], "digits": 2},
+            {"label": "Duels gagnés", "kind": "ratio", "fields": ["duels_won"], "denominator": "duels_total", "digits": 0, "suffix": " %"},
+            {"label": "Dribbles subis / 90", "kind": "per90", "fields": ["dribbles_past"], "digits": 2, "higher_is_better": False},
+            {"label": "Fautes / 90", "kind": "per90", "fields": ["fouls_committed"], "digits": 2, "higher_is_better": False},
+            {"label": "Cartons / 90", "kind": "per90", "fields": ["cards_yellow", "cards_red"], "digits": 2, "higher_is_better": False},
+            {"label": "Taux de titularisation", "kind": "ratio", "fields": ["games_lineups"], "denominator": "games_appearences", "digits": 0, "suffix": " %"},
+        ],
+    ),
+]
+
+GOALKEEPER_ANALYSIS_GROUPS = [
+    (
+        "Performance du gardien",
+        [
+            {"label": "Note moyenne", "kind": "direct", "fields": ["games_rating"], "digits": 2},
+            {"label": "Arrêts / 90", "kind": "per90", "fields": ["goals_saves"], "digits": 2},
+            {"label": "Buts encaissés / 90", "kind": "per90", "fields": ["goals_conceded"], "digits": 2, "higher_is_better": False},
+            {"label": "Penalties arrêtés", "kind": "direct", "fields": ["penalty_saved"], "digits": 0},
+            {"label": "Précision passes", "kind": "direct", "fields": ["passes_accuracy"], "digits": 0, "suffix": " %"},
+            {"label": "Passes / 90", "kind": "per90", "fields": ["passes_total"], "digits": 1},
+            {"label": "Taux de titularisation", "kind": "ratio", "fields": ["games_lineups"], "denominator": "games_appearences", "digits": 0, "suffix": " %"},
+            {"label": "Minutes / match", "kind": "ratio", "fields": ["games_minutes"], "denominator": "games_appearences", "scale": 1, "digits": 0},
+        ],
+    ),
+    (
+        "Maîtrise et discipline",
+        [
+            {"label": "Duels gagnés", "kind": "ratio", "fields": ["duels_won"], "denominator": "duels_total", "digits": 0, "suffix": " %"},
+            {"label": "Interceptions / 90", "kind": "per90", "fields": ["tackles_interceptions"], "digits": 2},
+            {"label": "Tirs bloqués / 90", "kind": "per90", "fields": ["tackles_blocks"], "digits": 2},
+            {"label": "Fautes obtenues / 90", "kind": "per90", "fields": ["fouls_drawn"], "digits": 2},
+            {"label": "Fautes / 90", "kind": "per90", "fields": ["fouls_committed"], "digits": 2, "higher_is_better": False},
+            {"label": "Cartons / 90", "kind": "per90", "fields": ["cards_yellow", "cards_red"], "digits": 2, "higher_is_better": False},
+        ],
+    ),
+]
 
 
 def _value(value, fallback="-"):
@@ -50,6 +107,233 @@ def _per_90(value, minutes):
     if minutes <= 0:
         return "-"
     return f"{(_integer(value) * 90 / minutes):.2f}"
+
+
+def _metric_series(frame: pd.DataFrame, metric: dict) -> pd.Series:
+    values = pd.Series(0.0, index=frame.index)
+    for field in metric["fields"]:
+        if field in frame:
+            values = values.add(pd.to_numeric(frame[field], errors="coerce").fillna(0), fill_value=0)
+
+    kind = metric["kind"]
+    if kind == "direct":
+        return values.where(values > 0)
+
+    denominator_field = (
+        "games_minutes" if kind == "per90" else metric.get("denominator")
+    )
+    denominator = pd.to_numeric(
+        frame.get(denominator_field, pd.Series(0, index=frame.index)),
+        errors="coerce",
+    ).fillna(0)
+    scale = float(metric.get("scale", 90 if kind == "per90" else 100))
+    return (values * scale / denominator.where(denominator > 0)).replace(
+        [float("inf"), float("-inf")], pd.NA
+    )
+
+
+def _metric_percentile(selected: pd.Series, peers: pd.DataFrame, metric: dict):
+    peer_values = _metric_series(peers, metric).dropna()
+    selected_value = _metric_series(
+        pd.DataFrame([selected.to_dict()]), metric
+    ).iloc[0]
+    if pd.isna(selected_value) or peer_values.empty:
+        return None
+
+    if metric.get("higher_is_better", True):
+        comparable = peer_values
+        target = float(selected_value)
+    else:
+        comparable = -peer_values
+        target = -float(selected_value)
+
+    lower = int((comparable < target).sum())
+    equal = int((comparable == target).sum())
+    percentile = 100 * (lower + 0.5 * equal) / len(comparable)
+    digits = int(metric.get("digits", 1))
+    raw_value = f"{float(selected_value):.{digits}f}{metric.get('suffix', '')}"
+    return {
+        "label": metric["label"],
+        "percentile": int(round(max(1, min(99, percentile)))),
+        "raw_value": raw_value,
+        "sample_size": int(len(comparable)),
+    }
+
+
+def _analysis_peers(selected: pd.Series, players: pd.DataFrame) -> pd.DataFrame:
+    if players.empty:
+        return players
+    position = selected.get("games_position")
+    peers = players[players["games_position"] == position].copy()
+    minutes = pd.to_numeric(peers.get("games_minutes"), errors="coerce").fillna(0)
+    established = peers[minutes >= 180]
+    if len(established) >= 5:
+        return established
+    active = peers[minutes > 0]
+    if len(active) >= 3:
+        return active
+    return players[pd.to_numeric(players.get("games_minutes"), errors="coerce").fillna(0) > 0]
+
+
+def _percentile_color(value: int) -> str:
+    if value >= 80:
+        return "#18b981"
+    if value >= 60:
+        return "#84cc16"
+    if value >= 40:
+        return "#eab308"
+    return "#ef5b5b"
+
+
+def _player_wheel(title: str, metrics: list[dict]):
+    if not metrics:
+        return None
+    labels = [item["label"] for item in metrics]
+    values = [item["percentile"] for item in metrics]
+    raw_values = [item["raw_value"] for item in metrics]
+    width = [360 / len(metrics) * 0.82] * len(metrics)
+    figure = go.Figure()
+    figure.add_trace(
+        go.Barpolar(
+            r=values,
+            theta=labels,
+            width=width,
+            marker={
+                "color": [_percentile_color(value) for value in values],
+                "line": {"color": "#172033", "width": 2},
+            },
+            customdata=raw_values,
+            hovertemplate=(
+                "<b>%{theta}</b><br>Percentile : %{r}/100"
+                "<br>Valeur du joueur : %{customdata}<extra></extra>"
+            ),
+        )
+    )
+    figure.add_trace(
+        go.Scatterpolar(
+            r=[max(10, value * 0.58) for value in values],
+            theta=labels,
+            mode="text",
+            text=[f"<b>{value}</b>" for value in values],
+            textfont={"color": "#09111f", "size": 13},
+            hoverinfo="skip",
+            showlegend=False,
+        )
+    )
+    figure.update_layout(
+        title={"text": title, "x": 0.5, "xanchor": "center", "font": {"color": "#f8fafc", "size": 18}},
+        height=500,
+        margin={"l": 60, "r": 60, "t": 70, "b": 55},
+        paper_bgcolor="#101827",
+        plot_bgcolor="#101827",
+        font={"family": "Inter, system-ui, sans-serif", "color": "#e5e7eb"},
+        polar={
+            "bgcolor": "#101827",
+            "radialaxis": {
+                "range": [0, 100],
+                "tickvals": [20, 40, 60, 80, 100],
+                "showticklabels": False,
+                "gridcolor": "rgba(255,255,255,0.12)",
+                "linecolor": "rgba(255,255,255,0.12)",
+            },
+            "angularaxis": {
+                "gridcolor": "rgba(255,255,255,0.12)",
+                "linecolor": "rgba(255,255,255,0.12)",
+                "tickfont": {"size": 11, "color": "#f8fafc"},
+            },
+        },
+        showlegend=False,
+    )
+    return figure
+
+
+def _trait_text(metric: dict, positive: bool) -> str:
+    label = metric["label"]
+    if positive:
+        return f"{label} : supérieur à {metric['percentile']} % des joueurs comparables."
+    return f"{label} : marge de progression par rapport aux joueurs du même poste."
+
+
+def _render_visual_analysis(selected: pd.Series, players: pd.DataFrame):
+    peers = _analysis_peers(selected, players)
+    groups = (
+        GOALKEEPER_ANALYSIS_GROUPS
+        if selected.get("games_position") == "Goalkeeper"
+        else OUTFIELD_ANALYSIS_GROUPS
+    )
+    scored_groups = []
+    all_metrics = []
+    for title, definitions in groups:
+        scored = [
+            result
+            for metric in definitions
+            if (result := _metric_percentile(selected, peers, metric)) is not None
+        ]
+        if scored:
+            scored_groups.append((title, scored))
+            all_metrics.extend(scored)
+
+    ui.section_label("Profil statistique visuel")
+    if len(all_metrics) < 4:
+        st.info(
+            "Le temps de jeu ou les statistiques disponibles sont insuffisants "
+            "pour construire un profil comparatif fiable."
+        )
+        return
+
+    average = int(round(sum(item["percentile"] for item in all_metrics) / len(all_metrics)))
+    sample_size = max(item["sample_size"] for item in all_metrics)
+    ui.kpi_grid(
+        [
+            {
+                "label": "Indice comparatif",
+                "value": f"{average} / 100",
+                "caption": "Moyenne des percentiles disponibles",
+                "icon": "🎯",
+            },
+            {
+                "label": "Référence",
+                "value": f"{sample_size} joueurs",
+                "caption": f"Même poste · minimum de temps de jeu",
+                "icon": "👥",
+            },
+            {
+                "label": "Données analysées",
+                "value": f"{len(all_metrics)} indicateurs",
+                "caption": "Valeurs ramenées à 90 minutes ou en pourcentage",
+                "icon": "📊",
+            },
+        ]
+    )
+    st.caption(
+        "Chaque note est un percentile : 80 signifie que le joueur fait mieux que "
+        "80 % des joueurs comparables. Cette lecture porte uniquement sur les données "
+        "réellement enregistrées pour la saison sélectionnée."
+    )
+
+    chart_columns = st.columns(len(scored_groups))
+    for index, ((title, metrics), column) in enumerate(zip(scored_groups, chart_columns)):
+        figure = _player_wheel(title, metrics)
+        if figure is not None:
+            column.plotly_chart(
+                figure,
+                width="stretch",
+                config={"displayModeBar": False},
+                key=f"player_wheel_{int(selected.get('player_id', 0))}_{index}",
+            )
+
+    ranked = sorted(all_metrics, key=lambda item: item["percentile"], reverse=True)
+    strengths = ranked[: min(4, len(ranked))]
+    improvements = list(reversed(ranked[-min(4, len(ranked)):]))
+    strength_column, improvement_column = st.columns(2)
+    with strength_column.container(border=True):
+        st.markdown("### 🟢 Points forts")
+        for metric in strengths:
+            st.success(_trait_text(metric, positive=True))
+    with improvement_column.container(border=True):
+        st.markdown("### 🟠 Axes d’amélioration")
+        for metric in improvements:
+            st.warning(_trait_text(metric, positive=False))
 
 
 def _metric_rows(groups: list[tuple[str, str, str | None]], row: pd.Series):
@@ -543,6 +827,8 @@ def show():
     )
     _render_profile(selected)
     _render_history(int(selected["player_id"]))
+    benchmark_players = player_service.load_players(league_id, season)
+    _render_visual_analysis(selected, benchmark_players)
     _render_player_stats(selected)
 
 
