@@ -1176,42 +1176,101 @@ def _persist_projected_lineup(
 ) -> None:
     if not lineup or lineup.get("official"):
         return
-    _ensure_schema()
-    with SessionLocal() as session:
-        row = session.get(models.ProjectedLineup, str(scope_key))
-        if row is None:
-            row = models.ProjectedLineup(
-                scope_key=str(scope_key),
-                team_id=int(lineup["team_id"]),
-                league_id=int(league_id),
-                season=int(season),
-                lineup_json="{}",
-            )
-        row.fixture_id = int(fixture_id) if fixture_id is not None else None
-        row.team_id = int(lineup["team_id"])
-        row.league_id = int(league_id)
-        row.season = int(season)
-        row.formation = lineup.get("formation")
-        row.confidence = float(lineup.get("projection_confidence") or 0)
-        row.formation_source = lineup.get("formation_source")
-        row.player_source = lineup.get("player_source")
-        row.strategy = lineup.get("strategy")
-        row.lineup_json = json.dumps(lineup, ensure_ascii=False, default=str)
-        row.updated_at = _now()
-        session.add(row)
-        session.commit()
+    _ensure_projected_lineups_table()
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO projected_lineups (
+                    scope_key, fixture_id, team_id, league_id, season, formation,
+                    confidence, formation_source, player_source, strategy,
+                    lineup_json, updated_at
+                ) VALUES (
+                    :scope_key, :fixture_id, :team_id, :league_id, :season, :formation,
+                    :confidence, :formation_source, :player_source, :strategy,
+                    :lineup_json, :updated_at
+                )
+                ON CONFLICT(scope_key) DO UPDATE SET
+                    fixture_id = excluded.fixture_id,
+                    team_id = excluded.team_id,
+                    league_id = excluded.league_id,
+                    season = excluded.season,
+                    formation = excluded.formation,
+                    confidence = excluded.confidence,
+                    formation_source = excluded.formation_source,
+                    player_source = excluded.player_source,
+                    strategy = excluded.strategy,
+                    lineup_json = excluded.lineup_json,
+                    updated_at = excluded.updated_at
+                """
+            ),
+            {
+                "scope_key": str(scope_key),
+                "fixture_id": int(fixture_id) if fixture_id is not None else None,
+                "team_id": int(lineup["team_id"]),
+                "league_id": int(league_id),
+                "season": int(season),
+                "formation": lineup.get("formation"),
+                "confidence": float(lineup.get("projection_confidence") or 0),
+                "formation_source": lineup.get("formation_source"),
+                "player_source": lineup.get("player_source"),
+                "strategy": lineup.get("strategy"),
+                "lineup_json": json.dumps(lineup, ensure_ascii=False, default=str),
+                "updated_at": _now().isoformat(),
+            },
+        )
 
 
 def _load_projected_lineup(scope_key: str) -> dict | None:
-    _ensure_schema()
-    with SessionLocal() as session:
-        row = session.get(models.ProjectedLineup, str(scope_key))
-        if row is None:
-            return None
-        try:
-            return json.loads(row.lineup_json)
-        except Exception:
-            return None
+    _ensure_projected_lineups_table()
+    try:
+        with engine.begin() as conn:
+            raw = conn.execute(
+                text(
+                    "SELECT lineup_json FROM projected_lineups "
+                    "WHERE scope_key = :scope_key"
+                ),
+                {"scope_key": str(scope_key)},
+            ).scalar_one_or_none()
+        return json.loads(raw) if raw else None
+    except Exception:
+        return None
+
+
+def _ensure_projected_lineups_table() -> None:
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS projected_lineups (
+                    scope_key TEXT PRIMARY KEY,
+                    fixture_id INTEGER,
+                    team_id INTEGER NOT NULL,
+                    league_id INTEGER NOT NULL,
+                    season INTEGER NOT NULL,
+                    formation TEXT,
+                    confidence REAL NOT NULL DEFAULT 0,
+                    formation_source TEXT,
+                    player_source TEXT,
+                    strategy TEXT,
+                    lineup_json TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+        )
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_projected_lineups_fixture_id "
+                "ON projected_lineups (fixture_id)"
+            )
+        )
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_projected_lineups_team_id "
+                "ON projected_lineups (team_id)"
+            )
+        )
 
 
 def analyze_tactical_matchup(home: dict | None, away: dict | None) -> dict | None:
