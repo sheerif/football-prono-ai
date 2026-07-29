@@ -1,4 +1,3 @@
-import json
 import math
 
 import pandas as pd
@@ -399,15 +398,6 @@ def _render_player_stats(row: pd.Series):
             for field, label in labels.items()
         ]
         st.dataframe(pd.DataFrame(values), hide_index=True, width="stretch")
-        with st.expander("Données JSON complètes conservées en base"):
-            try:
-                st.markdown("**Profil**")
-                st.json(json.loads(row.get("profile_raw_json") or "{}"))
-                st.markdown("**Statistiques de la saison**")
-                st.json(json.loads(row.get("statistics_raw_json") or "{}"))
-            except (TypeError, json.JSONDecodeError):
-                st.code(str(row.get("profile_raw_json") or "{}"), language="json")
-                st.code(str(row.get("statistics_raw_json") or "{}"), language="json")
 
 
 def _render_history(player_id: int):
