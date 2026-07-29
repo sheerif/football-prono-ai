@@ -1,5 +1,6 @@
 import datetime
 import hashlib
+import html
 import json
 import pandas as pd
 import re
@@ -1257,15 +1258,203 @@ def _lineup_table(players: list[dict]) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def _pitch_player_group(player: dict) -> str:
+    position = str(player.get("position") or player.get("games_position") or "")
+    return {
+        "G": "goalkeeper",
+        "Goalkeeper": "goalkeeper",
+        "D": "defense",
+        "Defender": "defense",
+        "M": "midfield",
+        "Midfielder": "midfield",
+        "F": "attack",
+        "Attacker": "attack",
+    }.get(position, "midfield")
+
+
+def _pitch_lines(team: dict) -> list[list[dict]]:
+    players = list(team.get("starters") or [])
+    groups = {
+        key: [player for player in players if _pitch_player_group(player) == key]
+        for key in ("goalkeeper", "defense", "midfield", "attack")
+    }
+    formation = str(team.get("formation") or "")
+    midfield_splits = {
+        "4-2-3-1": [3, 2],
+        "4-1-4-1": [4, 1],
+        "3-4-2-1": [2, 4],
+        "4-3-1-2": [1, 3],
+    }.get(formation)
+
+    lines = []
+    if groups["attack"]:
+        lines.append(groups["attack"])
+    if midfield_splits:
+        offset = 0
+        for count in midfield_splits:
+            line = groups["midfield"][offset:offset + count]
+            if line:
+                lines.append(line)
+            offset += count
+        if offset < len(groups["midfield"]):
+            lines.append(groups["midfield"][offset:])
+    elif groups["midfield"]:
+        lines.append(groups["midfield"])
+    if groups["defense"]:
+        lines.append(groups["defense"])
+    if groups["goalkeeper"]:
+        lines.append(groups["goalkeeper"])
+    return lines
+
+
+def _render_lineup_pitch(team: dict):
+    pitch_rows = []
+    for line in _pitch_lines(team):
+        players = []
+        for player in line:
+            name = html.escape(str(player.get("player_name") or "Joueur"))
+            photo = _display_text(player.get("player_photo"))
+            rating = player.get("form_rating")
+            rating_label = f"{float(rating):.1f}" if rating is not None else "–"
+            if photo:
+                portrait = (
+                    f'<img src="{html.escape(photo, quote=True)}" '
+                    f'alt="{name}" loading="lazy">'
+                )
+            else:
+                initials = "".join(part[:1] for part in name.split()[:2]).upper() or "?"
+                portrait = f'<span class="pitch-initials">{initials}</span>'
+            players.append(
+                f"""
+                <div class="pitch-player">
+                    <div class="pitch-photo">{portrait}</div>
+                    <div class="pitch-name">{name}</div>
+                    <div class="pitch-rating">★ {rating_label}</div>
+                </div>
+                """
+            )
+        pitch_rows.append(f'<div class="pitch-row">{"".join(players)}</div>')
+
+    st.html(
+        f"""
+        <style>
+        .lineup-pitch {{
+            position: relative;
+            min-height: 480px;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-around;
+            gap: .35rem;
+            padding: 1rem .5rem;
+            margin: .65rem 0 1rem;
+            overflow: hidden;
+            border: 3px solid rgba(255,255,255,.85);
+            border-radius: 16px;
+            background:
+                linear-gradient(90deg, transparent 49.6%, rgba(255,255,255,.62) 49.6% 50.4%, transparent 50.4%),
+                repeating-linear-gradient(0deg, #24864f 0 58px, #207b48 58px 116px);
+            box-shadow: inset 0 0 0 1px rgba(10,55,31,.25), 0 14px 30px rgba(18,100,71,.14);
+        }}
+        .lineup-pitch::before {{
+            content: "";
+            position: absolute;
+            left: 50%;
+            top: 50%;
+            width: 104px;
+            height: 104px;
+            border: 2px solid rgba(255,255,255,.65);
+            border-radius: 50%;
+            transform: translate(-50%,-50%);
+        }}
+        .lineup-pitch::after {{
+            content: "";
+            position: absolute;
+            left: 25%;
+            right: 25%;
+            bottom: -2px;
+            height: 62px;
+            border: 2px solid rgba(255,255,255,.65);
+        }}
+        .pitch-row {{
+            position: relative;
+            z-index: 1;
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-around;
+            gap: .18rem;
+        }}
+        .pitch-player {{
+            width: 72px;
+            text-align: center;
+            color: white;
+            filter: drop-shadow(0 2px 3px rgba(0,0,0,.42));
+        }}
+        .pitch-photo {{
+            display: grid;
+            place-items: center;
+            width: 46px;
+            height: 46px;
+            margin: 0 auto .2rem;
+            overflow: hidden;
+            border: 2px solid #fff;
+            border-radius: 50%;
+            background: #dce6de;
+        }}
+        .pitch-photo img {{
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }}
+        .pitch-initials {{
+            color: #164a33;
+            font-size: .78rem;
+            font-weight: 900;
+        }}
+        .pitch-name {{
+            overflow: hidden;
+            font-size: .67rem;
+            font-weight: 900;
+            line-height: 1.1;
+            text-overflow: ellipsis;
+            text-shadow: 0 1px 3px #123;
+            white-space: nowrap;
+        }}
+        .pitch-rating {{
+            display: inline-block;
+            margin-top: .14rem;
+            padding: .08rem .28rem;
+            border-radius: 999px;
+            background: rgba(12,41,27,.82);
+            color: #f7d76b;
+            font-size: .62rem;
+            font-weight: 900;
+        }}
+        @media (max-width: 700px) {{
+            .lineup-pitch {{ min-height: 410px; padding-inline: .2rem; }}
+            .pitch-player {{ width: 58px; }}
+            .pitch-photo {{ width: 38px; height: 38px; }}
+            .pitch-name {{ font-size: .58rem; }}
+        }}
+        </style>
+        <div class="lineup-pitch">{"".join(pitch_rows)}</div>
+        """
+    )
+
+
 def _render_team_lineup(team: dict | None, team_name: str):
     with st.container(border=True):
-        st.markdown(f"### {team_name}")
         if not team:
+            st.markdown(f"### {team_name}")
             st.info(
                 "Aucune composition officielle ou probable disponible. "
                 "Synchronisez les données joueurs pour construire une projection."
             )
             return
+        header = st.columns([1, 4])
+        logo = _display_text(team.get("team_logo"))
+        if logo:
+            header[0].image(logo, width=64)
+        header[1].markdown(f"### {team_name}")
         status = (
             "Composition officielle"
             if team.get("official")
@@ -1278,18 +1467,25 @@ def _render_team_lineup(team: dict | None, team_name: str):
         )
         if not team.get("official"):
             confidence = round(float(team.get("projection_confidence") or 0) * 100)
-            st.caption(
-                f"Confiance de la projection : {confidence} % · "
-                f"joueurs : {team.get('player_source', 'historique disponible')}"
+            st.progress(
+                confidence / 100,
+                text=f"Confiance de la projection · {confidence} %",
             )
-        st.metric("Indice de forme du onze", f"{team.get('form_score', 50)} / 100")
+            st.caption(f"Joueurs : {team.get('player_source', 'historique disponible')}")
+        form_score = float(team.get("form_score") or 50)
+        st.progress(
+            max(0.0, min(1.0, form_score / 100)),
+            text=f"Forme estimée du onze · {form_score:.1f} / 100",
+        )
         st.caption(
             f"Note moyenne : {team.get('average_rating', '-')} · "
             f"source : {team.get('form_source', 'indisponible')}"
         )
+        _render_lineup_pitch(team)
         starters = _lineup_table(team.get("starters") or [])
         if not starters.empty:
-            st.dataframe(starters, hide_index=True, width="stretch")
+            with st.expander("Détails chiffrés des titulaires"):
+                st.dataframe(starters, hide_index=True, width="stretch")
         st.markdown("**Stratégie éventuelle**")
         st.write(team.get("strategy") or "Indisponible")
         st.caption(
