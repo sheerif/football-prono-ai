@@ -80,14 +80,25 @@ def _missing_core_scopes(league_ids: list[int], seasons: list[int]) -> list[tupl
     with engine.begin() as conn:
         for league_id in league_ids:
             for season in seasons:
-                count = conn.execute(
+                match_count = conn.execute(
                     text(
                         "SELECT COUNT(*) FROM matches "
                         "WHERE league_id = :league_id AND season = :season"
                     ),
                     {"league_id": int(league_id), "season": int(season)},
                 ).scalar()
-                if int(count or 0) == 0:
+                team_count = conn.execute(
+                    text("SELECT COUNT(*) FROM teams WHERE league_id = :league_id"),
+                    {"league_id": int(league_id)},
+                ).scalar()
+                standing_count = conn.execute(
+                    text(
+                        "SELECT COUNT(*) FROM standings "
+                        "WHERE league_id = :league_id AND season = :season"
+                    ),
+                    {"league_id": int(league_id), "season": int(season)},
+                ).scalar()
+                if int(match_count or 0) == 0 or int(team_count or 0) == 0 or int(standing_count or 0) == 0:
                     missing.append((int(league_id), int(season)))
     return missing
 
