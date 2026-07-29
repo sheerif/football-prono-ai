@@ -497,11 +497,16 @@ def show():
     totals[2].metric("Passes décisives", _integer(filtered["goals_assists"].sum()))
     totals[3].metric("Minutes", f"{_integer(filtered['games_minutes'].sum()):,}".replace(",", " "))
 
+    st.caption(
+        "Sélection interactive : cliquez directement sur une ligne pour afficher "
+        "la fiche du joueur sous le tableau."
+    )
     player_table = _summary_table(filtered).reset_index(drop=True)
     table_event = st.dataframe(
         player_table,
         hide_index=True,
         width="stretch",
+        height=360,
         column_config={"photo": st.column_config.ImageColumn("Photo", width="small")},
         on_select="rerun",
         selection_mode="single-row",
@@ -519,6 +524,10 @@ def show():
             "sa fiche complète et ses statistiques interactives."
         )
         return
+    st.success(
+        f"Joueur sélectionné : {selected.get('name', 'Joueur')} · "
+        f"{selected.get('team_name', 'Équipe inconnue')}"
+    )
     _render_profile(selected)
     _render_history(int(selected["player_id"]))
     _render_player_stats(selected)
