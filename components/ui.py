@@ -125,8 +125,8 @@ def inject_app_style():
             --app-muted: #66768a;
             --app-line: rgba(10, 34, 57, 0.12);
             --app-green: #0b2b48;
-            --app-lime: #f1ca73;
-            --app-gold: #dcae4f;
+            --app-lime: #72d6c8;
+            --app-gold: #2aa198;
             --app-red: #d45a55;
             --app-navy: #071a2b;
             --app-navy-soft: #173e61;
@@ -230,7 +230,7 @@ def inject_app_style():
             padding: 0.32rem 0.7rem;
             border-radius: 999px;
             background: rgba(220, 174, 79, 0.14);
-            color: #8a6116;
+            color: #176b73;
             font-size: 0.78rem;
             font-weight: 800;
             letter-spacing: 0.04em;
@@ -251,7 +251,7 @@ def inject_app_style():
             height: 4px;
             margin: -1rem -1rem 0.9rem -1rem;
             border-radius: 16px 16px 0 0;
-            background: linear-gradient(90deg, var(--app-gold), #f3d486, rgba(255, 255, 255, 0));
+            background: linear-gradient(90deg, var(--app-gold), #72d6c8, rgba(255, 255, 255, 0));
         }
         div[data-testid="stMetric"] {
             border: 1px solid var(--app-line);
@@ -423,7 +423,7 @@ def inject_app_style():
             font-size: 2rem;
         }
         .visual-hero-eyebrow {
-            color: #f1ca73;
+            color: #72d6c8;
             font-size: .68rem;
             font-weight: 900;
             letter-spacing: .12em;
@@ -791,7 +791,7 @@ def section_label(label: str):
 
 
 def kpi_grid(cards: list[dict], columns: int = 3):
-    palette = ["#dcae4f", "#164d73", "#4f86aa", "#2f9f72", "#d45a55"]
+    palette = ["#2aa198", "#164d73", "#4f9fba", "#2f9f72", "#d45a55"]
     columns = max(1, int(columns))
     for start in range(0, len(cards), columns):
         cols = st.columns(columns)
@@ -909,7 +909,7 @@ def render_cross_insight(insight: dict):
             factor_name = str(factor["factor"])
             column.html(
                 f"""
-                <div class="visual-kpi" style="--kpi-accent:#dcae4f;min-height:7.4rem">
+                <div class="visual-kpi" style="--kpi-accent:#2aa198;min-height:7.4rem">
                     <div class="visual-kpi-head">
                         <span class="visual-kpi-icon">{_icon_for(factor_name, "📍")}</span>
                         <span>{html.escape(factor_name)}</span>

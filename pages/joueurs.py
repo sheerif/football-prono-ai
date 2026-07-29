@@ -181,7 +181,7 @@ def _percentile_color(value: int) -> str:
     if value >= 60:
         return "#84cc16"
     if value >= 40:
-        return "#eab308"
+        return "#2aa198"
     return "#ef5b5b"
 
 

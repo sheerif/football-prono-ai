@@ -324,7 +324,7 @@ def show():
                 "label": "Détails matchs",
                 "value": _format_int(health["fixture_details"]),
                 "caption": "Journées, stades et logos en cache",
-                "accent": "#dcae4f",
+                "accent": "#2aa198",
             },
             {
                 "label": "Résumés prêts",
@@ -342,7 +342,7 @@ def show():
                 "label": "Compositions",
                 "value": _format_int(health["lineups"]),
                 "caption": "Dispositifs officiels conservés",
-                "accent": "#dcae4f",
+                "accent": "#2aa198",
             },
             {
                 "label": "Performances joueurs",
@@ -412,7 +412,7 @@ def show():
                     ["Matchs importés", "Matchs joués"]
                 ],
                 horizontal=True,
-                color=["#dcae4f", "#164d73"],
+                color=["#2aa198", "#164d73"],
                 height=300,
             )
             with st.expander("Voir le détail des saisons"):

@@ -4,7 +4,7 @@ import plotly.graph_objects as go
 from services.season_format import season_period
 
 
-CHART_COLORS = ["#dcae4f", "#164d73", "#4f86aa", "#2f9f72", "#d45a55", "#8b6f47"]
+CHART_COLORS = ["#2aa198", "#164d73", "#4f9fba", "#2f9f72", "#d45a55", "#587486"]
 
 
 def _apply_chart_theme(fig, title: str | None = None):
@@ -82,7 +82,7 @@ def line_goals_by_season(df):
             y=agg["total_goals"],
             mode="lines+markers",
             name="Buts totaux",
-            line={"color": "#dcae4f", "width": 3},
+            line={"color": "#2aa198", "width": 3},
             marker={"size": 8, "color": "#164d73", "line": {"color": "#ffffff", "width": 2}},
         )
     )
@@ -116,7 +116,7 @@ def radar_team_comparison(labels, values_a, values_b, name_a="Equipe A", name_b=
             theta=labels,
             fill="toself",
             name=name_a,
-            line={"color": "#dcae4f", "width": 2},
+            line={"color": "#2aa198", "width": 2},
             fillcolor="rgba(220, 174, 79, 0.22)",
         )
     )

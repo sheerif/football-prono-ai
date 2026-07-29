@@ -529,7 +529,7 @@ def _render_match_header(
             border-bottom: 1px solid rgba(255,255,255,.1);
             font-size: .78rem;
         }}
-        .match-sheet-context span {{ color: #d8a528; font-weight: 850; }}
+        .match-sheet-context span {{ color: #2aa198; font-weight: 850; }}
         .match-sheet-context strong {{ color: #fff; }}
         .match-sheet-grid {{
             display: grid;
@@ -555,7 +555,7 @@ def _render_match_header(
             place-items: center;
             border-radius: 50%;
             background: rgba(255,255,255,.12);
-            color: #d8a528;
+            color: #2aa198;
             font-size: 1.25rem;
             font-weight: 900;
         }}
@@ -571,7 +571,7 @@ def _render_match_header(
             line-height: 1;
         }}
         .match-center span {{
-            color: #d8a528;
+            color: #2aa198;
             font-size: .78rem;
             font-weight: 800;
             text-transform: uppercase;

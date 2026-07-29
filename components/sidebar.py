@@ -83,7 +83,7 @@ def render_sidebar(current: str = "Tableau de bord"):
             width: 2.55rem;
             height: 2.55rem;
             border-radius: 8px;
-            background: linear-gradient(135deg, #b9d76f, #d8a528);
+            background: linear-gradient(135deg, #72d6c8, #2aa198);
             color: #14251d;
             font-size: 0.88rem;
             font-weight: 900;
@@ -204,12 +204,12 @@ def render_app_rail(current: str):
             place-items: center;
             width: 1.35rem;
             margin-right: .35rem;
-            color: #f1ca73;
+            color: #72d6c8;
             font-size: 1.05rem;
         }
         [data-testid="stSidebar"] .stButton > button:hover {
             background: rgba(220, 174, 79, 0.10);
-            color: #f1ca73;
+            color: #72d6c8;
         }
         .app-rail-brand {
             display: flex;
@@ -231,7 +231,7 @@ def render_app_rail(current: str):
             width: 2.55rem;
             height: 2.55rem;
             border-radius: 8px;
-            background: linear-gradient(135deg, #f1ca73, #dcae4f);
+            background: linear-gradient(135deg, #72d6c8, #2aa198);
             color: #071a2b;
             font-size: 0.88rem;
             font-weight: 900;
@@ -253,9 +253,9 @@ def render_app_rail(current: str):
             padding: 0.58rem 0.7rem;
             margin: 0.15rem 0;
             border-radius: 8px;
-            color: #f5d88f;
+            color: #9be5dc;
             background: linear-gradient(90deg, rgba(220,174,79,.18), rgba(220,174,79,.05));
-            box-shadow: inset 3px 0 0 #dcae4f;
+            box-shadow: inset 3px 0 0 #2aa198;
             font-size: 0.94rem;
             font-weight: 750;
         }
