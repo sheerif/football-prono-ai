@@ -292,7 +292,7 @@ def show():
 
     ui.dashboard_hero(
         "Prono insight",
-        "Vue rapide des matchs, joueurs, compositions et données tactiques disponibles pour les pronostics.",
+        "Outil d’aide à l’analyse des matchs avec estimations statistiques expérimentales.",
         [
             ("Matchs importés", _format_int(matches_count)),
             ("Matchs à venir", _format_int(health["upcoming"])),
@@ -341,7 +341,7 @@ def show():
             {
                 "label": "Compositions",
                 "value": _format_int(health["lineups"]),
-                "caption": "Dispositifs officiels conservés",
+                "caption": "Dispositifs officiels ou projetés",
                 "accent": "#2aa198",
             },
             {
@@ -353,7 +353,7 @@ def show():
             {
                 "label": "Analyses persistées",
                 "value": _format_int(health["analysis_snapshots"]),
-                "caption": "Prédictions et stratégies conservées",
+                "caption": "Dernier état des analyses conservé",
                 "accent": "#7a5c96",
             },
         ]

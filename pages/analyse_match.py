@@ -1038,7 +1038,7 @@ def _legacy_show():
         pred_cols[0].metric(f"Victoire {home_view['team_name']}", f"{pred['home_probability']} %")
         pred_cols[1].metric("Match nul", f"{pred['draw_probability']} %")
         pred_cols[2].metric(f"Victoire {away_view['team_name']}", f"{pred['away_probability']} %")
-        pred_cols[3].metric("Confiance", f"{pred.get('confidence')} %")
+        pred_cols[3].metric("Score du modèle", f"{pred.get('confidence')} %")
 
         favorite = home_view['team_name'] if pred['home_probability'] > pred['away_probability'] and pred['home_probability'] > pred['draw_probability'] else away_view['team_name'] if pred['away_probability'] > pred['home_probability'] and pred['away_probability'] > pred['draw_probability'] else 'Match équilibré'
         if favorite == 'Match équilibré':
@@ -1544,7 +1544,7 @@ def show():
             f"{prediction['away_probability']} %",
         )
         prediction_columns[3].metric(
-            "Confiance", f"{prediction.get('confidence')} %"
+            "Score du modèle", f"{prediction.get('confidence')} %"
         )
 
         reasons = []

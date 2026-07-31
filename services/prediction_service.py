@@ -28,8 +28,14 @@ def normalize_probs(arr):
     return [float(value) for value in rounded]
 
 
-def predict_simple(home_strength, away_strength, draw_factor=0.2):
-    """home_strength/away_strength scalars combine features into probabilities"""
+def predict_simple(home_strength, away_strength, draw_factor=0.25):
+    """Convertit deux indices de force en probabilités 1/N/2.
+
+    ``draw_factor`` représente le taux de nul de référence (idéalement observé
+    dans le championnat), et non un multiplicateur de la plus petite force.
+    La proximité des équipes fait légèrement varier ce taux. Cette formulation
+    évite de rendre le nul structurellement impossible comme issue principale.
+    """
     def _strength(value):
         try:
             value = float(value)
@@ -41,11 +47,30 @@ def predict_simple(home_strength, away_strength, draw_factor=0.2):
     try:
         draw_factor = float(draw_factor)
     except (TypeError, ValueError):
-        draw_factor = 0.2
-    draw_factor = draw_factor if math.isfinite(draw_factor) else 0.2
-    draw_factor = max(0.0, min(1.0, draw_factor))
-    draw = draw_factor * min(home, away)
-    probs = normalize_probs([home, draw, away])
+        draw_factor = 0.25
+    draw_factor = draw_factor if math.isfinite(draw_factor) else 0.25
+    draw_factor = max(0.12, min(0.38, draw_factor))
+
+    total_strength = home + away
+    if total_strength <= 0:
+        home_share = 0.5
+        balance = 1.0
+    else:
+        home_share = home / total_strength
+        balance = 1.0 - abs(home - away) / total_strength
+
+    # Une affiche équilibrée augmente le nul de 2 points au maximum ; un très
+    # gros écart le diminue de 2 points. Le taux reste ancré dans l'historique.
+    draw_probability = max(
+        0.10,
+        min(0.40, draw_factor + 0.04 * (balance - 0.5)),
+    )
+    decisive_probability = 1.0 - draw_probability
+    probs = normalize_probs([
+        decisive_probability * home_share,
+        draw_probability,
+        decisive_probability * (1.0 - home_share),
+    ])
     confidence = max(probs)
     return {
         'home_probability': probs[0],

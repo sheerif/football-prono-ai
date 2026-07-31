@@ -153,8 +153,8 @@ def show():
     with st.container(border=True):
         st.markdown("### Tout mettre à jour")
         st.write(
-            "L’application ajoute seulement les informations manquantes. "
-            "Les données déjà enregistrées restent intactes."
+            "L’application ajoute les informations manquantes et actualise les "
+            "données récentes déjà enregistrées."
         )
         api_key_missing = not (os.getenv("API_FOOTBALL_KEY") or "").strip()
         if api_key_missing:
@@ -169,8 +169,13 @@ def show():
             st.success("Mise à jour lancée. Vous pouvez continuer à utiliser l’application.")
         registry_counts = sync_registry.counts()
         if registry_counts:
-            st.caption(f"Avancement : {registry_counts.get('complete', 0)} terminé(s), "
-                       f"{registry_counts.get('error', 0)} à retenter.")
+            st.caption(
+                "Avancement : "
+                f"{registry_counts.get('complete', 0)} terminé(s) · "
+                f"{registry_counts.get('running', 0)} en cours · "
+                f"{registry_counts.get('unavailable', 0)} indisponible(s) · "
+                f"{registry_counts.get('error', 0)} en erreur."
+            )
         st.caption(
             "Les éléments non disponibles seront repris lors de la prochaine mise à jour."
         )

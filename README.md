@@ -1,6 +1,11 @@
 # Prono insight
 
-Application Streamlit de pronostic IA football avec dashboard, imports API-Football, widgets API-Sports, analyses, predictions et logs de mises a jour persistants.
+Application Streamlit d’aide à l’analyse football avec dashboard, imports
+API-Football, widgets API-Sports, statistiques, estimations 1/N/2 expérimentales
+et suivi persistant des mises à jour.
+
+Les scores 1/N/2 sont des estimations internes issues de règles statistiques.
+Ils ne constituent ni une fiabilité calibrée ni un conseil de pari.
 
 ## Quick Start
 

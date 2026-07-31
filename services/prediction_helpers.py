@@ -107,6 +107,95 @@ def load_matches(league_id: int, seasons):
         return pd.DataFrame()
 
 
+def upcoming_fixtures(
+    matches_df: pd.DataFrame,
+    team_ids=None,
+    now=None,
+    days_ahead: int | None = None,
+) -> pd.DataFrame:
+    """Retourne uniquement les rencontres réelles à venir de la sélection."""
+    if matches_df.empty or "date" not in matches_df:
+        return pd.DataFrame(columns=matches_df.columns)
+
+    fixtures = matches_df.copy()
+    dates = pd.to_datetime(fixtures["date"], errors="coerce", utc=True)
+    reference = pd.Timestamp.now(tz="UTC") if now is None else pd.to_datetime(now, utc=True)
+    mask = (
+        dates.ge(reference)
+        & fixtures["home_goals"].isna()
+        & fixtures["away_goals"].isna()
+    )
+    if days_ahead is not None:
+        horizon = reference + pd.Timedelta(days=max(1, int(days_ahead)))
+        mask &= dates.le(horizon)
+    if team_ids is not None:
+        selected = {int(team_id) for team_id in team_ids}
+        mask &= fixtures["home_team_id"].isin(selected)
+        mask &= fixtures["away_team_id"].isin(selected)
+    fixtures = fixtures.loc[mask].copy()
+    fixtures["_scheduled_at"] = dates.loc[mask]
+    return fixtures.sort_values(["_scheduled_at", "fixture_id"]).drop(
+        columns=["_scheduled_at"]
+    )
+
+
+def historical_context_before(matches_df: pd.DataFrame, kickoff) -> pd.DataFrame:
+    """Isole les résultats connus avant un coup d'envoi donné."""
+    if matches_df.empty:
+        return matches_df.copy()
+    dates = pd.to_datetime(matches_df["date"], errors="coerce", utc=True)
+    cutoff = pd.to_datetime(kickoff, utc=True)
+    return matches_df.loc[
+        dates.lt(cutoff)
+        & matches_df["home_goals"].notna()
+        & matches_df["away_goals"].notna()
+    ].copy()
+
+
+def fixture_data_completeness(
+    fixture_id: int,
+    player_intelligence: dict | None,
+    historical_match_count: int,
+) -> dict:
+    """Résume les quatre familles de données utiles à une analyse de fixture."""
+    cache = {"details": False, "api_prediction": False}
+    try:
+        with engine.connect() as connection:
+            row = connection.execute(
+                text(
+                    """
+                    SELECT
+                        EXISTS(SELECT 1 FROM fixture_api_details WHERE fixture_id = :fid) AS details,
+                        EXISTS(SELECT 1 FROM fixture_api_predictions WHERE fixture_id = :fid) AS api_prediction
+                    """
+                ),
+                {"fid": int(fixture_id)},
+            ).mappings().one()
+            cache = {key: bool(row[key]) for key in cache}
+    except Exception:
+        pass
+
+    intelligence = player_intelligence or {}
+    lineup_count = sum(
+        bool(intelligence.get(side)) for side in ("home", "away")
+    )
+    checks = {
+        "historique": int(historical_match_count) >= 30,
+        "détails": cache["details"],
+        "comparaison API": cache["api_prediction"],
+        "compositions": lineup_count == 2,
+    }
+    available = sum(checks.values())
+    return {
+        "percentage": int(round(available / len(checks) * 100)),
+        "label": " · ".join(
+            f"{name} {'✓' if present else '—'}"
+            for name, present in checks.items()
+        ),
+        "checks": checks,
+    }
+
+
 def fetch_teams(matches_df: pd.DataFrame):
     if matches_df.empty:
         return {}
@@ -188,7 +277,23 @@ def predict_match(
             "Contexte domicile/extérieur": "20 %",
         },
     }
-    prediction = prediction_service.predict_simple(home_strength, away_strength)
+    completed = matches_df.dropna(subset=["home_goals", "away_goals"])
+    if len(completed) >= 30:
+        observed_draw_rate = float(
+            (completed["home_goals"] == completed["away_goals"]).mean()
+        )
+    else:
+        observed_draw_rate = 0.25
+    observed_draw_rate = max(0.15, min(0.35, observed_draw_rate))
+    details["draw_rate_baseline"] = round(observed_draw_rate * 100, 1)
+    details["weights"]["Taux de nul historique"] = (
+        f"ancrage à {details['draw_rate_baseline']} %"
+    )
+    prediction = prediction_service.predict_simple(
+        home_strength,
+        away_strength,
+        draw_factor=observed_draw_rate,
+    )
     if player_intelligence and player_intelligence.get("complete"):
         details["prediction_before_player_adjustment"] = dict(prediction)
         home_players = player_intelligence.get("home") or {}

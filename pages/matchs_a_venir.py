@@ -615,12 +615,12 @@ def _prefetch_api_predictions(fixture_ids: list[int], force_refresh: bool = Fals
 
 def _confidence_label(confidence: float) -> str:
     if confidence >= 65:
-        return "signal fort"
+        return "écart élevé entre les scénarios"
     if confidence >= 55:
-        return "signal intéressant"
+        return "écart modéré entre les scénarios"
     if confidence >= 45:
-        return "match ouvert"
-    return "signal prudent"
+        return "scénarios ouverts"
+    return "scénarios très proches"
 
 
 def _favorite_from_prediction(prediction: dict, home_name: str, away_name: str) -> tuple[str, str, float]:
@@ -678,7 +678,7 @@ def _summary_sentence(home_name: str, away_name: str, prediction: dict, details:
 
     return (
         f"Lecture {code}: {favorite} ressort à {_format_probability(probability)} "
-        f"avec {confidence:.2f} % de confiance ({label}); {form_text}. "
+        f"avec un score du modèle de {confidence:.2f} % ({label}); {form_text}. "
         f"Probabilités 1/N/2: {_format_probability(prediction['home_probability'])}, "
         f"{_format_probability(prediction['draw_probability'])}, {_format_probability(prediction['away_probability'])}."
         f"{score_text}"
@@ -1114,7 +1114,7 @@ def _render_match_detail(row: pd.Series, force_api_refresh: bool = False):
 
     signal_cols = st.columns(3)
     signal_cols[0].metric("Pronostic", row.get("Pronostic") or "-")
-    signal_cols[1].metric("Confiance", row.get("Confiance") or "-")
+    signal_cols[1].metric("Score du modèle", row.get("Confiance") or "-")
     signal_cols[2].metric("Score", row.get("Score probable") or "-")
 
     st.info(row.get("Résumé") or "Résumé non disponible.")
@@ -1165,7 +1165,7 @@ def _render_match_card(row: pd.Series, force_api_refresh: bool = False):
         signal_cols = st.columns(3)
         signal_cols[0].caption("Pronostic")
         signal_cols[0].write(f"**{row.get('Pronostic') or '-'}**")
-        signal_cols[1].caption("Confiance")
+        signal_cols[1].caption("Score du modèle")
         signal_cols[1].write(f"**{row.get('Confiance') or '-'}**")
         signal_cols[2].caption("Score")
         signal_cols[2].write(f"**{row.get('Score probable') or '-'}**")
@@ -1742,7 +1742,7 @@ def _render_upcoming_match_analysis(fixture: pd.Series):
             f"Victoire {away_name}", f"{prediction['away_probability']} %"
         )
         probabilities[3].metric(
-            "Confiance", f"{prediction['confidence']} %"
+            "Score du modèle", f"{prediction['confidence']} %"
         )
         adjustment = details.get("player_adjustment")
         if adjustment:
