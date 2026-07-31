@@ -1993,8 +1993,9 @@ def _render_upcoming_match_analysis(fixture: pd.Series):
                 f"Score {score['Score']}",
                 f"{score['Probabilité']} %",
             )
-        if api_prediction:
-            st.markdown("#### Conseil API")
+        st.markdown("#### Conseils et synthèse")
+        if api_prediction and api_refinement.get("applied"):
+            st.markdown("**Conseil API brut**")
             st.write(
                 f"**{_translate_api_advice(api_prediction.get('api_advice'), api_prediction.get('api_winner'))}**"
             )
@@ -2002,8 +2003,47 @@ def _render_upcoming_match_analysis(fixture: pd.Series):
                 f"Probabilités API 1/N/2 : "
                 f"{_api_probability_line(api_prediction)}"
             )
+        elif api_prediction:
+            st.info(
+                "L’API ne fournit pas de tendance exploitable pour cette "
+                "rencontre (réponse neutre 33/33/33). Elle n’est pas utilisée "
+                "dans le calcul affiné."
+            )
         else:
             st.caption("Conseil API non synchronisé pour cette rencontre.")
+
+        st.markdown("**Conseil affiné de l’étude**")
+        advice_columns = st.columns(4)
+        advice_columns[0].metric(
+            "Scénario principal",
+            consensus_advice["main_label"],
+            f"{consensus_advice['main_probability']} %",
+            delta_color="off",
+        )
+        advice_columns[1].metric(
+            "Scénario de repli",
+            consensus_advice["alternative_label"],
+            f"{consensus_advice['alternative_probability']} %",
+            delta_color="off",
+        )
+        advice_columns[2].metric(
+            "Couverture des deux",
+            f"{consensus_advice['top_two_coverage']} %",
+        )
+        advice_columns[3].metric(
+            "Écart principal / repli",
+            f"{consensus_advice['margin']} points",
+        )
+        if consensus_advice["level"] == "convergence":
+            st.success(consensus_advice["message"])
+        elif consensus_advice["level"] == "prudence":
+            st.warning(consensus_advice["message"])
+        else:
+            st.info(consensus_advice["message"])
+        st.caption(
+            "Cette lecture statistique hiérarchise les scénarios ; elle ne "
+            "constitue pas une garantie de résultat."
+        )
 
 
 def show():
