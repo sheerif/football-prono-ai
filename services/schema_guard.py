@@ -1,6 +1,17 @@
 from sqlalchemy import text, inspect
 
+from database import models
 from database.database import engine
+
+
+PERFORMANCE_INDEX_NAMES = {
+    "ix_teams_league_id",
+    "ix_matches_league_season_date",
+    "ix_matches_home_team_date",
+    "ix_matches_away_team_date",
+    "ix_matches_date_scores",
+    "ix_player_statistics_league_season_team",
+}
 
 
 def ensure_match_score_columns() -> None:
@@ -19,6 +30,18 @@ def ensure_match_score_columns() -> None:
         for column_name, column_type in missing_match_columns.items():
             if column_name not in match_columns:
                 conn.execute(text(f"ALTER TABLE matches ADD COLUMN {column_name} {column_type}"))
+
+
+def ensure_performance_indexes() -> None:
+    """Create indexes added after the initial tables without rebuilding data."""
+    indexes = (
+        index
+        for table in models.Base.metadata.sorted_tables
+        for index in table.indexes
+        if index.name in PERFORMANCE_INDEX_NAMES
+    )
+    for index in indexes:
+        index.create(bind=engine, checkfirst=True)
 
 
 def ensure_fixture_api_cache_tables() -> None:

@@ -10,8 +10,8 @@ from components import ui
 load_dotenv()
 
 
-def _widget_html(api_key: str) -> str:
-    safe_key = html.escape(api_key, quote=True)
+def _widget_html(widget_key: str) -> str:
+    safe_key = html.escape(widget_key, quote=True)
     return f"""
     <!doctype html>
     <html lang="fr">
@@ -80,14 +80,20 @@ def show():
         "Liste officielle des ligues et pays fournie par API-Sports.",
     )
 
-    api_key = os.getenv("API_FOOTBALL_KEY", "")
-    if not api_key:
-        st.error("API_FOOTBALL_KEY est absent du fichier .env.")
+    widget_key = (
+        os.getenv("API_FOOTBALL_WIDGET_KEY", "").strip()
+        or os.getenv("API_FOOTBALL_KEY", "").strip()
+    )
+    if not widget_key:
+        st.error(
+            "API_FOOTBALL_KEY est absent. Configurez cette clé, ou une clé "
+            "API_FOOTBALL_WIDGET_KEY distincte, pour afficher le widget."
+        )
         return
 
     # ``width=780`` caused a horizontal overflow on phones.  Stretch lets
     # Streamlit size the iframe to the available content width.
-    st.iframe(_widget_html(api_key), height=880, width="stretch")
+    st.iframe(_widget_html(widget_key), height=880, width="stretch")
 
 
 if __name__ == "__main__":

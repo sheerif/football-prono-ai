@@ -1,4 +1,15 @@
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Float, Boolean, Text
+from sqlalchemy import (
+    Boolean,
+    Column,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import relationship
 from .database import Base
 import datetime
@@ -13,6 +24,8 @@ class League(Base):
 
 class Team(Base):
     __tablename__ = "teams"
+    __table_args__ = (Index("ix_teams_league_id", "league_id"),)
+
     id = Column(Integer, primary_key=True, index=True)
     league_id = Column(Integer, ForeignKey("leagues.id"), nullable=True)
     name = Column(String, nullable=False)
@@ -22,6 +35,13 @@ class Team(Base):
 
 class Match(Base):
     __tablename__ = "matches"
+    __table_args__ = (
+        Index("ix_matches_league_season_date", "league_id", "season", "date"),
+        Index("ix_matches_home_team_date", "home_team_id", "date"),
+        Index("ix_matches_away_team_date", "away_team_id", "date"),
+        Index("ix_matches_date_scores", "date", "home_goals", "away_goals"),
+    )
+
     fixture_id = Column(Integer, primary_key=True, index=True)
     league_id = Column(Integer, nullable=False)
     season = Column(Integer, nullable=False)
@@ -35,6 +55,15 @@ class Match(Base):
 
 class Standing(Base):
     __tablename__ = "standings"
+    __table_args__ = (
+        UniqueConstraint(
+            "league_id",
+            "team_id",
+            "season",
+            name="uq_standings_league_team_season",
+        ),
+    )
+
     id = Column(Integer, primary_key=True, index=True)
     league_id = Column(Integer, nullable=True)
     team_id = Column(Integer, ForeignKey("teams.id"), nullable=False)
@@ -79,6 +108,15 @@ class Player(Base):
 
 class PlayerStatistic(Base):
     __tablename__ = "player_statistics"
+    __table_args__ = (
+        Index(
+            "ix_player_statistics_league_season_team",
+            "league_id",
+            "season",
+            "team_id",
+        ),
+    )
+
     player_id = Column(Integer, ForeignKey("players.id"), primary_key=True)
     league_id = Column(Integer, primary_key=True)
     season = Column(Integer, primary_key=True)

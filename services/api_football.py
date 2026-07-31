@@ -1,17 +1,56 @@
 import os
+
 import requests
 from dotenv import load_dotenv
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 load_dotenv()
-API_KEY = (os.getenv("API_FOOTBALL_KEY") or "").strip()
 BASE_URL = "https://v3.football.api-sports.io"
-HEADERS = {"x-apisports-key": API_KEY}
+DEFAULT_TIMEOUT = (5, 30)
+RETRY_STATUS_CODES = (429, 500, 502, 503, 504)
+
+
+def _retry_count() -> int:
+    try:
+        return max(0, int(os.getenv("API_FOOTBALL_HTTP_RETRIES", "3")))
+    except ValueError:
+        return 3
+
+
+def _build_session(max_retries: int) -> requests.Session:
+    retry = Retry(
+        total=max_retries,
+        connect=max_retries,
+        read=max_retries,
+        status=max_retries,
+        allowed_methods=frozenset({"GET"}),
+        status_forcelist=RETRY_STATUS_CODES,
+        backoff_factor=0.5,
+        respect_retry_after_header=True,
+        raise_on_status=False,
+    )
+    adapter = HTTPAdapter(max_retries=retry)
+    session = requests.Session()
+    session.mount("https://", adapter)
+    return session
+
 
 class ApiFootballClient:
-    def __init__(self):
+    def __init__(
+        self,
+        *,
+        api_key: str | None = None,
+        session: requests.Session | None = None,
+    ):
         self.base = BASE_URL
-        self.api_key = (os.getenv("API_FOOTBALL_KEY") or "").strip()
+        self.api_key = (
+            api_key
+            if api_key is not None
+            else os.getenv("API_FOOTBALL_KEY") or ""
+        ).strip()
         self.headers = {"x-apisports-key": self.api_key}
+        self.session = session or _build_session(_retry_count())
 
     def _get(self, path, params=None):
         if not self.api_key:
@@ -19,9 +58,19 @@ class ApiFootballClient:
                 "Clé API_FOOTBALL_KEY manquante. Ajoutez-la dans .env ou dans les secrets Streamlit avant de lancer une synchronisation."
             )
         url = f"{self.base}{path}"
-        resp = requests.get(url, headers=self.headers, params=params, timeout=30)
+        resp = self.session.get(
+            url,
+            headers=self.headers,
+            params=params,
+            timeout=DEFAULT_TIMEOUT,
+        )
         resp.raise_for_status()
-        payload = resp.json()
+        try:
+            payload = resp.json()
+        except ValueError as exc:
+            raise RuntimeError(
+                "API-Football a renvoyé une réponse JSON invalide."
+            ) from exc
         errors = payload.get("errors") if isinstance(payload, dict) else None
         if errors:
             if isinstance(errors, dict):

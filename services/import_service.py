@@ -54,7 +54,8 @@ def init_db():
     _ensure_update_log_table()
     _ensure_league_seasons_table()
     _ensure_fixture_api_cache_tables()
-    from services import sync_registry
+    from services import schema_guard, sync_registry
+    schema_guard.ensure_performance_indexes()
     sync_registry.ensure_table()
     config = get_auto_refresh_config()
     register_league_seasons(
@@ -527,14 +528,12 @@ def _get_or_create_team(session, team_info: dict, league_id: int = None):
         team.country = team_info.get("country") or team_info.get("team", {}).get("country") or team.country
         team.league_id = team.league_id or league_id
         session.add(team)
-        session.commit()
         return team
     name = team_info.get("name") or team_info.get("team", {}).get("name")
     logo = team_info.get("logo") or team_info.get("team", {}).get("logo")
     country = team_info.get("country") or team_info.get("team", {}).get("country")
     team = models.Team(id=tid, league_id=league_id, name=name, logo=logo, country=country)
     session.add(team)
-    session.commit()
     return team
 
 
@@ -589,7 +588,6 @@ def _save_match(session, fixture: dict, league_id: int, season: int):
                              home_team_id=home_id or 0, away_team_id=away_id or 0,
                              home_goals=home_goals, away_goals=away_goals, winner=winner, status=status)
         session.add(match)
-    session.commit()
 
 
 def _configured_season_range() -> list[int]:
@@ -616,7 +614,9 @@ def import_league_seasons_by_id(league_id: int, seasons: List[int] | None = None
                     # t may contain nested structures
                     team_info = t.get('team') if 'team' in t else t
                     _get_or_create_team(session, team_info, league_id=league_id)
+                session.commit()
             except Exception as e:
+                session.rollback()
                 logger.warning(f"Failed to fetch teams for league {league_id} season {season}: {e}")
 
             # Fixtures (may be paginated by date ranges); fetch whole season
@@ -635,7 +635,9 @@ def import_league_seasons_by_id(league_id: int, seasons: List[int] | None = None
                         if away:
                             _get_or_create_team(session, away, league_id=league_id)
                     _save_match(session, item, league_id, season)
+                session.commit()
             except Exception as e:
+                session.rollback()
                 logger.warning(f"Failed to fetch fixtures for league {league_id} season {season}: {e}")
 
             # Standings
@@ -684,6 +686,7 @@ def import_league_seasons_by_id(league_id: int, seasons: List[int] | None = None
                                     session.add(srec)
                         session.commit()
             except Exception as e:
+                session.rollback()
                 logger.warning(f"Failed to fetch standings for league {league_id} season {season}: {e}")
     finally:
         session.close()
@@ -718,13 +721,16 @@ def _refresh_league_season(session, league_id: int, season: int, pause: float, m
             for item in resp.get("response", []):
                 team_info = item.get("team") if "team" in item else item
                 _get_or_create_team(session, team_info, league_id=league_id)
+            session.commit()
             break
         except HTTPError as exc:
             tries += 1
+            session.rollback()
             logger.warning(f"HTTP error refreshing teams {league_id}/{season}: {exc} — retry {tries}")
             time.sleep(pause * tries)
         except Exception as exc:
             tries += 1
+            session.rollback()
             logger.warning(f"Error refreshing teams {league_id}/{season}: {exc} — retry {tries}")
             time.sleep(pause * tries)
 
@@ -747,6 +753,7 @@ def _refresh_league_season(session, league_id: int, season: int, pause: float, m
                         if teams.get("away"):
                             _get_or_create_team(session, teams["away"], league_id=league_id)
                     _save_match(session, item, league_id, season)
+                session.commit()
                 if page >= total_pages:
                     break
                 page += 1
@@ -755,10 +762,12 @@ def _refresh_league_season(session, league_id: int, season: int, pause: float, m
             break
         except HTTPError as exc:
             tries += 1
+            session.rollback()
             logger.warning(f"HTTP error refreshing fixtures {league_id}/{season}: {exc} — retry {tries}")
             time.sleep(pause * tries)
         except Exception as exc:
             tries += 1
+            session.rollback()
             logger.warning(f"Error refreshing fixtures {league_id}/{season}: {exc} — retry {tries}")
             time.sleep(pause * tries)
 
@@ -917,14 +926,17 @@ def import_leagues_cautious(
                         for t in team_items:
                             team_info = t.get('team') if 'team' in t else t
                             _get_or_create_team(session, team_info, league_id=lid)
+                        session.commit()
                         teams_ok = bool(team_items)
                         break
                     except HTTPError as e:
                         tries += 1
+                        session.rollback()
                         logging.warning(f"HTTP error fetching teams {lid}/{season}: {e} — retry {tries}")
                         time.sleep(pause * tries)
                     except Exception as e:
                         tries += 1
+                        session.rollback()
                         logging.warning(f"Error fetching teams {lid}/{season}: {e} — retry {tries}")
                         time.sleep(pause * tries)
                 if not teams_ok:
@@ -956,6 +968,7 @@ def import_leagues_cautious(
                                     if teams.get('away'):
                                         _get_or_create_team(session, teams.get('away'), league_id=lid)
                                 _save_match(session, item, lid, season)
+                            session.commit()
                             if page >= total_pages:
                                 break
                             page += 1
@@ -970,10 +983,12 @@ def import_leagues_cautious(
                         break
                     except HTTPError as e:
                         tries += 1
+                        session.rollback()
                         logging.warning(f"HTTP error fetching fixtures {lid}/{season}: {e} — retry {tries}")
                         time.sleep(pause * tries)
                     except Exception as e:
                         tries += 1
+                        session.rollback()
                         logging.warning(f"Error fetching fixtures {lid}/{season}: {e} — retry {tries}")
                         time.sleep(pause * tries)
                 if not fixtures_ok:
@@ -1034,10 +1049,12 @@ def import_leagues_cautious(
                         break
                     except HTTPError as e:
                         tries += 1
+                        session.rollback()
                         logging.warning(f"HTTP error fetching standings {lid}/{season}: {e} — retry {tries}")
                         time.sleep(pause * tries)
                     except Exception as e:
                         tries += 1
+                        session.rollback()
                         logging.warning(f"Error fetching standings {lid}/{season}: {e} — retry {tries}")
                         time.sleep(pause * tries)
                 if not standings_ok:

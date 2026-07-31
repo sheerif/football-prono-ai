@@ -147,6 +147,7 @@ def show():
         ui.kpi_grid(database_kpis)
 
     _render_jobs()
+    data_job_active = background_jobs.data_job_running()
 
     ui.section_label("Synchronisation globale")
     with st.container(border=True):
@@ -162,7 +163,7 @@ def show():
             "↻ Tout mettre à jour en arrière-plan",
             type="primary",
             width="stretch",
-            disabled=api_key_missing or any(job.get("kind") == "full_sync" for job in background_jobs.active_jobs()),
+            disabled=api_key_missing or data_job_active,
         ):
             job_id = background_jobs.start_full_sync()
             st.success("Mise à jour lancée. Vous pouvez continuer à utiliser l’application.")
@@ -181,13 +182,31 @@ def show():
 
     with st.container(border=True):
         st.markdown("### Mises à jour recommandées")
+        if data_job_active:
+            st.info(
+                "Une mise à jour des données est déjà en cours. Les autres "
+                "imports seront disponibles lorsqu’elle sera terminée."
+            )
         action_cols = st.columns(3)
-        if action_cols[0].button("Mettre à jour les saisons récentes", type="primary", width="stretch"):
+        if action_cols[0].button(
+            "Mettre à jour les saisons récentes",
+            type="primary",
+            width="stretch",
+            disabled=data_job_active,
+        ):
             seasons = list(range(recent_start, end_season + 1))
             _launch_import("Saisons récentes", list(LEAGUE_PRESETS.values()), seasons)
-        if action_cols[1].button("Mettre à jour la saison en cours", width="stretch"):
+        if action_cols[1].button(
+            "Mettre à jour la saison en cours",
+            width="stretch",
+            disabled=data_job_active,
+        ):
             _launch_import("Saison en cours", list(LEAGUE_PRESETS.values()), [end_season])
-        if action_cols[2].button("Mettre à jour Ligue 1", width="stretch"):
+        if action_cols[2].button(
+            "Mettre à jour Ligue 1",
+            width="stretch",
+            disabled=data_job_active,
+        ):
             seasons = list(range(recent_start, end_season + 1))
             _launch_import("Ligue 1", [LEAGUE_PRESETS["Ligue 1"]], seasons)
         st.caption(
@@ -205,7 +224,11 @@ def show():
         start_season = col1.number_input("Début", min_value=2016, max_value=end_season, value=recent_start, step=1)
         selected_end = col2.number_input("Fin", min_value=2016, max_value=end_season, value=end_season, step=1)
         pause = st.number_input("Pause entre requêtes API", min_value=0.5, max_value=10.0, value=2.0, step=0.5)
-        if st.button("Lancer l’import personnalisé", width="stretch"):
+        if st.button(
+            "Lancer l’import personnalisé",
+            width="stretch",
+            disabled=data_job_active,
+        ):
             if start_season > selected_end:
                 st.error("La saison de début doit être inférieure ou égale à la saison de fin.")
             else:

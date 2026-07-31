@@ -9,6 +9,7 @@ from services import import_service
 _lock = threading.RLock()
 _jobs: dict[str, dict] = {}
 _startup_started = False
+DATA_JOB_KINDS = {"manual_import", "full_sync", "startup_updates"}
 
 
 def _now() -> str:
@@ -41,6 +42,27 @@ def _create_job(kind: str, label: str, details: dict | None = None) -> str:
     return job_id
 
 
+def _create_unique_data_job(
+    kind: str,
+    label: str,
+    details: dict | None = None,
+) -> tuple[str, bool]:
+    """Atomically reuse the active data job or create a new one."""
+    with _lock:
+        existing = next(
+            (
+                job["id"]
+                for job in _jobs.values()
+                if job.get("kind") in DATA_JOB_KINDS
+                and job.get("status") == "running"
+            ),
+            None,
+        )
+        if existing:
+            return existing, False
+        return _create_job(kind, label, details), True
+
+
 def list_jobs() -> list[dict]:
     with _lock:
         return sorted(
@@ -52,6 +74,10 @@ def list_jobs() -> list[dict]:
 
 def active_jobs() -> list[dict]:
     return [job for job in list_jobs() if job.get("status") == "running"]
+
+
+def data_job_running() -> bool:
+    return any(job.get("kind") in DATA_JOB_KINDS for job in active_jobs())
 
 
 def _progress(job_id: str, current: int, total: int, label: str):
@@ -67,7 +93,7 @@ def start_manual_import(
     max_retries: int,
     selected_presets=None,
 ) -> str:
-    job_id = _create_job(
+    job_id, created = _create_unique_data_job(
         "manual_import",
         "Import manuel",
         {
@@ -78,6 +104,8 @@ def start_manual_import(
             "selected_presets": selected_presets or [],
         },
     )
+    if not created:
+        return job_id
 
     def run():
         started_at = _now()
@@ -137,23 +165,13 @@ def start_manual_import(
 
 def start_full_sync() -> str:
     """Lance une seule synchronisation globale incrémentale à la fois."""
-    with _lock:
-        existing = next(
-            (
-                job["id"]
-                for job in _jobs.values()
-                if job.get("kind") == "full_sync" and job.get("status") == "running"
-            ),
-            None,
-        )
-    if existing:
-        return existing
-
-    job_id = _create_job(
+    job_id, created = _create_unique_data_job(
         "full_sync",
         "Tout mettre à jour",
         {"incremental": True, "persistent": True},
     )
+    if not created:
+        return job_id
 
     def run():
         from services import full_sync_service

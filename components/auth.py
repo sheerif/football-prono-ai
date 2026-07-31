@@ -1,4 +1,3 @@
-import hashlib
 import hmac
 import os
 import time
@@ -12,116 +11,88 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 LOGO_PATH = Path(__file__).resolve().parents[1] / "assets" / "prono-insight-logo.png"
 
-AUTH_USER_PARAM = "prono_user"
-AUTH_TOKEN_PARAM = "prono_auth"
-AUTH_EXPIRES_PARAM = "prono_expires"
 AUTH_SESSION_KEY = "auth_session_id"
-REMEMBER_DAYS = 30
+AUTH_ATTEMPTS_KEY = "auth_failed_attempts"
+AUTH_LOCKED_UNTIL_KEY = "auth_locked_until"
+LEGACY_AUTH_QUERY_PARAMS = ("prono_user", "prono_auth", "prono_expires")
+MAX_LOGIN_ATTEMPTS = 5
+LOCKOUT_SECONDS = 60
+UNSAFE_USERNAMES = {"admin"}
+UNSAFE_PASSWORDS = {"admin", "change-moi", "changeme", "password"}
+
+
+class AuthConfigurationError(RuntimeError):
+    """Raised when authentication credentials are absent or unsafe."""
+
+
+def _setting(name: str) -> str:
+    value = (os.getenv(name) or "").strip()
+    if value:
+        return value
+    try:
+        return str(st.secrets.get(name, "") or "").strip()
+    except Exception:
+        return ""
 
 
 def _credentials() -> tuple[str, str]:
-    username = os.getenv("APP_USERNAME") or st.secrets.get("APP_USERNAME", "admin")
-    password = os.getenv("APP_PASSWORD") or st.secrets.get("APP_PASSWORD", "admin")
+    username = _setting("APP_USERNAME")
+    password = _setting("APP_PASSWORD")
+    if not username or not password:
+        raise AuthConfigurationError(
+            "APP_USERNAME et APP_PASSWORD doivent être configurés."
+        )
+    if username.casefold() in UNSAFE_USERNAMES or password.casefold() in UNSAFE_PASSWORDS:
+        raise AuthConfigurationError(
+            "Les identifiants d’exemple ou par défaut sont interdits."
+        )
     return username, password
 
 
-def _auth_token(username: str, password: str, expires_at: str = "") -> str:
-    secret = os.getenv("APP_AUTH_SECRET") or str(password)
-    payload = f"{username}:{expires_at}" if expires_at else str(username)
-    return hmac.new(secret.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
-
-
-def _query_value(name: str) -> str:
+def _clear_legacy_auth_query() -> None:
+    """Remove obsolete bearer tokens that older versions stored in the URL."""
     try:
-        value = st.query_params.get(name, "")
-    except Exception:
-        return ""
-    if isinstance(value, list):
-        return str(value[0]) if value else ""
-    return str(value or "")
-
-
-def _save_auth_query(username: str, password: str, remember: bool = True) -> None:
-    try:
-        _clear_auth_query()
-        if not remember:
-            return
-        expires_at = str(int(time.time()) + REMEMBER_DAYS * 24 * 60 * 60)
-        st.query_params.update(
-            {
-                AUTH_USER_PARAM: username,
-                AUTH_TOKEN_PARAM: _auth_token(username, password, expires_at),
-                AUTH_EXPIRES_PARAM: expires_at,
-            }
-        )
-    except Exception:
-        pass
-
-
-def _clear_auth_query() -> None:
-    try:
-        for key in [AUTH_USER_PARAM, AUTH_TOKEN_PARAM, AUTH_EXPIRES_PARAM]:
+        for key in LEGACY_AUTH_QUERY_PARAMS:
             if key in st.query_params:
                 del st.query_params[key]
     except Exception:
         pass
 
 
-def _restore_auth_from_query() -> bool:
-    expected_user, expected_password = _credentials()
-    username = _query_value(AUTH_USER_PARAM)
-    token = _query_value(AUTH_TOKEN_PARAM)
-    expires_at = _query_value(AUTH_EXPIRES_PARAM)
-    if expires_at:
-        try:
-            if int(expires_at) < int(time.time()):
-                _clear_auth_query()
-                return False
-        except ValueError:
-            _clear_auth_query()
-            return False
-    expected_token = _auth_token(str(expected_user), str(expected_password), expires_at)
-    legacy_token = _auth_token(str(expected_user), str(expected_password))
-    valid_token = hmac.compare_digest(token, expected_token) or hmac.compare_digest(token, legacy_token)
-    if username and token and hmac.compare_digest(username, str(expected_user)) and valid_token:
-        _start_auth_session(username)
-        return True
-    return False
-
-
-def _start_auth_session(username: str, remember: bool = True) -> None:
+def _start_auth_session(username: str) -> None:
     st.session_state.pop("logged_out", None)
+    st.session_state.pop(AUTH_ATTEMPTS_KEY, None)
+    st.session_state.pop(AUTH_LOCKED_UNTIL_KEY, None)
     st.session_state["authenticated"] = True
     st.session_state["auth_user"] = username
-    st.session_state["remember_login"] = bool(remember)
     st.session_state[AUTH_SESSION_KEY] = uuid.uuid4().hex
 
 
-def _ensure_remembered_auth_query() -> None:
-    if not bool(st.session_state.get("remember_login", True)):
-        return
-    if _query_value(AUTH_USER_PARAM) and _query_value(AUTH_TOKEN_PARAM) and _query_value(AUTH_EXPIRES_PARAM):
-        return
-    username = str(st.session_state.get("auth_user", ""))
-    if not username:
-        return
-    _, expected_password = _credentials()
-    _save_auth_query(username, str(expected_password), remember=True)
+def _lockout_seconds_remaining() -> int:
+    locked_until = float(st.session_state.get(AUTH_LOCKED_UNTIL_KEY, 0) or 0)
+    return max(0, int(locked_until - time.monotonic()) + 1)
+
+
+def _record_failed_attempt() -> int:
+    attempts = int(st.session_state.get(AUTH_ATTEMPTS_KEY, 0) or 0) + 1
+    st.session_state[AUTH_ATTEMPTS_KEY] = attempts
+    if attempts >= MAX_LOGIN_ATTEMPTS:
+        st.session_state[AUTH_LOCKED_UNTIL_KEY] = time.monotonic() + LOCKOUT_SECONDS
+        st.session_state[AUTH_ATTEMPTS_KEY] = 0
+    return attempts
 
 
 def _clear_auth_state() -> None:
-    _clear_auth_query()
+    _clear_legacy_auth_query()
     st.session_state.clear()
     st.session_state["logged_out"] = True
 
 
 def is_authenticated() -> bool:
+    _clear_legacy_auth_query()
     if bool(st.session_state.get("authenticated")) and not bool(st.session_state.get("logged_out")):
-        _ensure_remembered_auth_query()
         return True
-    if bool(st.session_state.get("logged_out")):
-        return False
-    return _restore_auth_from_query()
+    return False
 
 
 def handle_logout_query():
@@ -135,9 +106,15 @@ def logout_button():
 
 
 def login_page() -> bool:
-    expected_user, expected_password = _credentials()
-    if _query_value(AUTH_USER_PARAM) or _query_value(AUTH_TOKEN_PARAM) or _query_value(AUTH_EXPIRES_PARAM):
-        _clear_auth_query()
+    _clear_legacy_auth_query()
+    try:
+        expected_user, expected_password = _credentials()
+    except AuthConfigurationError as exc:
+        st.error(f"Configuration de connexion invalide : {exc}")
+        st.caption(
+            "Définissez des valeurs uniques dans .env ou dans les secrets Streamlit."
+        )
+        return False
 
     if LOGO_PATH.exists():
         left, logo_column, right = st.columns([1, 0.8, 1])
@@ -148,22 +125,31 @@ def login_page() -> bool:
     st.caption("Connectez-vous pour accéder au tableau de bord Prono insight.")
 
     with st.container(border=True):
-        username = st.text_input("Identifiant", value="", placeholder="admin")
+        username = st.text_input("Identifiant", value="")
         password = st.text_input("Mot de passe", value="", type="password")
-        remember = st.checkbox(f"Se souvenir de moi pendant {REMEMBER_DAYS} jours", value=True)
-        submitted = st.button("Se connecter", type="primary", width="stretch")
+        remaining = _lockout_seconds_remaining()
+        submitted = st.button(
+            "Se connecter",
+            type="primary",
+            width="stretch",
+            disabled=remaining > 0,
+        )
+
+    if remaining > 0:
+        st.warning(
+            f"Trop de tentatives. Réessayez dans {remaining} seconde(s)."
+        )
 
     if submitted:
         clean_username = username.strip()
-        clean_password = password.strip()
+        clean_password = password
         valid_username = hmac.compare_digest(clean_username, str(expected_user))
         valid_password = hmac.compare_digest(clean_password, str(expected_password))
         if valid_username and valid_password:
-            _clear_auth_query()
-            _start_auth_session(clean_username, remember=remember)
-            _save_auth_query(clean_username, str(expected_password), remember=remember)
+            _start_auth_session(clean_username)
             st.rerun()
             return True
+        _record_failed_attempt()
         st.error("Identifiant ou mot de passe incorrect.")
 
     return False
