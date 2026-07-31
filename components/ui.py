@@ -894,6 +894,29 @@ def season_summary(title: str, subtitle: str, cards: list[tuple[str, str]], rows
         st.dataframe(table_rows, hide_index=True, width="stretch")
 
 
+def render_api_refinement(details: dict | None):
+    """Explique la fusion éventuelle entre modèle interne et API-Football."""
+    if not details or not details.get("applied"):
+        st.caption("Conseil API non disponible : estimation interne inchangée.")
+        return
+    internal = details.get("internal_probabilities") or []
+    external = details.get("api_probabilities") or []
+    agreement = "convergent" if details.get("agreement") else "divergent"
+    st.info(
+        "Estimation affinée avec API-Football : "
+        f"{round((1 - float(details['api_weight'])) * 100)} % modèle interne + "
+        f"{round(float(details['api_weight']) * 100)} % conseil API. "
+        f"Les scénarios principaux {agreement}."
+    )
+    if len(internal) == 3 and len(external) == 3:
+        st.caption(
+            "1/N/2 interne : "
+            f"{internal[0]} / {internal[1]} / {internal[2]} % · "
+            "API : "
+            f"{external[0]} / {external[1]} / {external[2]} %."
+        )
+
+
 def render_cross_insight(insight: dict):
     section_label("Lecture croisée")
     st.caption(

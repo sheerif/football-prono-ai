@@ -264,6 +264,128 @@ def _fetch_one(resource_key: str, resource_type: str, fetch, save, retry_hours: 
         raise
 
 
+def prediction_coverage(days: int | None = None) -> dict:
+    """Mesure la couverture des conseils API sur les matchs futurs en base."""
+    date_filter = ""
+    params = {}
+    if days is not None:
+        date_filter = "AND m.date <= datetime(CURRENT_TIMESTAMP, '+' || :days || ' days')"
+        params["days"] = max(1, int(days))
+    with engine.begin() as conn:
+        row = conn.execute(
+            text(
+                f"""
+                SELECT COUNT(*) AS total,
+                       SUM(CASE WHEN p.fixture_id IS NOT NULL THEN 1 ELSE 0 END) AS available
+                FROM matches m
+                LEFT JOIN fixture_api_predictions p ON p.fixture_id = m.fixture_id
+                WHERE m.date >= CURRENT_TIMESTAMP
+                  AND m.home_goals IS NULL AND m.away_goals IS NULL
+                  {date_filter}
+                """
+            ),
+            params,
+        ).mappings().one()
+    total = int(row["total"] or 0)
+    available = int(row["available"] or 0)
+    return {
+        "total": total,
+        "available": available,
+        "missing": max(0, total - available),
+        "percentage": round(available / total * 100, 1) if total else 0.0,
+    }
+
+
+def sync_all_upcoming_predictions(
+    *,
+    days: int | None = None,
+    pause: float | None = None,
+    retry_hours: int = 12,
+    progress_callback=None,
+) -> dict:
+    """Télécharge tous les conseils API publiés pour les fixtures futures.
+
+    La synchronisation est incrémentale : les lignes déjà présentes ne
+    consomment aucune requête et les réponses indisponibles sont retentées
+    après le délai configuré.
+    """
+    import_service.init_db()
+    sync_registry.ensure_table()
+    pause = (
+        float(os.getenv("PREDICTION_SYNC_PAUSE_SECONDS", "0.25"))
+        if pause is None
+        else max(0.0, float(pause))
+    )
+    date_filter = ""
+    params = {}
+    if days is not None:
+        date_filter = "AND date <= datetime(CURRENT_TIMESTAMP, '+' || :days || ' days')"
+        params["days"] = max(1, int(days))
+    with engine.begin() as conn:
+        rows = conn.execute(
+            text(
+                f"""
+                SELECT fixture_id, date, league_id, season
+                FROM matches
+                WHERE date >= CURRENT_TIMESTAMP
+                  AND home_goals IS NULL AND away_goals IS NULL
+                  {date_filter}
+                ORDER BY date ASC
+                """
+            ),
+            params,
+        ).mappings().all()
+
+    summary = {
+        "total": len(rows),
+        "downloaded": 0,
+        "skipped": 0,
+        "unavailable": 0,
+        "errors": [],
+        "quota_reached": False,
+    }
+    for index, row in enumerate(rows, start=1):
+        fixture_id = int(row["fixture_id"])
+        key = f"fixture-prediction:{fixture_id}"
+        if _prediction_present(fixture_id):
+            sync_registry.mark(
+                key,
+                "fixture_prediction",
+                "complete",
+                item_count=1,
+                message="Déjà en base",
+            )
+            result = "skipped"
+        else:
+            try:
+                result = _fetch_one(
+                    key,
+                    "fixture_prediction",
+                    lambda fid=fixture_id: client.get_predictions(fid),
+                    lambda item, fid=fixture_id: _save_prediction(fid, item),
+                    retry_hours=retry_hours,
+                )
+            except Exception as exc:
+                summary["errors"].append(f"{key}: {exc}")
+                if _is_quota_error(exc):
+                    summary["quota_reached"] = True
+                    break
+                result = "error"
+            if result not in {"skipped"}:
+                time.sleep(pause)
+        if result in summary:
+            summary[result] += 1
+        if progress_callback:
+            progress_callback(
+                index,
+                max(1, len(rows)),
+                f"Conseils API : match {index}/{len(rows)}",
+            )
+
+    summary["coverage"] = prediction_coverage(days)
+    return summary
+
+
 def run_full_sync(progress_callback=None) -> dict:
     """Complète les données manquantes et conserve un état de reprise en base."""
     import_service.init_db()

@@ -80,6 +80,92 @@ def predict_simple(home_strength, away_strength, draw_factor=0.25):
     }
 
 
+def blend_with_api_prediction(
+    prediction: dict,
+    api_signal: dict | None,
+    api_weight: float = 0.20,
+) -> tuple[dict, dict]:
+    """Combine prudemment le modèle interne et les probabilités API.
+
+    La source externe reste minoritaire et la fonction conserve les deux jeux
+    de probabilités afin que l'interface puisse expliquer l'accord ou le
+    désaccord entre les sources.
+    """
+    internal = normalize_probs([
+        prediction.get("home_probability", 33.33),
+        prediction.get("draw_probability", 33.33),
+        prediction.get("away_probability", 33.34),
+    ])
+    details = {
+        "applied": False,
+        "api_weight": 0.0,
+        "internal_probabilities": internal,
+        "api_probabilities": None,
+        "agreement": None,
+        "maximum_gap": None,
+    }
+    if not api_signal:
+        return {**prediction, "api_blend_applied": False}, details
+
+    raw_api = [
+        api_signal.get("home_probability"),
+        api_signal.get("draw_probability"),
+        api_signal.get("away_probability"),
+    ]
+    try:
+        numeric_api = [float(value) for value in raw_api]
+    except (TypeError, ValueError):
+        return {**prediction, "api_blend_applied": False}, details
+    if not all(math.isfinite(value) and value >= 0 for value in numeric_api):
+        return {**prediction, "api_blend_applied": False}, details
+    if sum(numeric_api) <= 0:
+        return {**prediction, "api_blend_applied": False}, details
+
+    api = normalize_probs(numeric_api)
+    try:
+        weight = float(api_weight)
+    except (TypeError, ValueError):
+        weight = 0.20
+    weight = max(0.0, min(0.30, weight if math.isfinite(weight) else 0.20))
+    blended = normalize_probs([
+        (1.0 - weight) * internal[index] + weight * api[index]
+        for index in range(3)
+    ])
+    labels = ("1", "N", "2")
+    internal_pick = labels[max(range(3), key=internal.__getitem__)]
+    api_pick = labels[max(range(3), key=api.__getitem__)]
+    details = {
+        "applied": True,
+        "api_weight": round(weight, 2),
+        "internal_probabilities": internal,
+        "api_probabilities": api,
+        "agreement": internal_pick == api_pick,
+        "internal_pick": internal_pick,
+        "api_pick": api_pick,
+        "maximum_gap": round(max(abs(internal[i] - api[i]) for i in range(3)), 2),
+        "fixture_id": api_signal.get("fixture_id"),
+        "advice": api_signal.get("advice"),
+        "winner": api_signal.get("winner"),
+        "updated_at": api_signal.get("updated_at"),
+    }
+    refined = {
+        **prediction,
+        "home_probability": blended[0],
+        "draw_probability": blended[1],
+        "away_probability": blended[2],
+        "confidence": float(max(blended)),
+        "api_blend_applied": True,
+        "api_weight": round(weight, 2),
+        "internal_prediction": {
+            "home_probability": internal[0],
+            "draw_probability": internal[1],
+            "away_probability": internal[2],
+            "confidence": float(max(internal)),
+        },
+    }
+    return refined, details
+
+
 def adjust_prediction_for_player_form(
     prediction: dict,
     home_form_score: float,

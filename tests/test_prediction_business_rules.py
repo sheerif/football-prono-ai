@@ -6,6 +6,50 @@ from services import prediction_helpers, prediction_service
 
 
 class PredictionBusinessRuleTests(unittest.TestCase):
+    def test_api_probabilities_refine_without_overriding_internal_model(self):
+        refined, details = prediction_service.blend_with_api_prediction(
+            {
+                "home_probability": 50,
+                "draw_probability": 25,
+                "away_probability": 25,
+                "confidence": 50,
+            },
+            {
+                "fixture_id": 123,
+                "home_probability": 30,
+                "draw_probability": 30,
+                "away_probability": 40,
+            },
+            api_weight=0.20,
+        )
+
+        self.assertEqual(
+            [
+                refined["home_probability"],
+                refined["draw_probability"],
+                refined["away_probability"],
+            ],
+            [46.0, 26.0, 28.0],
+        )
+        self.assertTrue(details["applied"])
+        self.assertFalse(details["agreement"])
+        self.assertEqual(details["api_weight"], 0.20)
+
+    def test_invalid_api_probabilities_leave_prediction_unchanged(self):
+        base = {
+            "home_probability": 40,
+            "draw_probability": 30,
+            "away_probability": 30,
+            "confidence": 40,
+        }
+        refined, details = prediction_service.blend_with_api_prediction(
+            base,
+            {"home_probability": None, "draw_probability": 30, "away_probability": 70},
+        )
+
+        self.assertFalse(details["applied"])
+        self.assertEqual(refined["home_probability"], 40)
+
     def test_draw_probability_is_anchored_near_observed_rate(self):
         prediction = prediction_service.predict_simple(
             0.5,

@@ -16,7 +16,7 @@ from services.season_format import season_period
 
 
 api_client = ApiFootballClient()
-PREVIEW_CACHE_VERSION = "player-intelligence-v3"
+PREVIEW_CACHE_VERSION = "api-refinement-v4"
 
 
 def _load_upcoming_matches(days_ahead: int, league_ids: list[int] | None = None) -> pd.DataFrame:
@@ -678,7 +678,7 @@ def _summary_sentence(home_name: str, away_name: str, prediction: dict, details:
 
     return (
         f"Lecture {code}: {favorite} ressort à {_format_probability(probability)} "
-        f"avec un score du modèle de {confidence:.2f} % ({label}); {form_text}. "
+        f"avec un score d’analyse de {confidence:.2f} % ({label}); {form_text}. "
         f"Probabilités 1/N/2: {_format_probability(prediction['home_probability'])}, "
         f"{_format_probability(prediction['draw_probability'])}, {_format_probability(prediction['away_probability'])}."
         f"{score_text}"
@@ -751,10 +751,18 @@ def _intelligence_signature(match) -> dict:
                 ),
                 params,
             ).scalar_one_or_none()
+            api_prediction_updated = conn.execute(
+                text(
+                    "SELECT MAX(updated_at) FROM fixture_api_predictions "
+                    "WHERE fixture_id = :fixture_id"
+                ),
+                params,
+            ).scalar_one_or_none()
         return {
             "season_players": _clean_hash_value(season_updated),
             "lineup": _clean_hash_value(lineup_updated),
             "recent_players": _clean_hash_value(recent_updated),
+            "api_prediction": _clean_hash_value(api_prediction_updated),
         }
     except Exception:
         return {}
@@ -957,6 +965,14 @@ def _build_match_preview(match, context_df: pd.DataFrame) -> dict:
         away_team_id,
         player_intelligence=player_intelligence,
     )
+    api_signal = cross_insight_service.load_fixture_api_signal(
+        int(match.fixture_id)
+    )
+    prediction, api_refinement = prediction_service.blend_with_api_prediction(
+        prediction,
+        api_signal,
+    )
+    details["api_refinement"] = api_refinement
     player_reliability = float(player_intelligence.get("reliability") or 0)
     score_prediction = prediction_service.predict_scorelines(
         context_df,
@@ -1114,7 +1130,7 @@ def _render_match_detail(row: pd.Series, force_api_refresh: bool = False):
 
     signal_cols = st.columns(3)
     signal_cols[0].metric("Pronostic", row.get("Pronostic") or "-")
-    signal_cols[1].metric("Score du modèle", row.get("Confiance") or "-")
+    signal_cols[1].metric("Score d’analyse", row.get("Confiance") or "-")
     signal_cols[2].metric("Score", row.get("Score probable") or "-")
 
     st.info(row.get("Résumé") or "Résumé non disponible.")
@@ -1165,7 +1181,7 @@ def _render_match_card(row: pd.Series, force_api_refresh: bool = False):
         signal_cols = st.columns(3)
         signal_cols[0].caption("Pronostic")
         signal_cols[0].write(f"**{row.get('Pronostic') or '-'}**")
-        signal_cols[1].caption("Score du modèle")
+        signal_cols[1].caption("Score d’analyse")
         signal_cols[1].write(f"**{row.get('Confiance') or '-'}**")
         signal_cols[2].caption("Score")
         signal_cols[2].write(f"**{row.get('Score probable') or '-'}**")
@@ -1577,6 +1593,13 @@ def _render_upcoming_match_analysis(fixture: pd.Series):
             player_intelligence=player_intelligence,
         )
     )
+    internal_prediction = dict(prediction)
+    api_signal = cross_insight_service.load_fixture_api_signal(fixture_id)
+    prediction, api_refinement = prediction_service.blend_with_api_prediction(
+        prediction,
+        api_signal,
+    )
+    details["api_refinement"] = api_refinement
     player_reliability = float(player_intelligence.get("reliability") or 0)
     score_prediction = prediction_service.predict_scorelines(
         context_df,
@@ -1592,31 +1615,13 @@ def _render_upcoming_match_analysis(fixture: pd.Series):
         ),
         top_n=6,
     )
-    api_prediction = _load_cached_prediction(fixture_id)
-    api_signal = None
-    if api_prediction:
-        api_signal = {
-            "fixture_id": fixture_id,
-            "date": fixture["date"],
-            "advice": api_prediction.get("api_advice"),
-            "winner": api_prediction.get("api_winner"),
-            "home_probability": float(
-                api_prediction.get("api_home_probability") or 0
-            ),
-            "draw_probability": float(
-                api_prediction.get("api_draw_probability") or 0
-            ),
-            "away_probability": float(
-                api_prediction.get("api_away_probability") or 0
-            ),
-        }
     cross_insight = cross_insight_service.build_cross_insight(
         matches_df=context_df,
         home_team=home_team,
         away_team=away_team,
         home_name=home_name,
         away_name=away_name,
-        prediction=prediction,
+        prediction=internal_prediction,
         score_prediction=score_prediction,
         home_form_score=details["home_form_score"] / 100,
         away_form_score=details["away_form_score"] / 100,
@@ -1742,8 +1747,14 @@ def _render_upcoming_match_analysis(fixture: pd.Series):
             f"Victoire {away_name}", f"{prediction['away_probability']} %"
         )
         probabilities[3].metric(
-            "Score du modèle", f"{prediction['confidence']} %"
+            (
+                "Score combiné"
+                if api_refinement.get("applied")
+                else "Score du modèle"
+            ),
+            f"{prediction['confidence']} %",
         )
+        ui.render_api_refinement(api_refinement)
         adjustment = details.get("player_adjustment")
         if adjustment:
             shift = float(adjustment.get("probability_shift") or 0)

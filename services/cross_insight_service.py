@@ -68,6 +68,41 @@ def _h2h_signal(
     }
 
 
+def _api_signal_from_row(row) -> dict:
+    return {
+        "fixture_id": int(row["fixture_id"]),
+        "date": row.get("date"),
+        "advice": row.get("advice"),
+        "winner": row.get("winner"),
+        "home_probability": float(row.get("home_probability") or 0),
+        "draw_probability": float(row.get("draw_probability") or 0),
+        "away_probability": float(row.get("away_probability") or 0),
+        "updated_at": row.get("updated_at"),
+    }
+
+
+def load_fixture_api_signal(fixture_id: int) -> dict | None:
+    try:
+        rows = pd.read_sql(
+            text(
+                """
+                SELECT m.fixture_id, m.date, p.advice, p.winner,
+                       p.home_probability, p.draw_probability,
+                       p.away_probability, p.updated_at
+                FROM matches m
+                JOIN fixture_api_predictions p ON p.fixture_id = m.fixture_id
+                WHERE m.fixture_id = :fixture_id
+                LIMIT 1
+                """
+            ),
+            engine,
+            params={"fixture_id": int(fixture_id)},
+        )
+    except Exception:
+        return None
+    return None if rows.empty else _api_signal_from_row(rows.iloc[0])
+
+
 def load_upcoming_api_signal(home_team: int, away_team: int) -> dict | None:
     try:
         rows = pd.read_sql(
@@ -99,17 +134,7 @@ def load_upcoming_api_signal(home_team: int, away_team: int) -> dict | None:
         return None
     if rows.empty:
         return None
-    row = rows.iloc[0]
-    return {
-        "fixture_id": int(row["fixture_id"]),
-        "date": row["date"],
-        "advice": row.get("advice"),
-        "winner": row.get("winner"),
-        "home_probability": float(row.get("home_probability") or 0),
-        "draw_probability": float(row.get("draw_probability") or 0),
-        "away_probability": float(row.get("away_probability") or 0),
-        "updated_at": row.get("updated_at"),
-    }
+    return _api_signal_from_row(rows.iloc[0])
 
 
 def build_cross_insight(

@@ -1224,6 +1224,16 @@ def show():
             player_intelligence=player_intelligence,
         )
     )
+    internal_prediction = dict(prediction)
+    api_signal = cross_insight_service.load_upcoming_api_signal(
+        home_team,
+        away_team,
+    )
+    prediction, api_refinement = prediction_service.blend_with_api_prediction(
+        prediction,
+        api_signal,
+    )
+    prediction_details["api_refinement"] = api_refinement
     home_player_factor, away_player_factor = lineup_service.player_goal_factors(
         player_intelligence
     )
@@ -1243,13 +1253,14 @@ def show():
         away_team=away_team,
         home_name=home_view["team_name"],
         away_name=away_view["team_name"],
-        prediction=prediction,
+        prediction=internal_prediction,
         score_prediction=score_prediction,
         home_form_score=home_form_score,
         away_form_score=away_form_score,
         home_played=home_stats["played"],
         away_played=away_stats["played"],
         selected_seasons=seasons_window,
+        api_signal=api_signal,
         player_intelligence=player_intelligence,
     )
     analysis_store.save_analysis_snapshot(
@@ -1544,8 +1555,14 @@ def show():
             f"{prediction['away_probability']} %",
         )
         prediction_columns[3].metric(
-            "Score du modèle", f"{prediction.get('confidence')} %"
+            (
+                "Score combiné"
+                if api_refinement.get("applied")
+                else "Score du modèle"
+            ),
+            f"{prediction.get('confidence')} %",
         )
+        ui.render_api_refinement(api_refinement)
 
         reasons = []
         if home_form_score > away_form_score:

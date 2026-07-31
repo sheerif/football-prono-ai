@@ -50,8 +50,8 @@ def _glossary_table() -> pd.DataFrame:
                 "Définition": "Estimation en pourcentage de chaque issue possible: victoire domicile, match nul ou victoire extérieur. Les trois probabilités totalisent environ 100 %.",
             },
             {
-                "Terme": "Score du modèle",
-                "Définition": "Probabilité de l’issue la plus haute. C’est un classement interne des scénarios, pas une mesure de fiabilité validée ni une certitude.",
+                "Terme": "Score d’analyse",
+                "Définition": "Probabilité de l’issue la plus haute. Elle combine le modèle interne et, lorsqu’il existe, le conseil API minoritaire; ce n’est pas une fiabilité validée.",
             },
         ]
     )
@@ -72,7 +72,7 @@ def _analysis_legend_table() -> pd.DataFrame:
             {"Valeur": "Indice défensif utilisé", "Explication": "Valeur de buts encaissés par match injectée dans le modèle."},
             {"Valeur": "Score de force du modèle", "Explication": "Score synthétique calculé avec la forme, l’attaque, la défense adverse et le contexte domicile/extérieur."},
             {"Valeur": "Probabilité", "Explication": "Chance estimée de chaque issue. Les trois issues totalisent environ 100 %."},
-            {"Valeur": "Score du modèle", "Explication": "Probabilité de l’issue la plus haute. Cette valeur n’est pas encore une mesure de fiabilité calibrée."},
+            {"Valeur": "Score d’analyse", "Explication": "Probabilité de l’issue la plus haute après combinaison éventuelle avec le conseil API. Cette valeur n’est pas une fiabilité calibrée."},
         ]
     )
 
@@ -212,11 +212,11 @@ def _favorite_sentence(favorite: str, confidence: float, home_name: str, away_na
 
     if favorite == "Match nul":
         return (
-            f"Le modèle place légèrement le match nul en tête ({confidence} % au score du modèle, {label}), car {form_argument}, "
+            f"L’analyse place légèrement le match nul en tête ({confidence} % au score d’analyse, {label}), car {form_argument}, "
             f"{attack_argument} et {strength_argument}."
         )
     return (
-        f"Le modèle place {favorite} en tête ({confidence} % au score du modèle, {label}), car {form_argument}, "
+        f"L’analyse place {favorite} en tête ({confidence} % au score d’analyse, {label}), car {form_argument}, "
         f"{attack_argument} et {strength_argument}."
     )
 
@@ -369,6 +369,16 @@ def _show_match_prediction():
         )
         home_name = team_options[home_team]
         away_name = team_options[away_team]
+        internal_prediction = dict(pred)
+        api_signal = cross_insight_service.load_upcoming_api_signal(
+            home_team,
+            away_team,
+        )
+        pred, api_refinement = prediction_service.blend_with_api_prediction(
+            pred,
+            api_signal,
+        )
+        details["api_refinement"] = api_refinement
         home_player_factor, away_player_factor = lineup_service.player_goal_factors(
             player_intelligence
         )
@@ -388,13 +398,14 @@ def _show_match_prediction():
             away_team=away_team,
             home_name=home_name,
             away_name=away_name,
-            prediction=pred,
+            prediction=internal_prediction,
             score_prediction=score_prediction,
             home_form_score=details["home_form_score"] / 100,
             away_form_score=details["away_form_score"] / 100,
             home_played=home_stats["played"],
             away_played=away_stats["played"],
             selected_seasons=seasons_with_data,
+            api_signal=api_signal,
             player_intelligence=player_intelligence,
         )
         analysis_store.save_analysis_snapshot(
@@ -444,7 +455,11 @@ def _show_match_prediction():
                     "icon": "✈️",
                 },
                 {
-                    "label": "Score du modèle",
+                    "label": (
+                        "Score combiné"
+                        if api_refinement.get("applied")
+                        else "Score du modèle"
+                    ),
                     "value": f"{pred['confidence']} %",
                     "caption": "Force du scénario dominant",
                     "icon": "🎯",
@@ -456,6 +471,7 @@ def _show_match_prediction():
             ui.kpi_grid(result_kpis)
 
         st.dataframe(_glossary_table(), hide_index=True, width="stretch")
+        ui.render_api_refinement(api_refinement)
 
         favorite = max(
             [
@@ -546,8 +562,8 @@ def _rankings_glossary_table() -> pd.DataFrame:
                 "Définition": "Pourcentage estimé pour le scénario principal.",
             },
             {
-                "Terme": "Score du modèle",
-                "Définition": "Probabilité de l’issue la plus haute; ce n’est pas une mesure de fiabilité validée.",
+                "Terme": "Score d’analyse",
+                "Définition": "Probabilité de l’issue la plus haute après combinaison éventuelle avec le conseil API; ce n’est pas une fiabilité validée.",
             },
         ]
     )
@@ -634,6 +650,12 @@ def _build_rankings(
             away_team,
             player_intelligence=player_intelligence,
         )
+        api_signal = cross_insight_service.load_fixture_api_signal(fixture_id)
+        pred, api_refinement = prediction_service.blend_with_api_prediction(
+            pred,
+            api_signal,
+        )
+        details["api_refinement"] = api_refinement
         home_name = team_options[home_team]
         away_name = team_options[away_team]
         outcomes = [
@@ -694,10 +716,17 @@ def _build_rankings(
                 ),
                 "Code 1N2": code,
                 "Probabilité retenue": probability,
-                "Score du modèle": pred["confidence"],
+                "Score d’analyse": pred["confidence"],
                 "Compositions": lineup_label,
                 "Complétude": f"{completeness['percentage']} %",
                 "Données disponibles": completeness["label"],
+                "Accord API": (
+                    "Oui"
+                    if api_refinement.get("agreement") is True
+                    else "Non"
+                    if api_refinement.get("agreement") is False
+                    else "Indisponible"
+                ),
                 "Historique": f"{len(historical_context)} matchs",
                 "Dispositifs": (
                     f"{tactical_analysis.get('home_formation', '-')} / "
@@ -713,7 +742,7 @@ def _build_rankings(
     return (
         pd.DataFrame(rows)
         .sort_values(
-            ["Score du modèle", "Probabilité retenue"],
+            ["Score d’analyse", "Probabilité retenue"],
             ascending=False,
         )
         .head(limit)
@@ -829,7 +858,7 @@ def _show_best_predictions():
         )
         ui.section_label("Classement")
         st.caption(
-            "La première ligne correspond au score du modèle le plus élevé "
+            "La première ligne correspond au score d’analyse le plus élevé "
             "parmi les matchs programmés sélectionnés."
         )
         st.dataframe(rankings, hide_index=True, width="stretch")
@@ -856,15 +885,15 @@ def _show_best_predictions():
                         "caption": "Estimation interne",
                     },
                     {
-                        "label": "Score du modèle",
-                        "value": f"{best['Score du modèle']} %",
+                        "label": "Score d’analyse",
+                        "value": f"{best['Score d’analyse']} %",
                         "caption": "Non calibré comme fiabilité",
                     },
                 ]
             )
             st.info(
                 f"Scénario classé en tête : {best['Scénario principal']} sur "
-                f"{best['Match']} ({best['Score du modèle']} %). "
+                f"{best['Match']} ({best['Score d’analyse']} %). "
                 f"{best['Argument principal']}"
             )
 
