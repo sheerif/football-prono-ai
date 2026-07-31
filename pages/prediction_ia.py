@@ -378,7 +378,14 @@ def _show_match_prediction():
             pred,
             api_signal,
         )
+        consensus_advice = prediction_service.build_consensus_advice(
+            pred,
+            api_refinement,
+            home_name,
+            away_name,
+        )
         details["api_refinement"] = api_refinement
+        details["consensus_advice"] = consensus_advice
         home_player_factor, away_player_factor = lineup_service.player_goal_factors(
             player_intelligence
         )
@@ -471,7 +478,7 @@ def _show_match_prediction():
             ui.kpi_grid(result_kpis)
 
         st.dataframe(_glossary_table(), hide_index=True, width="stretch")
-        ui.render_api_refinement(api_refinement)
+        ui.render_api_refinement(api_refinement, consensus_advice)
 
         favorite = max(
             [
@@ -655,9 +662,16 @@ def _build_rankings(
             pred,
             api_signal,
         )
-        details["api_refinement"] = api_refinement
         home_name = team_options[home_team]
         away_name = team_options[away_team]
+        consensus_advice = prediction_service.build_consensus_advice(
+            pred,
+            api_refinement,
+            home_name,
+            away_name,
+        )
+        details["api_refinement"] = api_refinement
+        details["consensus_advice"] = consensus_advice
         outcomes = [
             ("1", "Victoire domicile", home_name, pred["home_probability"]),
             ("N", "Match nul", "Match nul", pred["draw_probability"]),
@@ -727,6 +741,7 @@ def _build_rankings(
                     if api_refinement.get("agreement") is False
                     else "Indisponible"
                 ),
+                "Lecture affinée": consensus_advice["message"],
                 "Historique": f"{len(historical_context)} matchs",
                 "Dispositifs": (
                     f"{tactical_analysis.get('home_formation', '-')} / "

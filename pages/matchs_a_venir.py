@@ -972,7 +972,14 @@ def _build_match_preview(match, context_df: pd.DataFrame) -> dict:
         prediction,
         api_signal,
     )
+    consensus_advice = prediction_service.build_consensus_advice(
+        prediction,
+        api_refinement,
+        home_name,
+        away_name,
+    )
     details["api_refinement"] = api_refinement
+    details["consensus_advice"] = consensus_advice
     player_reliability = float(player_intelligence.get("reliability") or 0)
     score_prediction = prediction_service.predict_scorelines(
         context_df,
@@ -1024,7 +1031,11 @@ def _build_match_preview(match, context_df: pd.DataFrame) -> dict:
         "Pronostic": f"{code} - {favorite}",
         "Confiance": _format_probability(prediction["confidence"]),
         "Score probable": score_label,
-        "Résumé": _summary_sentence(home_name, away_name, prediction, details, scores),
+        "Résumé": (
+            _summary_sentence(home_name, away_name, prediction, details, scores)
+            + " "
+            + consensus_advice["message"]
+        ),
     }
 
 
@@ -1599,7 +1610,14 @@ def _render_upcoming_match_analysis(fixture: pd.Series):
         prediction,
         api_signal,
     )
+    consensus_advice = prediction_service.build_consensus_advice(
+        prediction,
+        api_refinement,
+        home_name,
+        away_name,
+    )
     details["api_refinement"] = api_refinement
+    details["consensus_advice"] = consensus_advice
     player_reliability = float(player_intelligence.get("reliability") or 0)
     score_prediction = prediction_service.predict_scorelines(
         context_df,
@@ -1754,7 +1772,7 @@ def _render_upcoming_match_analysis(fixture: pd.Series):
             ),
             f"{prediction['confidence']} %",
         )
-        ui.render_api_refinement(api_refinement)
+        ui.render_api_refinement(api_refinement, consensus_advice)
         adjustment = details.get("player_adjustment")
         if adjustment:
             shift = float(adjustment.get("probability_shift") or 0)

@@ -7,11 +7,13 @@ et suivi persistant des mises à jour.
 Les scores 1/N/2 sont des estimations internes issues de règles statistiques.
 Ils ne constituent ni une fiabilité calibrée ni un conseil de pari.
 
-Lorsqu’un conseil API-Football est disponible pour une rencontre programmée,
-l’analyse combine 80 % du modèle interne et 20 % des probabilités API. Les deux
-sources et leur accord ou désaccord restent visibles dans l’interface. La page
-« Mise à jour » permet de synchroniser incrémentalement tous les conseils des
-matchs futurs sans retélécharger ceux déjà enregistrés.
+Lorsqu’un conseil API-Football informatif est disponible pour une rencontre
+programmée, l’analyse lui attribue un poids adaptatif et minoritaire de 10 à
+30 %, selon sa précision et la richesse des comparaisons fournies. Les réponses
+neutres 33/33/33 sont ignorées. Les probabilités, l’accord ou le désaccord et
+les comparaisons API (forme, attaque, défense, Poisson, face-à-face et buts)
+restent visibles. La page « Mise à jour » synchronise tous les conseils futurs
+sans retélécharger ceux déjà enregistrés.
 
 ## Quick Start
 

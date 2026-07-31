@@ -2,7 +2,7 @@ import unittest
 
 import pandas as pd
 
-from services import prediction_helpers, prediction_service
+from services import cross_insight_service, prediction_helpers, prediction_service
 
 
 class PredictionBusinessRuleTests(unittest.TestCase):
@@ -16,6 +16,7 @@ class PredictionBusinessRuleTests(unittest.TestCase):
             },
             {
                 "fixture_id": 123,
+                "advice": "Double chance : nul ou extérieur",
                 "home_probability": 30,
                 "draw_probability": 30,
                 "away_probability": 40,
@@ -34,6 +35,80 @@ class PredictionBusinessRuleTests(unittest.TestCase):
         self.assertTrue(details["applied"])
         self.assertFalse(details["agreement"])
         self.assertEqual(details["api_weight"], 0.20)
+
+    def test_neutral_api_advice_is_ignored(self):
+        base = {
+            "home_probability": 45,
+            "draw_probability": 28,
+            "away_probability": 27,
+            "confidence": 45,
+        }
+        refined, details = prediction_service.blend_with_api_prediction(
+            base,
+            {
+                "advice": "No predictions available",
+                "home_probability": 33,
+                "draw_probability": 33,
+                "away_probability": 33,
+            },
+        )
+
+        self.assertFalse(details["applied"])
+        self.assertEqual(refined["home_probability"], 45)
+        self.assertIn("neutre", details["ignored_reason"])
+
+    def test_tied_api_scenarios_can_agree_with_internal_pick(self):
+        refined, details = prediction_service.blend_with_api_prediction(
+            {
+                "home_probability": 48,
+                "draw_probability": 28,
+                "away_probability": 24,
+                "confidence": 48,
+            },
+            {
+                "advice": "Double chance : domicile ou nul",
+                "home_probability": 50,
+                "draw_probability": 50,
+                "away_probability": 0,
+                "comparison": {
+                    "Indice global API": {"home": 60, "away": 40, "edge": 0.2}
+                },
+            },
+        )
+
+        self.assertTrue(details["applied"])
+        self.assertTrue(details["agreement"])
+        self.assertEqual(details["favored_outcomes"], ["1", "N"])
+        self.assertGreater(details["api_weight"], 0.10)
+        self.assertLessEqual(details["api_weight"], 0.30)
+        advice = prediction_service.build_consensus_advice(
+            refined,
+            details,
+            "Domicile FC",
+            "Extérieur FC",
+        )
+        self.assertEqual(advice["level"], "convergence")
+        self.assertIn("convergent", advice["message"])
+
+    def test_api_raw_comparison_is_exposed_as_statistics(self):
+        signal = cross_insight_service._api_signal_from_row(
+            {
+                "fixture_id": 42,
+                "date": "2026-08-01",
+                "advice": "Double chance",
+                "winner": "Domicile FC",
+                "home_probability": 50,
+                "draw_probability": 50,
+                "away_probability": 0,
+                "total_home": "60%",
+                "total_away": "40%",
+                "updated_at": "2026-07-31",
+                "raw_json": '{"comparison":{"form":{"home":"70%","away":"30%"},"total":{"home":"60%","away":"40%"}}}',
+            }
+        )
+
+        self.assertEqual(signal["comparison"]["Forme API"]["edge"], 0.4)
+        self.assertEqual(signal["comparison"]["Indice global API"]["home"], 60)
 
     def test_invalid_api_probabilities_leave_prediction_unchanged(self):
         base = {

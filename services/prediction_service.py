@@ -83,7 +83,7 @@ def predict_simple(home_strength, away_strength, draw_factor=0.25):
 def blend_with_api_prediction(
     prediction: dict,
     api_signal: dict | None,
-    api_weight: float = 0.20,
+    api_weight: float | None = None,
 ) -> tuple[dict, dict]:
     """Combine prudemment le modèle interne et les probabilités API.
 
@@ -103,6 +103,8 @@ def blend_with_api_prediction(
         "api_probabilities": None,
         "agreement": None,
         "maximum_gap": None,
+        "api_quality": 0.0,
+        "favored_outcomes": [],
     }
     if not api_signal:
         return {**prediction, "api_blend_applied": False}, details
@@ -122,10 +124,37 @@ def blend_with_api_prediction(
         return {**prediction, "api_blend_applied": False}, details
 
     api = normalize_probs(numeric_api)
-    try:
-        weight = float(api_weight)
-    except (TypeError, ValueError):
-        weight = 0.20
+    advice = str(api_signal.get("advice") or "").strip().casefold()
+    unavailable_advice = advice in {
+        "",
+        "no predictions available",
+        "conseil indisponible",
+        "non disponible",
+    }
+    information_gain = min(
+        1.0,
+        sum(abs(value - 100 / 3) for value in api) / (400 / 3),
+    )
+    comparisons = api_signal.get("comparison") or {}
+    comparison_coverage = min(1.0, len(comparisons) / 7)
+    api_quality = 0.75 * information_gain + 0.25 * comparison_coverage
+    if unavailable_advice or information_gain < 0.02:
+        details.update(
+            {
+                "api_probabilities": api,
+                "api_quality": round(api_quality, 3),
+                "ignored_reason": "Conseil API neutre ou indisponible",
+            }
+        )
+        return {**prediction, "api_blend_applied": False}, details
+
+    if api_weight is None:
+        weight = 0.10 + 0.20 * api_quality
+    else:
+        try:
+            weight = float(api_weight)
+        except (TypeError, ValueError):
+            weight = 0.20
     weight = max(0.0, min(0.30, weight if math.isfinite(weight) else 0.20))
     blended = normalize_probs([
         (1.0 - weight) * internal[index] + weight * api[index]
@@ -133,16 +162,33 @@ def blend_with_api_prediction(
     ])
     labels = ("1", "N", "2")
     internal_pick = labels[max(range(3), key=internal.__getitem__)]
-    api_pick = labels[max(range(3), key=api.__getitem__)]
+    api_max = max(api)
+    favored_outcomes = [
+        labels[index]
+        for index, value in enumerate(api)
+        if abs(value - api_max) < 0.01
+    ]
+    api_pick = "/".join(favored_outcomes)
+    blended_order = sorted(range(3), key=blended.__getitem__, reverse=True)
     details = {
         "applied": True,
-        "api_weight": round(weight, 2),
+        "api_weight": round(weight, 3),
         "internal_probabilities": internal,
         "api_probabilities": api,
-        "agreement": internal_pick == api_pick,
+        "agreement": internal_pick in favored_outcomes,
         "internal_pick": internal_pick,
         "api_pick": api_pick,
+        "favored_outcomes": favored_outcomes,
+        "combined_pick": labels[blended_order[0]],
+        "alternative_pick": labels[blended_order[1]],
+        "top_two_coverage": round(
+            blended[blended_order[0]] + blended[blended_order[1]], 2
+        ),
         "maximum_gap": round(max(abs(internal[i] - api[i]) for i in range(3)), 2),
+        "api_quality": round(api_quality, 3),
+        "information_gain": round(information_gain, 3),
+        "comparison_coverage": round(comparison_coverage, 3),
+        "comparison": comparisons,
         "fixture_id": api_signal.get("fixture_id"),
         "advice": api_signal.get("advice"),
         "winner": api_signal.get("winner"),
@@ -155,7 +201,7 @@ def blend_with_api_prediction(
         "away_probability": blended[2],
         "confidence": float(max(blended)),
         "api_blend_applied": True,
-        "api_weight": round(weight, 2),
+        "api_weight": round(weight, 3),
         "internal_prediction": {
             "home_probability": internal[0],
             "draw_probability": internal[1],
@@ -164,6 +210,59 @@ def blend_with_api_prediction(
         },
     }
     return refined, details
+
+
+def build_consensus_advice(
+    prediction: dict,
+    refinement: dict | None,
+    home_name: str,
+    away_name: str,
+) -> dict:
+    """Produit une lecture explicable du scénario principal et de son repli."""
+    labels = {"1": home_name, "N": "Match nul", "2": away_name}
+    probabilities = {
+        "1": float(prediction.get("home_probability") or 0),
+        "N": float(prediction.get("draw_probability") or 0),
+        "2": float(prediction.get("away_probability") or 0),
+    }
+    ordered = sorted(probabilities, key=probabilities.get, reverse=True)
+    main, alternative = ordered[:2]
+    top_two = round(probabilities[main] + probabilities[alternative], 2)
+    margin = round(probabilities[main] - probabilities[alternative], 2)
+    applied = bool((refinement or {}).get("applied"))
+    agreement = (refinement or {}).get("agreement")
+    if applied and agreement:
+        message = (
+            f"Les sources convergent vers {labels[main]}. "
+            f"Le scénario de repli est {labels[alternative]}; les deux couvrent "
+            f"{top_two} % de l’estimation combinée."
+        )
+        level = "convergence"
+    elif applied:
+        message = (
+            f"Les sources divergent : {labels[main]} reste en tête après fusion, "
+            f"mais {labels[alternative]} doit être conservé comme scénario de repli "
+            f"({top_two} % à eux deux)."
+        )
+        level = "prudence"
+    else:
+        message = (
+            f"Faute de conseil API informatif, l’étude interne place {labels[main]} "
+            f"devant {labels[alternative]}."
+        )
+        level = "interne"
+    return {
+        "main_code": main,
+        "main_label": labels[main],
+        "main_probability": round(probabilities[main], 2),
+        "alternative_code": alternative,
+        "alternative_label": labels[alternative],
+        "alternative_probability": round(probabilities[alternative], 2),
+        "top_two_coverage": top_two,
+        "margin": margin,
+        "level": level,
+        "message": message,
+    }
 
 
 def adjust_prediction_for_player_form(

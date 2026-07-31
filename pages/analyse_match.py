@@ -1233,7 +1233,14 @@ def show():
         prediction,
         api_signal,
     )
+    consensus_advice = prediction_service.build_consensus_advice(
+        prediction,
+        api_refinement,
+        home_view["team_name"],
+        away_view["team_name"],
+    )
     prediction_details["api_refinement"] = api_refinement
+    prediction_details["consensus_advice"] = consensus_advice
     home_player_factor, away_player_factor = lineup_service.player_goal_factors(
         player_intelligence
     )
@@ -1562,7 +1569,7 @@ def show():
             ),
             f"{prediction.get('confidence')} %",
         )
-        ui.render_api_refinement(api_refinement)
+        ui.render_api_refinement(api_refinement, consensus_advice)
 
         reasons = []
         if home_form_score > away_form_score:
