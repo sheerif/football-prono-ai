@@ -1,11 +1,68 @@
 import unittest
+from unittest.mock import patch
 
 import pandas as pd
 
-from services import cross_insight_service, prediction_helpers, prediction_service
+from services import cross_insight_service, final_prediction_service, prediction_helpers, prediction_service
 
 
 class PredictionBusinessRuleTests(unittest.TestCase):
+    def test_load_matches_still_returns_selected_seasons(self):
+        expected = pd.DataFrame([{"fixture_id": 1}])
+        with patch.object(pd, "read_sql", return_value=expected) as read_sql:
+            result = prediction_helpers.load_matches(61, [2024, 2025])
+        self.assertIs(result, expected)
+        params = read_sql.call_args.kwargs["params"]
+        self.assertEqual(params, {"lid": 61, "s0": 2024, "s1": 2025})
+
+    def test_shared_final_service_applies_api_once_and_owns_scenario(self):
+        internal = {
+            "home_probability": 50,
+            "draw_probability": 25,
+            "away_probability": 25,
+            "confidence": 50,
+        }
+        details = {"home_form_score": 60, "away_form_score": 40}
+        with (
+            patch.object(
+                prediction_helpers,
+                "predict_match",
+                return_value=(internal, {"played": 10}, {"played": 10}, details),
+            ),
+            patch.object(
+                prediction_service,
+                "blend_with_api_prediction",
+                wraps=prediction_service.blend_with_api_prediction,
+            ) as blend,
+            patch.object(
+                prediction_service,
+                "predict_scorelines",
+                return_value={"scores": []},
+            ),
+        ):
+            result = final_prediction_service.calculate(
+                pd.DataFrame(),
+                1,
+                2,
+                "Domicile",
+                "Extérieur",
+                api_signal={
+                    "advice": "Victoire domicile",
+                    "home_probability": 60,
+                    "draw_probability": 20,
+                    "away_probability": 20,
+                },
+            )
+        blend.assert_called_once()
+        self.assertEqual(
+            result["model_details"]["api_refinement"],
+            result["api_refinement"],
+        )
+        self.assertEqual(
+            result["model_details"]["consensus_advice"],
+            result["consensus_advice"],
+        )
+
     def test_api_probabilities_refine_without_overriding_internal_model(self):
         refined, details = prediction_service.blend_with_api_prediction(
             {

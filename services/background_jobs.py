@@ -9,7 +9,12 @@ from services import import_service
 _lock = threading.RLock()
 _jobs: dict[str, dict] = {}
 _startup_started = False
-DATA_JOB_KINDS = {"manual_import", "full_sync", "startup_updates"}
+DATA_JOB_KINDS = {
+    "manual_import",
+    "full_sync",
+    "prediction_sync",
+    "startup_updates",
+}
 
 
 def _now() -> str:

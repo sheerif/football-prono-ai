@@ -2,7 +2,7 @@ import pandas as pd
 import streamlit as st
 
 from components import tactical, ui
-from services import analysis_store, cross_insight_service, lineup_service, prediction_helpers, prediction_service
+from services import analysis_store, cross_insight_service, final_prediction_service, lineup_service, prediction_helpers
 from services.season_format import season_period
 
 
@@ -361,44 +361,29 @@ def _show_match_prediction():
             league_id=league_id,
             season=analysis_season,
         )
-        pred, home_stats, away_stats, details = prediction_helpers.predict_match(
-            matches_df,
-            home_team,
-            away_team,
-            player_intelligence=player_intelligence,
-        )
         home_name = team_options[home_team]
         away_name = team_options[away_team]
-        internal_prediction = dict(pred)
         api_signal = cross_insight_service.load_upcoming_api_signal(
             home_team,
             away_team,
         )
-        pred, api_refinement = prediction_service.blend_with_api_prediction(
-            pred,
-            api_signal,
-        )
-        consensus_advice = prediction_service.build_consensus_advice(
-            pred,
-            api_refinement,
-            home_name,
-            away_name,
-        )
-        details["api_refinement"] = api_refinement
-        details["consensus_advice"] = consensus_advice
-        home_player_factor, away_player_factor = lineup_service.player_goal_factors(
-            player_intelligence
-        )
-        score_prediction = prediction_service.predict_scorelines(
+        final = final_prediction_service.calculate(
             matches_df,
             home_team,
             away_team,
-            home_form_score=details["home_form_score"] / 100,
-            away_form_score=details["away_form_score"] / 100,
-            home_player_factor=home_player_factor,
-            away_player_factor=away_player_factor,
-            top_n=6,
+            home_name,
+            away_name,
+            player_intelligence=player_intelligence,
+            api_signal=api_signal,
         )
+        pred = final["prediction"]
+        internal_prediction = final["internal_prediction"]
+        home_stats = final["home_stats"]
+        away_stats = final["away_stats"]
+        details = final["model_details"]
+        api_refinement = final["api_refinement"]
+        consensus_advice = final["consensus_advice"]
+        score_prediction = final["score_prediction"]
         cross_insight = cross_insight_service.build_cross_insight(
             matches_df=matches_df,
             home_team=home_team,
@@ -640,8 +625,8 @@ def _build_rankings(
         away_team = int(match.away_team_id)
         fixture_id = int(match.fixture_id)
         fixture_season = int(match.season or season)
-        historical_context = prediction_helpers.historical_context_before(
-            matches_df,
+        historical_context = prediction_helpers.load_historical_context(
+            int(match.league_id),
             match.date,
         )
         player_intelligence = lineup_service.get_match_intelligence(
@@ -651,27 +636,22 @@ def _build_rankings(
             season=fixture_season,
             match_date=match.date,
         )
-        pred, _, _, details = prediction_helpers.predict_match(
+        api_signal = cross_insight_service.load_fixture_api_signal(fixture_id)
+        home_name = team_options[home_team]
+        away_name = team_options[away_team]
+        final = final_prediction_service.calculate(
             historical_context,
             home_team,
             away_team,
-            player_intelligence=player_intelligence,
-        )
-        api_signal = cross_insight_service.load_fixture_api_signal(fixture_id)
-        pred, api_refinement = prediction_service.blend_with_api_prediction(
-            pred,
-            api_signal,
-        )
-        home_name = team_options[home_team]
-        away_name = team_options[away_team]
-        consensus_advice = prediction_service.build_consensus_advice(
-            pred,
-            api_refinement,
             home_name,
             away_name,
+            player_intelligence=player_intelligence,
+            api_signal=api_signal,
         )
-        details["api_refinement"] = api_refinement
-        details["consensus_advice"] = consensus_advice
+        pred = final["prediction"]
+        details = final["model_details"]
+        api_refinement = final["api_refinement"]
+        consensus_advice = final["consensus_advice"]
         outcomes = [
             ("1", "Victoire domicile", home_name, pred["home_probability"]),
             ("N", "Match nul", "Match nul", pred["draw_probability"]),
