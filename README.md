@@ -74,3 +74,45 @@ API-Football blend on its strictly comparable subset. It includes 1/N/2
 accuracy, multiclass Brier score, log loss, draw-specific measures and a SHA-256
 fingerprint of the database rows used. Historical context and API data are
 accepted only when timestamped strictly before kickoff.
+
+## Analyse complète du projet
+
+### 1) État actuel du dépôt
+- Le dépôt contient désormais une application Streamlit orientée analyse/pronostic football, avec services, pages, composants, scripts et tests.
+- La documentation inclut les prérequis, l’exécution locale, les vérifications et le backtest reproductible.
+
+### 2) Objectif produit
+Fournir une application d’aide à la décision football combinant données historiques/statistiques et signaux API, avec une restitution claire des tendances et estimations 1/N/2.
+
+### 3) Écart entre vision et implémentation
+- **Vision** : système de pronostic IA robuste, explicable et suivi dans le temps.
+- **Implémentation actuelle** : base fonctionnelle solide (UI, persistance, synchronisation API, contrôles), avec logique d’estimation encore explicitement expérimentale.
+- **Conclusion** : le projet est en phase de consolidation vers un moteur de prédiction plus calibré.
+
+### 4) Architecture cible recommandée
+- **Ingestion de données** : résultats, calendriers, stats équipes/joueurs, signaux API externes.
+- **Feature engineering** : forme, domicile/extérieur, H2H, dynamiques offensives/défensives, temporalité stricte.
+- **Modélisation IA** : baseline versionnée, validation temporelle, calibration probabiliste.
+- **Service de prédiction** : pipeline d’inférence traçable et endpoints stables.
+- **Interface utilisateur** : visualisation des probabilités, facteurs explicatifs, statut des données.
+- **Observabilité** : métriques de qualité, suivi de dérive, audit des runs.
+
+### 5) Risques principaux
+- Qualité, fraîcheur et couverture des données sportives.
+- Fuite de données temporelles (utilisation de données futures dans l’entraînement).
+- Surapprentissage sur des contextes de saison/ligue limités.
+- Écart entre performance offline et robustesse en production.
+
+### 6) Priorités de démarrage MVP
+1. Formaliser le périmètre fonctionnel (compétitions, fréquence, type de sorties).
+2. Stabiliser un pipeline de données versionné et reproductible.
+3. Définir une baseline IA mesurable (Brier, log loss, accuracy 1/N/2).
+4. Encadrer la calibration et l’explicabilité des probabilités.
+5. Renforcer les contrôles CI/tests autour des parcours critiques.
+6. Documenter clairement les limites métier et techniques.
+
+### 7) Critères de succès MVP
+- Exécution bout en bout reproductible (données → calcul → sortie).
+- Métriques suivies dans le temps avec seuils d’alerte.
+- API/UX cohérentes, stables et documentées.
+- Traçabilité des versions de données, règles et modèles.
