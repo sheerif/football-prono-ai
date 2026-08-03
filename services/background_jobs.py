@@ -9,7 +9,12 @@ from services import import_service
 _lock = threading.RLock()
 _jobs: dict[str, dict] = {}
 _startup_started = False
-DATA_JOB_KINDS = {"manual_import", "full_sync", "startup_updates"}
+DATA_JOB_KINDS = {
+    "manual_import",
+    "full_sync",
+    "prediction_sync",
+    "startup_updates",
+}
 
 
 def _now() -> str:
@@ -160,6 +165,66 @@ def start_manual_import(
             )
 
     threading.Thread(target=run, name=f"football-prono-import-{job_id[:8]}", daemon=True).start()
+    return job_id
+
+
+def start_prediction_sync(days: int | None = None) -> str:
+    """Synchronise en arrière-plan tous les conseils API des matchs futurs."""
+    job_id, created = _create_unique_data_job(
+        "prediction_sync",
+        "Conseils API",
+        {"days": days, "incremental": True},
+    )
+    if not created:
+        return job_id
+
+    def run():
+        from services import full_sync_service
+
+        started_at = _now()
+        try:
+            result = full_sync_service.sync_all_upcoming_predictions(
+                days=days,
+                progress_callback=lambda current, total, label: _progress(
+                    job_id, current, total, label
+                ),
+            )
+            quota_reached = bool(result.get("quota_reached"))
+            message = (
+                "Limite API atteinte : progression conservée, relancez plus tard."
+                if quota_reached
+                else "Conseils API synchronisés"
+            )
+            _set_job(
+                job_id,
+                status="partial" if quota_reached else "done",
+                progress=1.0,
+                message=message,
+                finished_at=_now(),
+                details=result,
+            )
+            import_service.record_update_log(
+                event_type="synchronisation_conseils_api",
+                status="partielle" if quota_reached else "effectuée",
+                started_at=started_at,
+                reason=message,
+                details={**result, "background": True},
+            )
+        except Exception as exc:
+            _set_job(
+                job_id,
+                status="error",
+                error=str(exc),
+                message="Erreur pendant la synchronisation des conseils API",
+                finished_at=_now(),
+                traceback=traceback.format_exc(),
+            )
+
+    threading.Thread(
+        target=run,
+        name=f"football-prono-predictions-{job_id[:8]}",
+        daemon=True,
+    ).start()
     return job_id
 
 

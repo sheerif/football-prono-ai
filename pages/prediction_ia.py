@@ -1,10 +1,8 @@
-import itertools
-
 import pandas as pd
 import streamlit as st
 
 from components import tactical, ui
-from services import analysis_store, cross_insight_service, lineup_service, prediction_helpers, prediction_service
+from services import analysis_store, cross_insight_service, final_prediction_service, lineup_service, prediction_helpers
 from services.season_format import season_period
 
 
@@ -52,8 +50,8 @@ def _glossary_table() -> pd.DataFrame:
                 "Définition": "Estimation en pourcentage de chaque issue possible: victoire domicile, match nul ou victoire extérieur. Les trois probabilités totalisent environ 100 %.",
             },
             {
-                "Terme": "Confiance",
-                "Définition": "Pourcentage de l’issue la plus probable. Plus il est élevé, plus le modèle voit un scénario dominant; ce n’est pas une certitude.",
+                "Terme": "Score d’analyse",
+                "Définition": "Probabilité de l’issue la plus haute. Elle combine le modèle interne et, lorsqu’il existe, le conseil API minoritaire; ce n’est pas une fiabilité validée.",
             },
         ]
     )
@@ -74,7 +72,7 @@ def _analysis_legend_table() -> pd.DataFrame:
             {"Valeur": "Indice défensif utilisé", "Explication": "Valeur de buts encaissés par match injectée dans le modèle."},
             {"Valeur": "Score de force du modèle", "Explication": "Score synthétique calculé avec la forme, l’attaque, la défense adverse et le contexte domicile/extérieur."},
             {"Valeur": "Probabilité", "Explication": "Chance estimée de chaque issue. Les trois issues totalisent environ 100 %."},
-            {"Valeur": "Confiance", "Explication": "Probabilité de l’issue la plus forte. Ce n’est pas une garantie."},
+            {"Valeur": "Score d’analyse", "Explication": "Probabilité de l’issue la plus haute après combinaison éventuelle avec le conseil API. Cette valeur n’est pas une fiabilité calibrée."},
         ]
     )
 
@@ -181,12 +179,12 @@ def _match_context_table(league_name: str, selected_seasons, matches_df: pd.Data
 
 def _confidence_label(confidence: float) -> str:
     if confidence >= 65:
-        return "signal fort"
+        return "écart élevé entre les scénarios"
     if confidence >= 55:
-        return "avantage net, mais pas décisif"
+        return "écart modéré entre les scénarios"
     if confidence >= 45:
-        return "match assez ouvert"
-    return "signal faible"
+        return "scénarios encore ouverts"
+    return "scénarios très proches"
 
 
 def _favorite_sentence(favorite: str, confidence: float, home_name: str, away_name: str, details: dict) -> str:
@@ -214,11 +212,11 @@ def _favorite_sentence(favorite: str, confidence: float, home_name: str, away_na
 
     if favorite == "Match nul":
         return (
-            f"Le modèle penche légèrement vers un match nul ({confidence} % de confiance, {label}), car {form_argument}, "
+            f"L’analyse place légèrement le match nul en tête ({confidence} % au score d’analyse, {label}), car {form_argument}, "
             f"{attack_argument} et {strength_argument}."
         )
     return (
-        f"Le modèle penche vers {favorite} ({confidence} % de confiance, {label}), car {form_argument}, "
+        f"L’analyse place {favorite} en tête ({confidence} % au score d’analyse, {label}), car {form_argument}, "
         f"{attack_argument} et {strength_argument}."
     )
 
@@ -363,40 +361,43 @@ def _show_match_prediction():
             league_id=league_id,
             season=analysis_season,
         )
-        pred, home_stats, away_stats, details = prediction_helpers.predict_match(
-            matches_df,
-            home_team,
-            away_team,
-            player_intelligence=player_intelligence,
-        )
         home_name = team_options[home_team]
         away_name = team_options[away_team]
-        home_player_factor, away_player_factor = lineup_service.player_goal_factors(
-            player_intelligence
+        api_signal = cross_insight_service.load_upcoming_api_signal(
+            home_team,
+            away_team,
         )
-        score_prediction = prediction_service.predict_scorelines(
+        final = final_prediction_service.calculate(
             matches_df,
             home_team,
             away_team,
-            home_form_score=details["home_form_score"] / 100,
-            away_form_score=details["away_form_score"] / 100,
-            home_player_factor=home_player_factor,
-            away_player_factor=away_player_factor,
-            top_n=6,
+            home_name,
+            away_name,
+            player_intelligence=player_intelligence,
+            api_signal=api_signal,
         )
+        pred = final["prediction"]
+        internal_prediction = final["internal_prediction"]
+        home_stats = final["home_stats"]
+        away_stats = final["away_stats"]
+        details = final["model_details"]
+        api_refinement = final["api_refinement"]
+        consensus_advice = final["consensus_advice"]
+        score_prediction = final["score_prediction"]
         cross_insight = cross_insight_service.build_cross_insight(
             matches_df=matches_df,
             home_team=home_team,
             away_team=away_team,
             home_name=home_name,
             away_name=away_name,
-            prediction=pred,
+            prediction=internal_prediction,
             score_prediction=score_prediction,
             home_form_score=details["home_form_score"] / 100,
             away_form_score=details["away_form_score"] / 100,
             home_played=home_stats["played"],
             away_played=away_stats["played"],
             selected_seasons=seasons_with_data,
+            api_signal=api_signal,
             player_intelligence=player_intelligence,
         )
         analysis_store.save_analysis_snapshot(
@@ -446,7 +447,11 @@ def _show_match_prediction():
                     "icon": "✈️",
                 },
                 {
-                    "label": "Confiance",
+                    "label": (
+                        "Score combiné"
+                        if api_refinement.get("applied")
+                        else "Score du modèle"
+                    ),
                     "value": f"{pred['confidence']} %",
                     "caption": "Force du scénario dominant",
                     "icon": "🎯",
@@ -458,6 +463,7 @@ def _show_match_prediction():
             ui.kpi_grid(result_kpis)
 
         st.dataframe(_glossary_table(), hide_index=True, width="stretch")
+        ui.render_api_refinement(api_refinement, consensus_advice)
 
         favorite = max(
             [
@@ -536,8 +542,8 @@ def _rankings_glossary_table() -> pd.DataFrame:
     return pd.DataFrame(
         [
             {
-                "Terme": "Pronostic conseillé",
-                "Définition": "Issue qui ressort le plus fortement : victoire domicile, nul ou victoire extérieure.",
+                "Terme": "Scénario principal",
+                "Définition": "Issue classée en tête par le modèle : victoire domicile, nul ou victoire extérieure.",
             },
             {
                 "Terme": "Code 1N2",
@@ -545,11 +551,11 @@ def _rankings_glossary_table() -> pd.DataFrame:
             },
             {
                 "Terme": "Probabilité retenue",
-                "Définition": "Pourcentage estimé pour le pronostic conseillé.",
+                "Définition": "Pourcentage estimé pour le scénario principal.",
             },
             {
-                "Terme": "Confiance",
-                "Définition": "Force de l'issue la plus probable. Ce n'est pas une certitude.",
+                "Terme": "Score d’analyse",
+                "Définition": "Probabilité de l’issue la plus haute après combinaison éventuelle avec le conseil API; ce n’est pas une fiabilité validée.",
             },
         ]
     )
@@ -557,12 +563,12 @@ def _rankings_glossary_table() -> pd.DataFrame:
 
 def _ranking_confidence_label(confidence: float) -> str:
     if confidence >= 70:
-        return "signal fort"
+        return "écart élevé"
     if confidence >= 60:
-        return "signal intéressant"
+        return "écart modéré"
     if confidence >= 50:
-        return "match ouvert"
-    return "signal faible"
+        return "issues ouvertes"
+    return "issues très proches"
 
 
 def _ranking_argument(
@@ -606,29 +612,46 @@ def _build_rankings(
     limit: int,
     league_id: int,
     season: int,
+    horizon_days: int = 60,
 ) -> pd.DataFrame:
     rows = []
-    team_intelligence = {
-        team_id: lineup_service.get_projected_team_intelligence(
-            team_id=team_id,
-            league_id=league_id,
-            season=season,
+    fixtures = prediction_helpers.upcoming_fixtures(
+        matches_df,
+        team_ids=team_options,
+        days_ahead=horizon_days,
+    )
+    for match in fixtures.itertuples():
+        home_team = int(match.home_team_id)
+        away_team = int(match.away_team_id)
+        fixture_id = int(match.fixture_id)
+        fixture_season = int(match.season or season)
+        historical_context = prediction_helpers.load_historical_context(
+            int(match.league_id),
+            match.date,
         )
-        for team_id in team_options
-    }
-    for home_team, away_team in itertools.permutations(team_options, 2):
-        player_intelligence = lineup_service.combine_team_intelligence(
-            team_intelligence.get(home_team),
-            team_intelligence.get(away_team),
+        player_intelligence = lineup_service.get_match_intelligence(
+            fixture_id=fixture_id,
+            home_team_id=home_team,
+            away_team_id=away_team,
+            season=fixture_season,
+            match_date=match.date,
         )
-        pred, _, _, details = prediction_helpers.predict_match(
-            matches_df,
-            home_team,
-            away_team,
-            player_intelligence=player_intelligence,
-        )
+        api_signal = cross_insight_service.load_fixture_api_signal(fixture_id)
         home_name = team_options[home_team]
         away_name = team_options[away_team]
+        final = final_prediction_service.calculate(
+            historical_context,
+            home_team,
+            away_team,
+            home_name,
+            away_name,
+            player_intelligence=player_intelligence,
+            api_signal=api_signal,
+        )
+        pred = final["prediction"]
+        details = final["model_details"]
+        api_refinement = final["api_refinement"]
+        consensus_advice = final["consensus_advice"]
         outcomes = [
             ("1", "Victoire domicile", home_name, pred["home_probability"]),
             ("N", "Match nul", "Match nul", pred["draw_probability"]),
@@ -642,29 +665,64 @@ def _build_rankings(
         analysis_store.save_analysis_snapshot(
             analysis_type="classement_prédictif",
             league_id=league_id,
-            season=season,
+            season=fixture_season,
             home_team_id=home_team,
             away_team_id=away_team,
+            fixture_id=fixture_id,
             prediction=pred,
             player_intelligence=player_intelligence,
             model_details=details,
             context={
                 "home_name": home_name,
                 "away_name": away_name,
-                "historical_match_count": int(len(matches_df)),
+                "kickoff": str(match.date),
+                "historical_match_count": int(len(historical_context)),
             },
+        )
+        home_lineup = (player_intelligence or {}).get("home") or {}
+        away_lineup = (player_intelligence or {}).get("away") or {}
+        official_count = sum(
+            bool(lineup.get("official"))
+            for lineup in (home_lineup, away_lineup)
+        )
+        projected_count = sum(
+            bool(lineup) and not bool(lineup.get("official"))
+            for lineup in (home_lineup, away_lineup)
+        )
+        lineup_label = (
+            "Officielles 2/2"
+            if official_count == 2
+            else f"Officielles {official_count}/2 · projections {projected_count}/2"
+        )
+        completeness = prediction_helpers.fixture_data_completeness(
+            fixture_id,
+            player_intelligence,
+            len(historical_context),
         )
         rows.append(
             {
+                "Date": _format_datetime(match.date),
                 "Match": f"{home_name} - {away_name}",
-                "Pronostic conseillé": (
+                "Scénario principal": (
                     f"{market_label} : {pick}"
                     if pick != "Match nul"
                     else "Match nul"
                 ),
                 "Code 1N2": code,
                 "Probabilité retenue": probability,
-                "Confiance": pred["confidence"],
+                "Score d’analyse": pred["confidence"],
+                "Compositions": lineup_label,
+                "Complétude": f"{completeness['percentage']} %",
+                "Données disponibles": completeness["label"],
+                "Accord API": (
+                    "Oui"
+                    if api_refinement.get("agreement") is True
+                    else "Non"
+                    if api_refinement.get("agreement") is False
+                    else "Indisponible"
+                ),
+                "Lecture affinée": consensus_advice["message"],
+                "Historique": f"{len(historical_context)} matchs",
                 "Dispositifs": (
                     f"{tactical_analysis.get('home_formation', '-')} / "
                     f"{tactical_analysis.get('away_formation', '-')}"
@@ -679,18 +737,18 @@ def _build_rankings(
     return (
         pd.DataFrame(rows)
         .sort_values(
-            ["Confiance", "Probabilité retenue"],
+            ["Score d’analyse", "Probabilité retenue"],
             ascending=False,
         )
         .head(limit)
-    )
+    ) if rows else pd.DataFrame()
 
 
 def _show_best_predictions():
-    st.subheader("Meilleurs pronostics")
+    st.subheader("Scénarios des matchs programmés")
     st.caption(
-        "Comparez automatiquement les équipes sélectionnées et classez les "
-        "signaux les plus forts du modèle."
+        "Classez uniquement les rencontres réellement programmées dans la base. "
+        "Le score présenté est une estimation interne, pas un conseil de pari."
     )
 
     leagues = prediction_helpers.fetch_leagues()
@@ -725,6 +783,13 @@ def _show_best_predictions():
             default=20,
             key="prediction_ranking_limit",
         )
+        horizon_days = st.segmented_control(
+            "Horizon",
+            options=[30, 60, 120],
+            default=60,
+            format_func=lambda days: f"{days} jours",
+            key="prediction_ranking_horizon",
+        )
 
     seasons_with_data, seasons_without_data = (
         prediction_helpers.selected_season_status(
@@ -740,23 +805,27 @@ def _show_best_predictions():
     matches_df = prediction_helpers.load_matches(
         league_id, seasons_with_data
     )
-    team_options = prediction_helpers.fetch_teams(matches_df)
+    scheduled_fixtures = prediction_helpers.upcoming_fixtures(
+        matches_df,
+        days_ahead=int(horizon_days),
+    )
+    team_options = prediction_helpers.fetch_teams(scheduled_fixtures)
     if len(team_options) < 2:
-        st.warning("Pas assez d'équipes disponibles pour générer un classement.")
+        st.warning("Aucun match à venir n’est programmé pour cette sélection.")
         return
 
     with st.container(border=True):
         selected_team_ids = st.multiselect(
             "Équipes à inclure",
             options=list(team_options),
-            default=list(team_options)[:12],
+            default=list(team_options),
             format_func=lambda key: team_options[key],
             key="prediction_ranking_teams",
         )
         st.caption(
-            prediction_helpers.teams_available_message(
-                len(team_options), seasons_with_data
-            )
+            f"{len(scheduled_fixtures)} rencontre(s) programmée(s) et "
+            f"{len(team_options)} équipe(s) disponibles. Les deux équipes du "
+            "match doivent être sélectionnées pour l’inclure."
         )
 
     selected_options = {
@@ -777,14 +846,15 @@ def _show_best_predictions():
             selected_options,
             int(top_limit),
             league_id=league_id,
+            horizon_days=int(horizon_days),
             season=lineup_service.resolve_player_season(
                 list(selected_options), league_id, seasons_with_data
             ),
         )
         ui.section_label("Classement")
         st.caption(
-            "La première ligne correspond au signal le plus fort parmi les "
-            "affiches simulées."
+            "La première ligne correspond au score d’analyse le plus élevé "
+            "parmi les matchs programmés sélectionnés."
         )
         st.dataframe(rankings, hide_index=True, width="stretch")
         with st.expander("Comprendre le classement"):
@@ -799,26 +869,26 @@ def _show_best_predictions():
             ui.kpi_grid(
                 [
                     {
-                        "label": "Meilleur pronostic",
-                        "value": best["Pronostic conseillé"],
+                        "label": "Scénario classé en tête",
+                        "value": best["Scénario principal"],
                         "caption": best["Match"],
                         "icon": "🏆",
                     },
                     {
                         "label": "Probabilité retenue",
                         "value": f"{best['Probabilité retenue']} %",
-                        "caption": "Issue recommandée",
+                        "caption": "Estimation interne",
                     },
                     {
-                        "label": "Confiance",
-                        "value": f"{best['Confiance']} %",
-                        "caption": "Robustesse du signal",
+                        "label": "Score d’analyse",
+                        "value": f"{best['Score d’analyse']} %",
+                        "caption": "Non calibré comme fiabilité",
                     },
                 ]
             )
-            st.success(
-                f"Meilleur choix : {best['Pronostic conseillé']} sur "
-                f"{best['Match']} ({best['Confiance']} % de confiance). "
+            st.info(
+                f"Scénario classé en tête : {best['Scénario principal']} sur "
+                f"{best['Match']} ({best['Score d’analyse']} %). "
                 f"{best['Argument principal']}"
             )
 
@@ -826,10 +896,10 @@ def _show_best_predictions():
 def show():
     ui.page_hero(
         "Prédictions",
-        "Analysez un match ou classez les signaux du modèle avec compositions probables et lecture tactique.",
+        "Analysez un match ou comparez les rencontres programmées avec compositions clairement identifiées et lecture tactique.",
     )
     match_tab, ranking_tab = st.tabs(
-        ["Prédiction d'un match", "Meilleurs pronostics"]
+        ["Prédiction d'un match", "Matchs programmés"]
     )
     with match_tab:
         _show_match_prediction()

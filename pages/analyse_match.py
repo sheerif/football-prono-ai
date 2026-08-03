@@ -4,7 +4,7 @@ import streamlit as st
 import pandas as pd
 from database.database import engine
 from components import charts, tactical, ui
-from services import analysis_store, cross_insight_service, lineup_service, stats_service, prediction_service
+from services import analysis_store, cross_insight_service, final_prediction_service, lineup_service, prediction_service, stats_service
 from services import prediction_helpers
 from services.season_format import season_list, season_period, season_range
 from sqlalchemy import text
@@ -1038,7 +1038,7 @@ def _legacy_show():
         pred_cols[0].metric(f"Victoire {home_view['team_name']}", f"{pred['home_probability']} %")
         pred_cols[1].metric("Match nul", f"{pred['draw_probability']} %")
         pred_cols[2].metric(f"Victoire {away_view['team_name']}", f"{pred['away_probability']} %")
-        pred_cols[3].metric("Confiance", f"{pred.get('confidence')} %")
+        pred_cols[3].metric("Score du modèle", f"{pred.get('confidence')} %")
 
         favorite = home_view['team_name'] if pred['home_probability'] > pred['away_probability'] and pred['home_probability'] > pred['draw_probability'] else away_view['team_name'] if pred['away_probability'] > pred['home_probability'] and pred['away_probability'] > pred['draw_probability'] else 'Match équilibré'
         if favorite == 'Match équilibré':
@@ -1216,40 +1216,41 @@ def show():
         league_id=league_id,
         season=analysis_season,
     )
-    prediction, home_stats, away_stats, prediction_details = (
-        prediction_helpers.predict_match(
-            matches_df,
-            home_team,
-            away_team,
-            player_intelligence=player_intelligence,
-        )
+    api_signal = cross_insight_service.load_upcoming_api_signal(
+        home_team,
+        away_team,
     )
-    home_player_factor, away_player_factor = lineup_service.player_goal_factors(
-        player_intelligence
-    )
-    score_prediction = prediction_service.predict_scorelines(
+    final = final_prediction_service.calculate(
         matches_df,
         home_team,
         away_team,
-        home_form_score=home_form_score,
-        away_form_score=away_form_score,
-        home_player_factor=home_player_factor,
-        away_player_factor=away_player_factor,
-        top_n=6,
+        home_view["team_name"],
+        away_view["team_name"],
+        player_intelligence=player_intelligence,
+        api_signal=api_signal,
     )
+    prediction = final["prediction"]
+    internal_prediction = final["internal_prediction"]
+    home_stats = final["home_stats"]
+    away_stats = final["away_stats"]
+    prediction_details = final["model_details"]
+    api_refinement = final["api_refinement"]
+    consensus_advice = final["consensus_advice"]
+    score_prediction = final["score_prediction"]
     cross_insight = cross_insight_service.build_cross_insight(
         matches_df=matches_df,
         home_team=home_team,
         away_team=away_team,
         home_name=home_view["team_name"],
         away_name=away_view["team_name"],
-        prediction=prediction,
+        prediction=internal_prediction,
         score_prediction=score_prediction,
         home_form_score=home_form_score,
         away_form_score=away_form_score,
         home_played=home_stats["played"],
         away_played=away_stats["played"],
         selected_seasons=seasons_window,
+        api_signal=api_signal,
         player_intelligence=player_intelligence,
     )
     analysis_store.save_analysis_snapshot(
@@ -1544,8 +1545,14 @@ def show():
             f"{prediction['away_probability']} %",
         )
         prediction_columns[3].metric(
-            "Confiance", f"{prediction.get('confidence')} %"
+            (
+                "Score combiné"
+                if api_refinement.get("applied")
+                else "Score du modèle"
+            ),
+            f"{prediction.get('confidence')} %",
         )
+        ui.render_api_refinement(api_refinement, consensus_advice)
 
         reasons = []
         if home_form_score > away_form_score:

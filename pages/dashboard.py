@@ -103,6 +103,26 @@ def _load_data_health() -> dict:
         """,
         "fixture_details": "SELECT COUNT(*) FROM fixture_api_details",
         "fixture_predictions": "SELECT COUNT(*) FROM fixture_api_predictions",
+        "upcoming_predictions": """
+            SELECT COUNT(*)
+            FROM matches m
+            JOIN fixture_api_predictions p ON p.fixture_id = m.fixture_id
+            WHERE m.date >= CURRENT_TIMESTAMP
+              AND m.home_goals IS NULL AND m.away_goals IS NULL
+        """,
+        "informative_upcoming_predictions": """
+            SELECT COUNT(*)
+            FROM matches m
+            JOIN fixture_api_predictions p ON p.fixture_id = m.fixture_id
+            WHERE m.date >= CURRENT_TIMESTAMP
+              AND m.home_goals IS NULL AND m.away_goals IS NULL
+              AND LOWER(COALESCE(p.advice, '')) NOT IN ('', 'no predictions available', 'conseil indisponible')
+              AND (
+                  ABS(p.home_probability - p.draw_probability)
+                  + ABS(p.draw_probability - p.away_probability)
+                  + ABS(p.home_probability - p.away_probability)
+              ) >= 3
+        """,
         "preview_cache": "SELECT COUNT(*) FROM fixture_match_previews",
         "players": "SELECT COUNT(*) FROM players",
         "lineups": "SELECT COUNT(*) FROM fixture_lineups",
@@ -167,7 +187,7 @@ def _next_action(health: dict, matches_df: pd.DataFrame) -> str:
         return "Lancer une mise à jour pour récupérer les prochains matchs."
     if health["fixture_details"] < health["upcoming"]:
         return "Ouvrir Matchs à venir pour compléter journées, logos et stades."
-    if health["fixture_predictions"] < health["upcoming"]:
+    if health["upcoming_predictions"] < health["upcoming"]:
         return "Ouvrir une journée dans Matchs à venir pour synchroniser les conseils API."
     if health["players"] == 0:
         return "Synchroniser les joueurs pour activer compositions et analyse tactique."
@@ -292,11 +312,11 @@ def show():
 
     ui.dashboard_hero(
         "Prono insight",
-        "Vue rapide des matchs, joueurs, compositions et données tactiques disponibles pour les pronostics.",
+        "Outil d’aide à l’analyse des matchs avec estimations statistiques expérimentales.",
         [
             ("Matchs importés", _format_int(matches_count)),
             ("Matchs à venir", _format_int(health["upcoming"])),
-            ("Conseils API", _format_int(health["fixture_predictions"])),
+            ("Conseils API futurs", _format_int(health["upcoming_predictions"])),
             ("Saisons sportives", str(seasons)),
         ],
     )
@@ -341,7 +361,7 @@ def show():
             {
                 "label": "Compositions",
                 "value": _format_int(health["lineups"]),
-                "caption": "Dispositifs officiels conservés",
+                "caption": "Dispositifs officiels ou projetés",
                 "accent": "#2aa198",
             },
             {
@@ -353,7 +373,7 @@ def show():
             {
                 "label": "Analyses persistées",
                 "value": _format_int(health["analysis_snapshots"]),
-                "caption": "Prédictions et stratégies conservées",
+                "caption": "Dernier état des analyses conservé",
                 "accent": "#7a5c96",
             },
         ]
@@ -379,6 +399,24 @@ def show():
                 "value": _format_percent(kpis["draw_rate"]),
                 "caption": "Référence pour double chance",
                 "accent": "#8a6f3e",
+            },
+            {
+                "label": "Couverture API future",
+                "value": _format_percent(
+                    health["upcoming_predictions"] / max(1, health["upcoming"]) * 100
+                ),
+                "caption": f"{health['upcoming_predictions']} / {health['upcoming']} matchs",
+                "accent": "#2aa198",
+            },
+            {
+                "label": "Conseils API informatifs",
+                "value": _format_percent(
+                    health["informative_upcoming_predictions"]
+                    / max(1, health["upcoming_predictions"])
+                    * 100
+                ),
+                "caption": "Réponses neutres exclues du calcul",
+                "accent": "#164d73",
             },
         ]
     )

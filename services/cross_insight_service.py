@@ -1,3 +1,5 @@
+import json
+
 import pandas as pd
 from sqlalchemy import text
 
@@ -68,6 +70,76 @@ def _h2h_signal(
     }
 
 
+def _percent(value) -> float:
+    try:
+        return float(str(value).replace("%", "").strip())
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _api_signal_from_row(row) -> dict:
+    try:
+        payload = json.loads(row.get("raw_json") or "{}")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        payload = {}
+    raw_comparison = payload.get("comparison") or {}
+    comparison = {}
+    for key, label in {
+        "form": "Forme API",
+        "att": "Attaque API",
+        "def": "Défense API",
+        "poisson_distribution": "Distribution de Poisson API",
+        "h2h": "Face-à-face API",
+        "goals": "Potentiel de buts API",
+        "total": "Indice global API",
+    }.items():
+        values = raw_comparison.get(key) or {}
+        home = _percent(values.get("home"))
+        away = _percent(values.get("away"))
+        if home + away > 0:
+            comparison[label] = {
+                "home": home,
+                "away": away,
+                "edge": round((home - away) / 100, 3),
+            }
+    return {
+        "fixture_id": int(row["fixture_id"]),
+        "date": row.get("date"),
+        "advice": row.get("advice"),
+        "winner": row.get("winner"),
+        "home_probability": float(row.get("home_probability") or 0),
+        "draw_probability": float(row.get("draw_probability") or 0),
+        "away_probability": float(row.get("away_probability") or 0),
+        "updated_at": row.get("updated_at"),
+        "total_home": row.get("total_home"),
+        "total_away": row.get("total_away"),
+        "comparison": comparison,
+    }
+
+
+def load_fixture_api_signal(fixture_id: int) -> dict | None:
+    try:
+        rows = pd.read_sql(
+            text(
+                """
+                SELECT m.fixture_id, m.date, p.advice, p.winner,
+                       p.home_probability, p.draw_probability,
+                       p.away_probability, p.total_home, p.total_away,
+                       p.raw_json, p.updated_at
+                FROM matches m
+                JOIN fixture_api_predictions p ON p.fixture_id = m.fixture_id
+                WHERE m.fixture_id = :fixture_id
+                LIMIT 1
+                """
+            ),
+            engine,
+            params={"fixture_id": int(fixture_id)},
+        )
+    except Exception:
+        return None
+    return None if rows.empty else _api_signal_from_row(rows.iloc[0])
+
+
 def load_upcoming_api_signal(home_team: int, away_team: int) -> dict | None:
     try:
         rows = pd.read_sql(
@@ -81,6 +153,9 @@ def load_upcoming_api_signal(home_team: int, away_team: int) -> dict | None:
                     p.home_probability,
                     p.draw_probability,
                     p.away_probability,
+                    p.total_home,
+                    p.total_away,
+                    p.raw_json,
                     p.updated_at
                 FROM matches m
                 JOIN fixture_api_predictions p
@@ -99,17 +174,7 @@ def load_upcoming_api_signal(home_team: int, away_team: int) -> dict | None:
         return None
     if rows.empty:
         return None
-    row = rows.iloc[0]
-    return {
-        "fixture_id": int(row["fixture_id"]),
-        "date": row["date"],
-        "advice": row.get("advice"),
-        "winner": row.get("winner"),
-        "home_probability": float(row.get("home_probability") or 0),
-        "draw_probability": float(row.get("draw_probability") or 0),
-        "away_probability": float(row.get("away_probability") or 0),
-        "updated_at": row.get("updated_at"),
-    }
+    return _api_signal_from_row(rows.iloc[0])
 
 
 def build_cross_insight(
@@ -183,15 +248,53 @@ def build_cross_insight(
         if label in factor_signals
     ) / max(0.01, active_weight_total)
     api_edge = None
+    api_probability_edge = None
+    api_comparison_edge = None
+    api_information_gain = 0.0
+    api_quality = 0.0
+    api_weight = 0.0
+    api_usable = False
     if api_signal:
-        api_edge = _clip(
+        api_probabilities = [
+            float(api_signal.get("home_probability") or 0),
+            float(api_signal.get("draw_probability") or 0),
+            float(api_signal.get("away_probability") or 0),
+        ]
+        api_information_gain = min(
+            1.0,
+            sum(abs(value - 100 / 3) for value in api_probabilities) / (400 / 3),
+        )
+        advice = str(api_signal.get("advice") or "").strip().casefold()
+        api_usable = (
+            api_information_gain >= 0.02
+            and advice not in {"", "no predictions available", "conseil indisponible"}
+        )
+    if api_usable:
+        comparison_coverage = min(
+            1.0,
+            len(api_signal.get("comparison") or {}) / 7,
+        )
+        api_quality = 0.75 * api_information_gain + 0.25 * comparison_coverage
+        api_weight = min(0.30, 0.10 + 0.20 * api_quality)
+        api_probability_edge = _clip(
             (
                 api_signal["home_probability"]
                 - api_signal["away_probability"]
             )
             / 100
         )
-        edge = 0.8 * internal_edge + 0.2 * api_edge
+        comparison_values = [
+            float(item.get("edge") or 0)
+            for item in (api_signal.get("comparison") or {}).values()
+        ]
+        if comparison_values:
+            api_comparison_edge = _clip(
+                sum(comparison_values) / len(comparison_values)
+            )
+            api_edge = 0.70 * api_probability_edge + 0.30 * api_comparison_edge
+        else:
+            api_edge = api_probability_edge
+        edge = (1.0 - api_weight) * internal_edge + api_weight * api_edge
     else:
         edge = internal_edge
 
@@ -211,7 +314,7 @@ def build_cross_insight(
         0.50 * sample_score
         + 0.20 * h2h_score
         + 0.20 * venue_score
-        + 0.10 * int(api_signal is not None)
+        + 0.10 * int(api_usable)
     )
     if player_intelligence and player_intelligence.get("complete"):
         tactical_reliability = float(
@@ -241,7 +344,7 @@ def build_cross_insight(
                 "strength": round(abs(signal) * 100),
             }
         )
-    if api_signal:
+    if api_usable:
         factors.append(
             {
                 "factor": "Conseil API du match à venir",
@@ -255,6 +358,20 @@ def build_cross_insight(
                 "strength": round(abs(api_edge) * 100),
             }
         )
+        if api_comparison_edge is not None:
+            factors.append(
+                {
+                    "factor": "Comparaison détaillée API",
+                    "advantage": (
+                        home_name
+                        if api_comparison_edge > 0.08
+                        else away_name
+                        if api_comparison_edge < -0.08
+                        else "Équilibre"
+                    ),
+                    "strength": round(abs(api_comparison_edge) * 100),
+                }
+            )
 
     aligned = [
         factor["factor"]
@@ -282,6 +399,8 @@ def build_cross_insight(
         caveats.append("Peu de confrontations directes disponibles.")
     if not api_signal:
         caveats.append("Aucun conseil API synchronisé pour une affiche à venir.")
+    elif not api_usable:
+        caveats.append("Le conseil API est neutre ou déclaré indisponible ; il est ignoré.")
     if not player_intelligence or not player_intelligence.get("complete"):
         caveats.append("Compositions probables incomplètes pour au moins une équipe.")
     if selected_seasons and len(selected_seasons) > 5:
@@ -307,4 +426,14 @@ def build_cross_insight(
         "away_venue": away_venue,
         "h2h": h2h,
         "api_signal": api_signal,
+        "api_usable": api_usable,
+        "api_information_gain": round(api_information_gain, 3),
+        "api_quality": round(api_quality, 3),
+        "api_weight": round(api_weight, 3),
+        "api_probability_edge": (
+            round(api_probability_edge * 100) if api_probability_edge is not None else None
+        ),
+        "api_comparison_edge": (
+            round(api_comparison_edge * 100) if api_comparison_edge is not None else None
+        ),
     }

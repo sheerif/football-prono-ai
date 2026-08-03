@@ -894,6 +894,51 @@ def season_summary(title: str, subtitle: str, cards: list[tuple[str, str]], rows
         st.dataframe(table_rows, hide_index=True, width="stretch")
 
 
+def render_api_refinement(
+    details: dict | None,
+    consensus_advice: dict | None = None,
+):
+    """Explique la fusion éventuelle entre modèle interne et API-Football."""
+    if not details or not details.get("applied"):
+        st.caption("Conseil API non disponible : estimation interne inchangée.")
+        if consensus_advice:
+            st.info(consensus_advice["message"])
+        return
+    internal = details.get("internal_probabilities") or []
+    external = details.get("api_probabilities") or []
+    agreement = "convergent" if details.get("agreement") else "divergent"
+    st.info(
+        "Estimation affinée avec API-Football : "
+        f"{round((1 - float(details['api_weight'])) * 100, 1)} % modèle interne + "
+        f"{round(float(details['api_weight']) * 100, 1)} % conseil API. "
+        f"Les scénarios principaux {agreement}."
+    )
+    if len(internal) == 3 and len(external) == 3:
+        st.caption(
+            "1/N/2 interne : "
+            f"{internal[0]} / {internal[1]} / {internal[2]} % · "
+            "API : "
+            f"{external[0]} / {external[1]} / {external[2]} %."
+        )
+    st.caption(
+        f"Qualité informative API : {round(float(details.get('api_quality') or 0) * 100)} % · "
+        f"écart maximal entre sources : {details.get('maximum_gap', 0)} points."
+    )
+    if consensus_advice:
+        if consensus_advice.get("level") == "convergence":
+            st.success(consensus_advice["message"])
+        else:
+            st.warning(consensus_advice["message"])
+    comparisons = details.get("comparison") or {}
+    if comparisons:
+        with st.expander("Comparaisons détaillées fournies par l’API"):
+            for label, values in comparisons.items():
+                st.write(
+                    f"- {label} : domicile {values.get('home', 0)} % · "
+                    f"extérieur {values.get('away', 0)} %"
+                )
+
+
 def render_cross_insight(insight: dict):
     section_label("Lecture croisée")
     st.caption(

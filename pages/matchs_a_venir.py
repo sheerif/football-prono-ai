@@ -10,13 +10,13 @@ from sqlalchemy import text
 from components import charts, tactical, ui
 from database.database import engine
 from services.api_football import ApiFootballClient
-from services import analysis_store, cross_insight_service, lineup_service, prediction_helpers, prediction_service
+from services import analysis_store, cross_insight_service, final_prediction_service, lineup_service, prediction_helpers
 from services import schema_guard
 from services.season_format import season_period
 
 
 api_client = ApiFootballClient()
-PREVIEW_CACHE_VERSION = "player-intelligence-v3"
+PREVIEW_CACHE_VERSION = "api-refinement-v4"
 
 
 def _load_upcoming_matches(days_ahead: int, league_ids: list[int] | None = None) -> pd.DataFrame:
@@ -86,19 +86,7 @@ def _load_leagues_with_upcoming() -> pd.DataFrame:
 
 
 def _load_prediction_context(league_id: int, match_date) -> pd.DataFrame:
-    query = text(
-        """
-        SELECT *
-        FROM matches
-        WHERE league_id = :league_id
-          AND date < :match_date
-        ORDER BY date DESC
-        """
-    )
-    try:
-        return pd.read_sql(query, engine, params={"league_id": int(league_id), "match_date": str(match_date)})
-    except Exception:
-        return pd.DataFrame()
+    return prediction_helpers.load_historical_context(league_id, match_date)
 
 
 def _format_datetime(value) -> str:
@@ -615,12 +603,12 @@ def _prefetch_api_predictions(fixture_ids: list[int], force_refresh: bool = Fals
 
 def _confidence_label(confidence: float) -> str:
     if confidence >= 65:
-        return "signal fort"
+        return "écart élevé entre les scénarios"
     if confidence >= 55:
-        return "signal intéressant"
+        return "écart modéré entre les scénarios"
     if confidence >= 45:
-        return "match ouvert"
-    return "signal prudent"
+        return "scénarios ouverts"
+    return "scénarios très proches"
 
 
 def _favorite_from_prediction(prediction: dict, home_name: str, away_name: str) -> tuple[str, str, float]:
@@ -678,7 +666,7 @@ def _summary_sentence(home_name: str, away_name: str, prediction: dict, details:
 
     return (
         f"Lecture {code}: {favorite} ressort à {_format_probability(probability)} "
-        f"avec {confidence:.2f} % de confiance ({label}); {form_text}. "
+        f"avec un score d’analyse de {confidence:.2f} % ({label}); {form_text}. "
         f"Probabilités 1/N/2: {_format_probability(prediction['home_probability'])}, "
         f"{_format_probability(prediction['draw_probability'])}, {_format_probability(prediction['away_probability'])}."
         f"{score_text}"
@@ -751,10 +739,18 @@ def _intelligence_signature(match) -> dict:
                 ),
                 params,
             ).scalar_one_or_none()
+            api_prediction_updated = conn.execute(
+                text(
+                    "SELECT MAX(updated_at) FROM fixture_api_predictions "
+                    "WHERE fixture_id = :fixture_id"
+                ),
+                params,
+            ).scalar_one_or_none()
         return {
             "season_players": _clean_hash_value(season_updated),
             "lineup": _clean_hash_value(lineup_updated),
             "recent_players": _clean_hash_value(recent_updated),
+            "api_prediction": _clean_hash_value(api_prediction_updated),
         }
     except Exception:
         return {}
@@ -951,27 +947,23 @@ def _build_match_preview(match, context_df: pd.DataFrame) -> dict:
         season=int(match.season),
         match_date=match.date,
     )
-    prediction, _, _, details = prediction_helpers.predict_match(
+    api_signal = cross_insight_service.load_fixture_api_signal(
+        int(match.fixture_id)
+    )
+    final = final_prediction_service.calculate(
         context_df,
         home_team_id,
         away_team_id,
+        home_name,
+        away_name,
         player_intelligence=player_intelligence,
+        api_signal=api_signal,
+        score_top_n=12,
     )
-    player_reliability = float(player_intelligence.get("reliability") or 0)
-    score_prediction = prediction_service.predict_scorelines(
-        context_df,
-        home_team_id,
-        away_team_id,
-        home_form_score=details["home_form_score"] / 100,
-        away_form_score=details["away_form_score"] / 100,
-        home_player_factor=_player_goal_factor(
-            player_intelligence.get("home"), player_reliability
-        ),
-        away_player_factor=_player_goal_factor(
-            player_intelligence.get("away"), player_reliability
-        ),
-        top_n=12,
-    )
+    prediction = final["prediction"]
+    details = final["model_details"]
+    consensus_advice = final["consensus_advice"]
+    score_prediction = final["score_prediction"]
     analysis_store.save_analysis_snapshot(
         analysis_type="aperçu_match_à_venir",
         fixture_id=int(match.fixture_id),
@@ -1008,7 +1000,11 @@ def _build_match_preview(match, context_df: pd.DataFrame) -> dict:
         "Pronostic": f"{code} - {favorite}",
         "Confiance": _format_probability(prediction["confidence"]),
         "Score probable": score_label,
-        "Résumé": _summary_sentence(home_name, away_name, prediction, details, scores),
+        "Résumé": (
+            _summary_sentence(home_name, away_name, prediction, details, scores)
+            + " "
+            + consensus_advice["message"]
+        ),
     }
 
 
@@ -1114,7 +1110,7 @@ def _render_match_detail(row: pd.Series, force_api_refresh: bool = False):
 
     signal_cols = st.columns(3)
     signal_cols[0].metric("Pronostic", row.get("Pronostic") or "-")
-    signal_cols[1].metric("Confiance", row.get("Confiance") or "-")
+    signal_cols[1].metric("Score d’analyse", row.get("Confiance") or "-")
     signal_cols[2].metric("Score", row.get("Score probable") or "-")
 
     st.info(row.get("Résumé") or "Résumé non disponible.")
@@ -1165,7 +1161,7 @@ def _render_match_card(row: pd.Series, force_api_refresh: bool = False):
         signal_cols = st.columns(3)
         signal_cols[0].caption("Pronostic")
         signal_cols[0].write(f"**{row.get('Pronostic') or '-'}**")
-        signal_cols[1].caption("Confiance")
+        signal_cols[1].caption("Score d’analyse")
         signal_cols[1].write(f"**{row.get('Confiance') or '-'}**")
         signal_cols[2].caption("Score")
         signal_cols[2].write(f"**{row.get('Score probable') or '-'}**")
@@ -1528,14 +1524,6 @@ def _render_team_lineup(team: dict | None, team_name: str):
                 st.dataframe(_lineup_table(substitutes), hide_index=True, width="stretch")
 
 
-def _player_goal_factor(team: dict | None, reliability: float) -> float:
-    if not team:
-        return 1.0
-    score = float(team.get("form_score") or 50)
-    reliability = max(0.0, min(1.0, float(reliability or 0)))
-    return max(0.92, min(1.08, 1 + ((score - 50) / 50) * 0.08 * reliability))
-
-
 def _render_upcoming_match_analysis(fixture: pd.Series):
     from pages import analyse_match as match_analysis
 
@@ -1569,54 +1557,31 @@ def _render_upcoming_match_analysis(fixture: pd.Series):
         season=int(fixture["season"]),
         match_date=fixture["date"],
     )
-    prediction, home_stats, away_stats, details = (
-        prediction_helpers.predict_match(
-            context_df,
-            home_team,
-            away_team,
-            player_intelligence=player_intelligence,
-        )
-    )
-    player_reliability = float(player_intelligence.get("reliability") or 0)
-    score_prediction = prediction_service.predict_scorelines(
+    api_signal = cross_insight_service.load_fixture_api_signal(fixture_id)
+    final = final_prediction_service.calculate(
         context_df,
         home_team,
         away_team,
-        home_form_score=details["home_form_score"] / 100,
-        away_form_score=details["away_form_score"] / 100,
-        home_player_factor=_player_goal_factor(
-            player_intelligence.get("home"), player_reliability
-        ),
-        away_player_factor=_player_goal_factor(
-            player_intelligence.get("away"), player_reliability
-        ),
-        top_n=6,
+        home_name,
+        away_name,
+        player_intelligence=player_intelligence,
+        api_signal=api_signal,
     )
-    api_prediction = _load_cached_prediction(fixture_id)
-    api_signal = None
-    if api_prediction:
-        api_signal = {
-            "fixture_id": fixture_id,
-            "date": fixture["date"],
-            "advice": api_prediction.get("api_advice"),
-            "winner": api_prediction.get("api_winner"),
-            "home_probability": float(
-                api_prediction.get("api_home_probability") or 0
-            ),
-            "draw_probability": float(
-                api_prediction.get("api_draw_probability") or 0
-            ),
-            "away_probability": float(
-                api_prediction.get("api_away_probability") or 0
-            ),
-        }
+    prediction = final["prediction"]
+    internal_prediction = final["internal_prediction"]
+    home_stats = final["home_stats"]
+    away_stats = final["away_stats"]
+    details = final["model_details"]
+    api_refinement = final["api_refinement"]
+    consensus_advice = final["consensus_advice"]
+    score_prediction = final["score_prediction"]
     cross_insight = cross_insight_service.build_cross_insight(
         matches_df=context_df,
         home_team=home_team,
         away_team=away_team,
         home_name=home_name,
         away_name=away_name,
-        prediction=prediction,
+        prediction=internal_prediction,
         score_prediction=score_prediction,
         home_form_score=details["home_form_score"] / 100,
         away_form_score=details["away_form_score"] / 100,
@@ -1742,8 +1707,14 @@ def _render_upcoming_match_analysis(fixture: pd.Series):
             f"Victoire {away_name}", f"{prediction['away_probability']} %"
         )
         probabilities[3].metric(
-            "Confiance", f"{prediction['confidence']} %"
+            (
+                "Score combiné"
+                if api_refinement.get("applied")
+                else "Score du modèle"
+            ),
+            f"{prediction['confidence']} %",
         )
+        ui.render_api_refinement(api_refinement, consensus_advice)
         adjustment = details.get("player_adjustment")
         if adjustment:
             shift = float(adjustment.get("probability_shift") or 0)
@@ -1964,8 +1935,9 @@ def _render_upcoming_match_analysis(fixture: pd.Series):
                 f"Score {score['Score']}",
                 f"{score['Probabilité']} %",
             )
-        if api_prediction:
-            st.markdown("#### Conseil API")
+        st.markdown("#### Conseils et synthèse")
+        if api_prediction and api_refinement.get("applied"):
+            st.markdown("**Conseil API brut**")
             st.write(
                 f"**{_translate_api_advice(api_prediction.get('api_advice'), api_prediction.get('api_winner'))}**"
             )
@@ -1973,8 +1945,47 @@ def _render_upcoming_match_analysis(fixture: pd.Series):
                 f"Probabilités API 1/N/2 : "
                 f"{_api_probability_line(api_prediction)}"
             )
+        elif api_prediction:
+            st.info(
+                "L’API ne fournit pas de tendance exploitable pour cette "
+                "rencontre (réponse neutre 33/33/33). Elle n’est pas utilisée "
+                "dans le calcul affiné."
+            )
         else:
             st.caption("Conseil API non synchronisé pour cette rencontre.")
+
+        st.markdown("**Conseil affiné de l’étude**")
+        advice_columns = st.columns(4)
+        advice_columns[0].metric(
+            "Scénario principal",
+            consensus_advice["main_label"],
+            f"{consensus_advice['main_probability']} %",
+            delta_color="off",
+        )
+        advice_columns[1].metric(
+            "Scénario de repli",
+            consensus_advice["alternative_label"],
+            f"{consensus_advice['alternative_probability']} %",
+            delta_color="off",
+        )
+        advice_columns[2].metric(
+            "Couverture des deux",
+            f"{consensus_advice['top_two_coverage']} %",
+        )
+        advice_columns[3].metric(
+            "Écart principal / repli",
+            f"{consensus_advice['margin']} points",
+        )
+        if consensus_advice["level"] == "convergence":
+            st.success(consensus_advice["message"])
+        elif consensus_advice["level"] == "prudence":
+            st.warning(consensus_advice["message"])
+        else:
+            st.info(consensus_advice["message"])
+        st.caption(
+            "Cette lecture statistique hiérarchise les scénarios ; elle ne "
+            "constitue pas une garantie de résultat."
+        )
 
 
 def show():

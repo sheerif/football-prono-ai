@@ -1,6 +1,19 @@
 # Prono insight
 
-Application Streamlit de pronostic IA football avec dashboard, imports API-Football, widgets API-Sports, analyses, predictions et logs de mises a jour persistants.
+Application Streamlit d’aide à l’analyse football avec dashboard, imports
+API-Football, widgets API-Sports, statistiques, estimations 1/N/2 expérimentales
+et suivi persistant des mises à jour.
+
+Les scores 1/N/2 sont des estimations internes issues de règles statistiques.
+Ils ne constituent ni une fiabilité calibrée ni un conseil de pari.
+
+Lorsqu’un conseil API-Football informatif est disponible pour une rencontre
+programmée, l’analyse lui attribue un poids adaptatif et minoritaire de 10 à
+30 %, selon sa précision et la richesse des comparaisons fournies. Les réponses
+neutres 33/33/33 sont ignorées. Les probabilités, l’accord ou le désaccord et
+les comparaisons API (forme, attaque, défense, Poisson, face-à-face et buts)
+restent visibles. La page « Mise à jour » synchronise tous les conseils futurs
+sans retélécharger ceux déjà enregistrés.
 
 ## Quick Start
 
@@ -35,10 +48,29 @@ streamlit run app.py
 
 The app creates SQLite tables on first run.
 
+### Supported database
+
+SQLite is the only officially supported database engine. Some synchronization
+queries intentionally use SQLite features such as `datetime(...)`, `PRAGMA`
+and `ON CONFLICT`. Set `DATABASE_URL` to a SQLite URL (the default is
+`sqlite:///football.db`). Other SQLAlchemy engines are not currently supported.
+
 ## Checks
 
 ```bash
 python -m unittest discover -s tests -v
-python -m compileall -q app.py components database pages services scripts
+python -m compileall -q app.py components database pages services scripts tests
 python -m pip check
 ```
+
+## Reproducible backtest
+
+```bash
+python -m scripts.run_backtest --start-season 2024 --min-prior-matches 30
+```
+
+The JSON output compares the former formula, the draw-rate formula and the
+API-Football blend on its strictly comparable subset. It includes 1/N/2
+accuracy, multiclass Brier score, log loss, draw-specific measures and a SHA-256
+fingerprint of the database rows used. Historical context and API data are
+accepted only when timestamped strictly before kickoff.

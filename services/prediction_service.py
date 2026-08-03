@@ -28,8 +28,14 @@ def normalize_probs(arr):
     return [float(value) for value in rounded]
 
 
-def predict_simple(home_strength, away_strength, draw_factor=0.2):
-    """home_strength/away_strength scalars combine features into probabilities"""
+def predict_simple(home_strength, away_strength, draw_factor=0.25):
+    """Convertit deux indices de force en probabilités 1/N/2.
+
+    ``draw_factor`` représente le taux de nul de référence (idéalement observé
+    dans le championnat), et non un multiplicateur de la plus petite force.
+    La proximité des équipes fait légèrement varier ce taux. Cette formulation
+    évite de rendre le nul structurellement impossible comme issue principale.
+    """
     def _strength(value):
         try:
             value = float(value)
@@ -41,17 +47,221 @@ def predict_simple(home_strength, away_strength, draw_factor=0.2):
     try:
         draw_factor = float(draw_factor)
     except (TypeError, ValueError):
-        draw_factor = 0.2
-    draw_factor = draw_factor if math.isfinite(draw_factor) else 0.2
-    draw_factor = max(0.0, min(1.0, draw_factor))
-    draw = draw_factor * min(home, away)
-    probs = normalize_probs([home, draw, away])
+        draw_factor = 0.25
+    draw_factor = draw_factor if math.isfinite(draw_factor) else 0.25
+    draw_factor = max(0.12, min(0.38, draw_factor))
+
+    total_strength = home + away
+    if total_strength <= 0:
+        home_share = 0.5
+        balance = 1.0
+    else:
+        home_share = home / total_strength
+        balance = 1.0 - abs(home - away) / total_strength
+
+    # Une affiche équilibrée augmente le nul de 2 points au maximum ; un très
+    # gros écart le diminue de 2 points. Le taux reste ancré dans l'historique.
+    draw_probability = max(
+        0.10,
+        min(0.40, draw_factor + 0.04 * (balance - 0.5)),
+    )
+    decisive_probability = 1.0 - draw_probability
+    probs = normalize_probs([
+        decisive_probability * home_share,
+        draw_probability,
+        decisive_probability * (1.0 - home_share),
+    ])
     confidence = max(probs)
     return {
         'home_probability': probs[0],
         'draw_probability': probs[1],
         'away_probability': probs[2],
         'confidence': float(confidence)
+    }
+
+
+def blend_with_api_prediction(
+    prediction: dict,
+    api_signal: dict | None,
+    api_weight: float | None = None,
+) -> tuple[dict, dict]:
+    """Combine prudemment le modèle interne et les probabilités API.
+
+    La source externe reste minoritaire et la fonction conserve les deux jeux
+    de probabilités afin que l'interface puisse expliquer l'accord ou le
+    désaccord entre les sources.
+    """
+    internal = normalize_probs([
+        prediction.get("home_probability", 33.33),
+        prediction.get("draw_probability", 33.33),
+        prediction.get("away_probability", 33.34),
+    ])
+    details = {
+        "applied": False,
+        "api_weight": 0.0,
+        "internal_probabilities": internal,
+        "api_probabilities": None,
+        "agreement": None,
+        "maximum_gap": None,
+        "api_quality": 0.0,
+        "favored_outcomes": [],
+    }
+    if not api_signal:
+        return {**prediction, "api_blend_applied": False}, details
+
+    raw_api = [
+        api_signal.get("home_probability"),
+        api_signal.get("draw_probability"),
+        api_signal.get("away_probability"),
+    ]
+    try:
+        numeric_api = [float(value) for value in raw_api]
+    except (TypeError, ValueError):
+        return {**prediction, "api_blend_applied": False}, details
+    if not all(math.isfinite(value) and value >= 0 for value in numeric_api):
+        return {**prediction, "api_blend_applied": False}, details
+    if sum(numeric_api) <= 0:
+        return {**prediction, "api_blend_applied": False}, details
+
+    api = normalize_probs(numeric_api)
+    advice = str(api_signal.get("advice") or "").strip().casefold()
+    unavailable_advice = advice in {
+        "",
+        "no predictions available",
+        "conseil indisponible",
+        "non disponible",
+    }
+    information_gain = min(
+        1.0,
+        sum(abs(value - 100 / 3) for value in api) / (400 / 3),
+    )
+    comparisons = api_signal.get("comparison") or {}
+    comparison_coverage = min(1.0, len(comparisons) / 7)
+    api_quality = 0.75 * information_gain + 0.25 * comparison_coverage
+    if unavailable_advice or information_gain < 0.02:
+        details.update(
+            {
+                "api_probabilities": api,
+                "api_quality": round(api_quality, 3),
+                "ignored_reason": "Conseil API neutre ou indisponible",
+            }
+        )
+        return {**prediction, "api_blend_applied": False}, details
+
+    if api_weight is None:
+        weight = 0.10 + 0.20 * api_quality
+    else:
+        try:
+            weight = float(api_weight)
+        except (TypeError, ValueError):
+            weight = 0.20
+    weight = max(0.0, min(0.30, weight if math.isfinite(weight) else 0.20))
+    blended = normalize_probs([
+        (1.0 - weight) * internal[index] + weight * api[index]
+        for index in range(3)
+    ])
+    labels = ("1", "N", "2")
+    internal_pick = labels[max(range(3), key=internal.__getitem__)]
+    api_max = max(api)
+    favored_outcomes = [
+        labels[index]
+        for index, value in enumerate(api)
+        if abs(value - api_max) < 0.01
+    ]
+    api_pick = "/".join(favored_outcomes)
+    blended_order = sorted(range(3), key=blended.__getitem__, reverse=True)
+    details = {
+        "applied": True,
+        "api_weight": round(weight, 3),
+        "internal_probabilities": internal,
+        "api_probabilities": api,
+        "agreement": internal_pick in favored_outcomes,
+        "internal_pick": internal_pick,
+        "api_pick": api_pick,
+        "favored_outcomes": favored_outcomes,
+        "combined_pick": labels[blended_order[0]],
+        "alternative_pick": labels[blended_order[1]],
+        "top_two_coverage": round(
+            blended[blended_order[0]] + blended[blended_order[1]], 2
+        ),
+        "maximum_gap": round(max(abs(internal[i] - api[i]) for i in range(3)), 2),
+        "api_quality": round(api_quality, 3),
+        "information_gain": round(information_gain, 3),
+        "comparison_coverage": round(comparison_coverage, 3),
+        "comparison": comparisons,
+        "fixture_id": api_signal.get("fixture_id"),
+        "advice": api_signal.get("advice"),
+        "winner": api_signal.get("winner"),
+        "updated_at": api_signal.get("updated_at"),
+    }
+    refined = {
+        **prediction,
+        "home_probability": blended[0],
+        "draw_probability": blended[1],
+        "away_probability": blended[2],
+        "confidence": float(max(blended)),
+        "api_blend_applied": True,
+        "api_weight": round(weight, 3),
+        "internal_prediction": {
+            "home_probability": internal[0],
+            "draw_probability": internal[1],
+            "away_probability": internal[2],
+            "confidence": float(max(internal)),
+        },
+    }
+    return refined, details
+
+
+def build_consensus_advice(
+    prediction: dict,
+    refinement: dict | None,
+    home_name: str,
+    away_name: str,
+) -> dict:
+    """Produit une lecture explicable du scénario principal et de son repli."""
+    labels = {"1": home_name, "N": "Match nul", "2": away_name}
+    probabilities = {
+        "1": float(prediction.get("home_probability") or 0),
+        "N": float(prediction.get("draw_probability") or 0),
+        "2": float(prediction.get("away_probability") or 0),
+    }
+    ordered = sorted(probabilities, key=probabilities.get, reverse=True)
+    main, alternative = ordered[:2]
+    top_two = round(probabilities[main] + probabilities[alternative], 2)
+    margin = round(probabilities[main] - probabilities[alternative], 2)
+    applied = bool((refinement or {}).get("applied"))
+    agreement = (refinement or {}).get("agreement")
+    if applied and agreement:
+        message = (
+            f"Les sources convergent vers {labels[main]}. "
+            f"Le scénario de repli est {labels[alternative]}; les deux couvrent "
+            f"{top_two} % de l’estimation combinée."
+        )
+        level = "convergence"
+    elif applied:
+        message = (
+            f"Les sources divergent : {labels[main]} reste en tête après fusion, "
+            f"mais {labels[alternative]} doit être conservé comme scénario de repli "
+            f"({top_two} % à eux deux)."
+        )
+        level = "prudence"
+    else:
+        message = (
+            f"Faute de conseil API informatif, l’étude interne place {labels[main]} "
+            f"devant {labels[alternative]}."
+        )
+        level = "interne"
+    return {
+        "main_code": main,
+        "main_label": labels[main],
+        "main_probability": round(probabilities[main], 2),
+        "alternative_code": alternative,
+        "alternative_label": labels[alternative],
+        "alternative_probability": round(probabilities[alternative], 2),
+        "top_two_coverage": top_two,
+        "margin": margin,
+        "level": level,
+        "message": message,
     }
 
 

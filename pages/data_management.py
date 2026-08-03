@@ -4,7 +4,7 @@ import os
 
 from components import ui
 from database.database import engine
-from services import background_jobs, import_service, sync_registry
+from services import background_jobs, full_sync_service, import_service, sync_registry
 from services.season_format import season_period, season_range
 
 
@@ -153,8 +153,8 @@ def show():
     with st.container(border=True):
         st.markdown("### Tout mettre à jour")
         st.write(
-            "L’application ajoute seulement les informations manquantes. "
-            "Les données déjà enregistrées restent intactes."
+            "L’application ajoute les informations manquantes et actualise les "
+            "données récentes déjà enregistrées."
         )
         api_key_missing = not (os.getenv("API_FOOTBALL_KEY") or "").strip()
         if api_key_missing:
@@ -169,8 +169,13 @@ def show():
             st.success("Mise à jour lancée. Vous pouvez continuer à utiliser l’application.")
         registry_counts = sync_registry.counts()
         if registry_counts:
-            st.caption(f"Avancement : {registry_counts.get('complete', 0)} terminé(s), "
-                       f"{registry_counts.get('error', 0)} à retenter.")
+            st.caption(
+                "Avancement : "
+                f"{registry_counts.get('complete', 0)} terminé(s) · "
+                f"{registry_counts.get('running', 0)} en cours · "
+                f"{registry_counts.get('unavailable', 0)} indisponible(s) · "
+                f"{registry_counts.get('error', 0)} en erreur."
+            )
         st.caption(
             "Les éléments non disponibles seront repris lors de la prochaine mise à jour."
         )
@@ -179,6 +184,30 @@ def show():
     config = import_service.get_auto_refresh_config()
     end_season = int(config["end_season"])
     recent_start = max(config["start_season"], end_season - 1)
+
+    with st.container(border=True):
+        st.markdown("### Conseils API des matchs à venir")
+        coverage = full_sync_service.prediction_coverage()
+        st.write(
+            f"{coverage['available']} conseil(s) disponible(s) sur "
+            f"{coverage['total']} match(s) futur(s) en base "
+            f"({coverage['percentage']} %)."
+        )
+        st.caption(
+            "La synchronisation reprend là où elle s’est arrêtée, ignore les "
+            "conseils déjà enregistrés et respecte la limite quotidienne de l’API."
+        )
+        if st.button(
+            "Télécharger tous les conseils API",
+            type="primary",
+            width="stretch",
+            disabled=api_key_missing or data_job_active,
+        ):
+            background_jobs.start_prediction_sync()
+            st.success(
+                "Téléchargement lancé en arrière-plan. Les analyses utiliseront "
+                "automatiquement les conseils disponibles."
+            )
 
     with st.container(border=True):
         st.markdown("### Mises à jour recommandées")
