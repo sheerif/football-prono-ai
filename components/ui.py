@@ -939,6 +939,39 @@ def render_api_refinement(
                 )
 
 
+def render_ranking_summary(prediction: dict):
+    """Affiche l'indice de solidité sans le présenter comme une probabilité."""
+    kpi_grid(
+        [
+            {
+                "label": "Probabilité scénario principal",
+                "value": f"{prediction.get('confidence', 0)} %",
+                "caption": "Probabilité de l’issue classée en tête",
+                "icon": "🎯",
+            },
+            {
+                "label": "Indice de solidité",
+                "value": f"{prediction.get('ranking_score', 0)} / 100",
+                "caption": "Indice composite, pas une probabilité",
+                "icon": "🛡️",
+            },
+            {
+                "label": "Qualité des données",
+                "value": f"{round(float(prediction.get('data_quality') or 0) * 100)} / 100",
+                "caption": "Historique, statistiques, fraîcheur et couverture",
+                "icon": "✅",
+            },
+            {
+                "label": "Marge",
+                "value": f"{prediction.get('margin', 0)} points",
+                "caption": "Écart entre les deux premiers scénarios",
+                "icon": "↔️",
+            },
+        ],
+        columns=4,
+    )
+
+
 def render_cross_insight(insight: dict):
     section_label("Lecture croisée")
     st.caption(

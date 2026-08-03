@@ -678,6 +678,7 @@ def _scores_for_outcome(scores: list[dict], outcome_code: str) -> list[dict]:
 def _summary_sentence(home_name: str, away_name: str, prediction: dict, details: dict, scores: list[dict]) -> str:
     code, favorite, probability = _favorite_from_prediction(prediction, home_name, away_name)
     confidence = float(prediction.get("confidence") or probability)
+    ranking_score = float(prediction.get("ranking_score") or 0)
     label = _confidence_label(confidence)
     score_text = ""
     if scores:
@@ -692,7 +693,8 @@ def _summary_sentence(home_name: str, away_name: str, prediction: dict, details:
 
     return (
         f"Lecture {code}: {favorite} ressort à {_format_probability(probability)} "
-        f"avec un score d’analyse de {confidence:.2f} % ({label}); {form_text}. "
+        f"de probabilité ({label}), avec un indice de solidité de "
+        f"{ranking_score:.2f} / 100; {form_text}. "
         f"Probabilités 1/N/2: {_format_probability(prediction['home_probability'])}, "
         f"{_format_probability(prediction['draw_probability'])}, {_format_probability(prediction['away_probability'])}."
         f"{score_text}"
@@ -985,6 +987,7 @@ def _build_match_preview(match, context_df: pd.DataFrame) -> dict:
         player_intelligence=player_intelligence,
         api_signal=api_signal,
         score_top_n=12,
+        match_date=match.date,
     )
     prediction = final["prediction"]
     details = final["model_details"]
@@ -1151,7 +1154,9 @@ def _render_match_detail(row: pd.Series, force_api_refresh: bool = False):
 
     signal_cols = st.columns(3)
     signal_cols[0].metric("Pronostic", row.get("Pronostic") or "-")
-    signal_cols[1].metric("Score d’analyse", row.get("Confiance") or "-")
+    signal_cols[1].metric(
+        "Probabilité scénario principal", row.get("Confiance") or "-"
+    )
     signal_cols[2].metric("Score", row.get("Score probable") or "-")
 
     st.info(row.get("Résumé") or "Résumé non disponible.")
@@ -1202,7 +1207,7 @@ def _render_match_card(row: pd.Series, force_api_refresh: bool = False):
         signal_cols = st.columns(3)
         signal_cols[0].caption("Pronostic")
         signal_cols[0].write(f"**{row.get('Pronostic') or '-'}**")
-        signal_cols[1].caption("Score d’analyse")
+        signal_cols[1].caption("Probabilité scénario principal")
         signal_cols[1].write(f"**{row.get('Confiance') or '-'}**")
         signal_cols[2].caption("Score")
         signal_cols[2].write(f"**{row.get('Score probable') or '-'}**")
@@ -1608,6 +1613,7 @@ def _render_upcoming_match_analysis(fixture: pd.Series):
         away_name,
         player_intelligence=player_intelligence,
         api_signal=api_signal,
+        match_date=fixture["date"],
     )
     prediction = final["prediction"]
     internal_prediction = final["internal_prediction"]
@@ -1749,13 +1755,10 @@ def _render_upcoming_match_analysis(fixture: pd.Series):
             f"Victoire {away_name}", f"{prediction['away_probability']} %"
         )
         probabilities[3].metric(
-            (
-                "Score combiné"
-                if api_refinement.get("applied")
-                else "Score du modèle"
-            ),
+            "Probabilité scénario principal",
             f"{prediction['confidence']} %",
         )
+        ui.render_ranking_summary(prediction)
         ui.render_api_refinement(api_refinement, consensus_advice)
         adjustment = details.get("player_adjustment")
         if adjustment:
