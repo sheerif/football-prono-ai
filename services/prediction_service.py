@@ -3,6 +3,8 @@ import math
 import numpy as np
 import pandas as pd
 
+from services import ranking_service
+
 # Placeholder simple engine combining features with weights described in spec
 WEIGHTS = {
     'recent_form': 0.40,
@@ -72,12 +74,12 @@ def predict_simple(home_strength, away_strength, draw_factor=0.25):
         decisive_probability * (1.0 - home_share),
     ])
     confidence = max(probs)
-    return {
+    return ranking_service.attach_ranking({
         'home_probability': probs[0],
         'draw_probability': probs[1],
         'away_probability': probs[2],
         'confidence': float(confidence)
-    }
+    })
 
 
 def blend_with_api_prediction(
@@ -194,7 +196,7 @@ def blend_with_api_prediction(
         "winner": api_signal.get("winner"),
         "updated_at": api_signal.get("updated_at"),
     }
-    refined = {
+    refined = ranking_service.attach_ranking({
         **prediction,
         "home_probability": blended[0],
         "draw_probability": blended[1],
@@ -208,7 +210,7 @@ def blend_with_api_prediction(
             "away_probability": internal[2],
             "confidence": float(max(internal)),
         },
-    }
+    }, agreement_score=ranking_service.compute_agreement(details))
     return refined, details
 
 
@@ -314,13 +316,17 @@ def adjust_prediction_for_player_form(
         max(0.0, base[2] - applied_delta),
     ]
     probabilities = normalize_probs(raw)
-    adjusted = {
+    adjusted = ranking_service.attach_ranking({
         **prediction,
         "home_probability": probabilities[0],
         "draw_probability": probabilities[1],
         "away_probability": probabilities[2],
         "confidence": float(max(probabilities)),
-    }
+    },
+        data_quality=float(prediction.get("data_quality") or 0.5),
+        stability_score=float(prediction.get("stability_score") or 0.5),
+        agreement_score=float(prediction.get("agreement_score") or 0.75),
+    )
     details = {
         "home_player_form_score": round(home_form_score, 1),
         "away_player_form_score": round(away_form_score, 1),

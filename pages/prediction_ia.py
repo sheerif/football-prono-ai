@@ -50,8 +50,12 @@ def _glossary_table() -> pd.DataFrame:
                 "Définition": "Estimation en pourcentage de chaque issue possible: victoire domicile, match nul ou victoire extérieur. Les trois probabilités totalisent environ 100 %.",
             },
             {
-                "Terme": "Score d’analyse",
-                "Définition": "Probabilité de l’issue la plus haute. Elle combine le modèle interne et, lorsqu’il existe, le conseil API minoritaire; ce n’est pas une fiabilité validée.",
+                "Terme": "Probabilité du scénario principal",
+                "Définition": "Probabilité de l’issue la plus haute après combinaison éventuelle avec le conseil API.",
+            },
+            {
+                "Terme": "Indice de solidité",
+                "Définition": "Indice composite sur 100. Il ne représente pas une probabilité de victoire.",
             },
         ]
     )
@@ -72,7 +76,8 @@ def _analysis_legend_table() -> pd.DataFrame:
             {"Valeur": "Indice défensif utilisé", "Explication": "Valeur de buts encaissés par match injectée dans le modèle."},
             {"Valeur": "Score de force du modèle", "Explication": "Score synthétique calculé avec la forme, l’attaque, la défense adverse et le contexte domicile/extérieur."},
             {"Valeur": "Probabilité", "Explication": "Chance estimée de chaque issue. Les trois issues totalisent environ 100 %."},
-            {"Valeur": "Score d’analyse", "Explication": "Probabilité de l’issue la plus haute après combinaison éventuelle avec le conseil API. Cette valeur n’est pas une fiabilité calibrée."},
+            {"Valeur": "Probabilité du scénario principal", "Explication": "Probabilité de l’issue la plus haute après combinaison éventuelle avec le conseil API."},
+            {"Valeur": "Indice de solidité", "Explication": "Indice de qualité sur 100 combinant probabilité, marge, données, stabilité et accord API. Ce n’est pas une probabilité."},
         ]
     )
 
@@ -212,11 +217,11 @@ def _favorite_sentence(favorite: str, confidence: float, home_name: str, away_na
 
     if favorite == "Match nul":
         return (
-            f"L’analyse place légèrement le match nul en tête ({confidence} % au score d’analyse, {label}), car {form_argument}, "
+            f"L’analyse place légèrement le match nul en tête ({confidence} % de probabilité, {label}), car {form_argument}, "
             f"{attack_argument} et {strength_argument}."
         )
     return (
-        f"L’analyse place {favorite} en tête ({confidence} % au score d’analyse, {label}), car {form_argument}, "
+        f"L’analyse place {favorite} en tête ({confidence} % de probabilité, {label}), car {form_argument}, "
         f"{attack_argument} et {strength_argument}."
     )
 
@@ -375,6 +380,7 @@ def _show_match_prediction():
             away_name,
             player_intelligence=player_intelligence,
             api_signal=api_signal,
+            match_date=match.date,
         )
         pred = final["prediction"]
         internal_prediction = final["internal_prediction"]
@@ -447,13 +453,9 @@ def _show_match_prediction():
                     "icon": "✈️",
                 },
                 {
-                    "label": (
-                        "Score combiné"
-                        if api_refinement.get("applied")
-                        else "Score du modèle"
-                    ),
+                    "label": "Probabilité scénario principal",
                     "value": f"{pred['confidence']} %",
-                    "caption": "Force du scénario dominant",
+                    "caption": "Probabilité de l’issue dominante",
                     "icon": "🎯",
                 },
             ]
@@ -462,6 +464,7 @@ def _show_match_prediction():
         except TypeError:
             ui.kpi_grid(result_kpis)
 
+        ui.render_ranking_summary(pred)
         st.dataframe(_glossary_table(), hide_index=True, width="stretch")
         ui.render_api_refinement(api_refinement, consensus_advice)
 
@@ -554,8 +557,8 @@ def _rankings_glossary_table() -> pd.DataFrame:
                 "Définition": "Pourcentage estimé pour le scénario principal.",
             },
             {
-                "Terme": "Score d’analyse",
-                "Définition": "Probabilité de l’issue la plus haute après combinaison éventuelle avec le conseil API; ce n’est pas une fiabilité validée.",
+                "Terme": "Indice de solidité",
+                "Définition": "Indice composite sur 100 fondé sur la probabilité principale, la marge, les données, la stabilité et l’accord API. Ce n’est pas une probabilité.",
             },
         ]
     )
@@ -710,7 +713,9 @@ def _build_rankings(
                 ),
                 "Code 1N2": code,
                 "Probabilité retenue": probability,
-                "Score d’analyse": pred["confidence"],
+                "Indice de solidité": pred["ranking_score"],
+                "Qualité des données": round(pred["data_quality"] * 100),
+                "Marge": pred["margin"],
                 "Compositions": lineup_label,
                 "Complétude": f"{completeness['percentage']} %",
                 "Données disponibles": completeness["label"],
@@ -728,7 +733,7 @@ def _build_rankings(
                     f"{tactical_analysis.get('away_formation', '-')}"
                 ),
                 "Impact composition": adjustment.get("probability_shift", 0),
-                "Lecture": _ranking_confidence_label(pred["confidence"]),
+                "Lecture": _ranking_confidence_label(pred["ranking_score"]),
                 "Argument principal": _ranking_argument(
                     home_name, away_name, pick, details
                 ),
@@ -737,7 +742,7 @@ def _build_rankings(
     return (
         pd.DataFrame(rows)
         .sort_values(
-            ["Score d’analyse", "Probabilité retenue"],
+            ["Indice de solidité", "Probabilité retenue"],
             ascending=False,
         )
         .head(limit)
@@ -748,7 +753,7 @@ def _show_best_predictions():
     st.subheader("Scénarios des matchs programmés")
     st.caption(
         "Classez uniquement les rencontres réellement programmées dans la base. "
-        "Le score présenté est une estimation interne, pas un conseil de pari."
+        "L’indice de solidité mesure la qualité du pronostic et non une probabilité."
     )
 
     leagues = prediction_helpers.fetch_leagues()
@@ -853,7 +858,7 @@ def _show_best_predictions():
         )
         ui.section_label("Classement")
         st.caption(
-            "La première ligne correspond au score d’analyse le plus élevé "
+            "La première ligne correspond à l’indice de solidité le plus élevé "
             "parmi les matchs programmés sélectionnés."
         )
         st.dataframe(rankings, hide_index=True, width="stretch")
@@ -880,15 +885,15 @@ def _show_best_predictions():
                         "caption": "Estimation interne",
                     },
                     {
-                        "label": "Score d’analyse",
-                        "value": f"{best['Score d’analyse']} %",
-                        "caption": "Non calibré comme fiabilité",
+                        "label": "Indice de solidité",
+                        "value": f"{best['Indice de solidité']} / 100",
+                        "caption": "Indice composite, pas une probabilité",
                     },
                 ]
             )
             st.info(
                 f"Scénario classé en tête : {best['Scénario principal']} sur "
-                f"{best['Match']} ({best['Score d’analyse']} %). "
+                f"{best['Match']} (indice {best['Indice de solidité']} / 100). "
                 f"{best['Argument principal']}"
             )
 
