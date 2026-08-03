@@ -1,0 +1,2212 @@
+import datetime
+import hashlib
+import html
+import json
+import pandas as pd
+import re
+import streamlit as st
+from sqlalchemy import text
+
+from components import charts, tactical, ui
+from database.database import engine
+from services.api_football import ApiFootballClient
+from services import analysis_store, cross_insight_service, final_prediction_service, lineup_service, prediction_helpers
+from services import schema_guard
+from services.season_format import season_period
+
+
+api_client = ApiFootballClient()
+PREVIEW_CACHE_VERSION = "api-refinement-v4"
+
+
+def _load_upcoming_matches(days_ahead: int, league_ids: list[int] | None = None) -> pd.DataFrame:
+    params = {"days_ahead": int(days_ahead)}
+    league_filter = ""
+    if league_ids:
+        placeholders = ",".join([f":league_{index}" for index, _ in enumerate(league_ids)])
+        league_filter = f"AND m.league_id IN ({placeholders})"
+        params.update({f"league_{index}": int(league_id) for index, league_id in enumerate(league_ids)})
+
+    query = text(
+        f"""
+        SELECT
+            m.fixture_id,
+            m.league_id,
+            COALESCE(l.name, 'Championnat ' || m.league_id) AS league_name,
+            COALESCE(l.country, '') AS country,
+            m.season,
+            m.date,
+            m.home_team_id,
+            COALESCE(home.name, 'Equipe ' || m.home_team_id) AS home_name,
+            m.away_team_id,
+            COALESCE(away.name, 'Equipe ' || m.away_team_id) AS away_name,
+            COALESCE(m.status, 'Programmé') AS status
+        FROM matches m
+        LEFT JOIN leagues l ON l.id = m.league_id
+        LEFT JOIN teams home ON home.id = m.home_team_id
+        LEFT JOIN teams away ON away.id = m.away_team_id
+        WHERE m.date >= CURRENT_TIMESTAMP
+          AND m.date <= datetime(CURRENT_TIMESTAMP, '+' || :days_ahead || ' days')
+          AND m.home_goals IS NULL
+          AND m.away_goals IS NULL
+          {league_filter}
+        ORDER BY l.name, m.date, home.name, away.name
+        """
+    )
+    try:
+        return pd.read_sql(query, engine, params=params)
+    except Exception:
+        return pd.DataFrame()
+
+
+def _load_leagues_with_upcoming() -> pd.DataFrame:
+    try:
+        return pd.read_sql(
+            text(
+                """
+                SELECT
+                    m.league_id AS id,
+                    COALESCE(l.name, 'Championnat ' || m.league_id) AS name,
+                    COALESCE(l.country, '') AS country,
+                    COUNT(*) AS upcoming_count,
+                    MIN(m.date) AS first_match
+                FROM matches m
+                LEFT JOIN leagues l ON l.id = m.league_id
+                WHERE m.date >= CURRENT_TIMESTAMP
+                  AND m.home_goals IS NULL
+                  AND m.away_goals IS NULL
+                GROUP BY m.league_id, l.name, l.country
+                ORDER BY first_match, name
+                """
+            ),
+            engine,
+        )
+    except Exception:
+        return pd.DataFrame(columns=["id", "name", "country", "upcoming_count", "first_match"])
+
+
+def _load_prediction_context(league_id: int, match_date) -> pd.DataFrame:
+    shared_loader = getattr(prediction_helpers, "load_historical_context", None)
+    if callable(shared_loader):
+        return shared_loader(league_id, match_date)
+
+    # Compatibilité avec une instance Streamlit ayant encore une ancienne
+    # version de prediction_helpers en mémoire pendant un redéploiement.
+    try:
+        return pd.read_sql(
+            text(
+                """
+                SELECT *
+                FROM matches
+                WHERE league_id = :league_id
+                  AND date < :kickoff
+                  AND home_goals IS NOT NULL
+                  AND away_goals IS NOT NULL
+                ORDER BY date DESC, fixture_id DESC
+                """
+            ),
+            engine,
+            params={
+                "league_id": int(league_id),
+                "kickoff": str(match_date),
+            },
+        )
+    except Exception:
+        return pd.DataFrame()
+
+
+def _format_datetime(value) -> str:
+    timestamp = pd.to_datetime(value, errors="coerce")
+    if pd.isna(timestamp):
+        return "Date inconnue"
+    return timestamp.strftime("%d/%m/%Y %H:%M UTC")
+
+
+def _format_date(value) -> str:
+    timestamp = pd.to_datetime(value, errors="coerce")
+    if pd.isna(timestamp):
+        return "Date inconnue"
+    return timestamp.strftime("%d/%m/%Y")
+
+
+def _format_time(value) -> str:
+    timestamp = pd.to_datetime(value, errors="coerce")
+    if pd.isna(timestamp):
+        return ""
+    return timestamp.strftime("%H:%M")
+
+
+def _format_probability(value) -> str:
+    try:
+        return f"{float(value):.2f} %"
+    except Exception:
+        return "Non calculé"
+
+
+def _display_text(value, fallback: str = "") -> str:
+    if value is None:
+        return fallback
+    try:
+        if pd.isna(value):
+            return fallback
+    except Exception:
+        pass
+    text_value = str(value).strip()
+    return text_value or fallback
+
+
+def _utc_now_iso() -> str:
+    return datetime.datetime.now(datetime.UTC).replace(tzinfo=None).isoformat()
+
+
+def _json_dump(value) -> str:
+    try:
+        return json.dumps(value, ensure_ascii=False, default=str, sort_keys=True)
+    except Exception:
+        return str(value)
+
+
+def _json_changed(old_value, new_value: str) -> bool:
+    if not old_value:
+        return True
+    try:
+        return json.loads(old_value) != json.loads(new_value)
+    except Exception:
+        return str(old_value) != str(new_value)
+
+
+def _percent_to_float(value):
+    if value is None:
+        return None
+    try:
+        return float(str(value).replace("%", "").strip())
+    except Exception:
+        return None
+
+
+def _round_label(value) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return "Journée non précisée"
+    if raw.lower().startswith("regular season -"):
+        number = raw.rsplit("-", 1)[-1].strip()
+        if number.isdigit():
+            return f"Journée {number}"
+    return raw
+
+
+def _round_sort_key(value):
+    raw = str(value or "")
+    match = re.search(r"(\d+)$", raw)
+    if match:
+        return int(match.group(1))
+    number = raw.rsplit("-", 1)[-1].strip()
+    if number.isdigit():
+        return int(number)
+    return 999
+
+
+def _status_label(value) -> str:
+    labels = {
+        "NS": "A venir",
+        "TBD": "Horaire à confirmer",
+        "PST": "Reporté",
+        "CANC": "Annulé",
+        "SUSP": "Suspendu",
+        "FT": "Terminé",
+    }
+    raw = str(value or "").strip()
+    return labels.get(raw, raw or "A venir")
+
+
+def _load_cached_fixture_details(league_id: int, season: int, fixture_ids: tuple[int, ...]) -> dict[int, dict]:
+    if not fixture_ids:
+        return {}
+    placeholders = ",".join([f":fixture_{index}" for index, _ in enumerate(fixture_ids)])
+    params = {"league_id": int(league_id), "season": int(season)}
+    params.update({f"fixture_{index}": int(fixture_id) for index, fixture_id in enumerate(fixture_ids)})
+    try:
+        rows = pd.read_sql(
+            text(
+                f"""
+                SELECT *
+                FROM fixture_api_details
+                WHERE league_id = :league_id
+                  AND season = :season
+                  AND fixture_id IN ({placeholders})
+                """
+            ),
+            engine,
+            params=params,
+        )
+    except Exception:
+        return {}
+
+    details = {}
+    for row in rows.itertuples():
+        details[int(row.fixture_id)] = {
+            "api_round": row.round,
+            "api_venue": row.venue,
+            "api_city": row.city,
+            "api_status_short": row.status_short,
+            "api_home_logo": row.home_logo,
+            "api_away_logo": row.away_logo,
+            "api_league_logo": row.league_logo,
+        }
+    return details
+
+
+def _save_fixture_details(league_id: int, season: int, api_items: list[dict]) -> dict:
+    now = _utc_now_iso()
+    rows = []
+    for item in api_items:
+        fixture = item.get("fixture") or {}
+        fixture_id = fixture.get("id")
+        if not fixture_id:
+            continue
+        league = item.get("league") or {}
+        venue = fixture.get("venue") or {}
+        status = fixture.get("status") or {}
+        teams = item.get("teams") or {}
+        rows.append(
+            {
+                "fixture_id": int(fixture_id),
+                "league_id": int(league_id),
+                "season": int(season),
+                "round": league.get("round"),
+                "venue": venue.get("name"),
+                "city": venue.get("city"),
+                "status_short": status.get("short"),
+                "home_logo": (teams.get("home") or {}).get("logo"),
+                "away_logo": (teams.get("away") or {}).get("logo"),
+                "league_logo": league.get("logo"),
+                "raw_json": _json_dump(item),
+                "updated_at": now,
+            }
+        )
+    if not rows:
+        return {"inserted": 0, "updated": 0, "unchanged": 0}
+
+    fixture_ids = tuple(row["fixture_id"] for row in rows)
+    placeholders = ",".join([f":fixture_{index}" for index, _ in enumerate(fixture_ids)])
+    params = {f"fixture_{index}": int(fixture_id) for index, fixture_id in enumerate(fixture_ids)}
+    with engine.begin() as conn:
+        existing_rows = conn.execute(
+            text(f"SELECT fixture_id, raw_json FROM fixture_api_details WHERE fixture_id IN ({placeholders})"),
+            params,
+        ).fetchall()
+    existing = {int(row[0]): row[1] for row in existing_rows}
+    rows_to_write = []
+    stats = {"inserted": 0, "updated": 0, "unchanged": 0}
+    for row in rows:
+        old_raw = existing.get(int(row["fixture_id"]))
+        if old_raw is None:
+            stats["inserted"] += 1
+            rows_to_write.append(row)
+        elif _json_changed(old_raw, row["raw_json"]):
+            stats["updated"] += 1
+            rows_to_write.append(row)
+        else:
+            stats["unchanged"] += 1
+
+    if not rows_to_write:
+        return stats
+
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO fixture_api_details (
+                    fixture_id, league_id, season, round, venue, city, status_short,
+                    home_logo, away_logo, league_logo, raw_json, updated_at
+                )
+                VALUES (
+                    :fixture_id, :league_id, :season, :round, :venue, :city, :status_short,
+                    :home_logo, :away_logo, :league_logo, :raw_json, :updated_at
+                )
+                ON CONFLICT(fixture_id) DO UPDATE SET
+                    league_id = excluded.league_id,
+                    season = excluded.season,
+                    round = excluded.round,
+                    venue = excluded.venue,
+                    city = excluded.city,
+                    status_short = excluded.status_short,
+                    home_logo = excluded.home_logo,
+                    away_logo = excluded.away_logo,
+                    league_logo = excluded.league_logo,
+                    raw_json = excluded.raw_json,
+                    updated_at = excluded.updated_at
+                """
+            ),
+            rows_to_write,
+        )
+    return stats
+
+
+def _sync_fixture_details(upcoming: pd.DataFrame, progress_callback=None) -> dict:
+    schema_guard.ensure_fixture_api_cache_tables()
+    grouped = list(upcoming.groupby(["league_id", "season"]))
+    total_groups = max(1, len(grouped))
+    totals = {"inserted": 0, "updated": 0, "unchanged": 0}
+    for group_index, ((league_id, season), _) in enumerate(grouped, start=1):
+        if progress_callback:
+            progress_callback(group_index - 1, total_groups, f"Comparaison API: ligue {league_id}, saison {season}")
+        try:
+            response = api_client.get_fixtures(int(league_id), int(season))
+        except Exception:
+            continue
+        stats = _save_fixture_details(int(league_id), int(season), response.get("response") or [])
+        for key in totals:
+            totals[key] += stats.get(key, 0)
+    if progress_callback:
+        progress_callback(total_groups, total_groups, "Détails des matchs synchronisés")
+    return totals
+
+
+def _fixture_detail_complete(detail: dict | None) -> bool:
+    if not detail:
+        return False
+    return bool(
+        _display_text(detail.get("api_round"))
+        and _display_text(detail.get("api_home_logo"))
+        and _display_text(detail.get("api_away_logo"))
+    )
+
+
+def _sync_missing_fixture_details(upcoming: pd.DataFrame, progress_callback=None) -> dict:
+    schema_guard.ensure_fixture_api_cache_tables()
+    grouped = list(upcoming.groupby(["league_id", "season"]))
+    total_groups = max(1, len(grouped))
+    totals = {"inserted": 0, "updated": 0, "unchanged": 0, "skipped": 0}
+
+    for group_index, ((league_id, season), group) in enumerate(grouped, start=1):
+        if progress_callback:
+            progress_callback(group_index - 1, total_groups, f"Vérification SQLite: ligue {league_id}, saison {season}")
+
+        fixture_ids = tuple(int(value) for value in group["fixture_id"].dropna().tolist())
+        cached_details = _load_cached_fixture_details(int(league_id), int(season), fixture_ids)
+        missing_or_incomplete = [
+            fixture_id
+            for fixture_id in fixture_ids
+            if not _fixture_detail_complete(cached_details.get(fixture_id))
+        ]
+        if not missing_or_incomplete:
+            totals["skipped"] += len(fixture_ids)
+            continue
+
+        if progress_callback:
+            progress_callback(
+                group_index - 1,
+                total_groups,
+                f"Complément API: {len(missing_or_incomplete)} détail(s) manquant(s)",
+            )
+        try:
+            response = api_client.get_fixtures(int(league_id), int(season))
+        except Exception:
+            continue
+        stats = _save_fixture_details(int(league_id), int(season), response.get("response") or [])
+        for key in ["inserted", "updated", "unchanged"]:
+            totals[key] += stats.get(key, 0)
+
+    if progress_callback:
+        progress_callback(total_groups, total_groups, "Détails, journées et logos vérifiés")
+    return totals
+
+
+def _load_cached_prediction(fixture_id: int) -> dict:
+    try:
+        row = pd.read_sql(
+            text("SELECT * FROM fixture_api_predictions WHERE fixture_id = :fixture_id"),
+            engine,
+            params={"fixture_id": int(fixture_id)},
+        )
+    except Exception:
+        return {}
+    if row.empty:
+        return {}
+    item = row.iloc[0]
+    return {
+        "api_advice": item.get("advice"),
+        "api_winner": item.get("winner"),
+        "api_home_probability": item.get("home_probability"),
+        "api_draw_probability": item.get("draw_probability"),
+        "api_away_probability": item.get("away_probability"),
+        "api_total_home": item.get("total_home"),
+        "api_total_away": item.get("total_away"),
+    }
+
+
+def _save_prediction(fixture_id: int, prediction_item: dict) -> str:
+    predictions = prediction_item.get("predictions") or {}
+    percent = predictions.get("percent") or {}
+    comparison = prediction_item.get("comparison") or {}
+    raw_json = _json_dump(prediction_item)
+    try:
+        existing = pd.read_sql(
+            text("SELECT raw_json FROM fixture_api_predictions WHERE fixture_id = :fixture_id"),
+            engine,
+            params={"fixture_id": int(fixture_id)},
+        )
+    except Exception:
+        existing = pd.DataFrame()
+    if not existing.empty and not _json_changed(existing.iloc[0]["raw_json"], raw_json):
+        return "unchanged"
+    status = "inserted" if existing.empty else "updated"
+    row = {
+        "fixture_id": int(fixture_id),
+        "advice": predictions.get("advice"),
+        "winner": (predictions.get("winner") or {}).get("name"),
+        "home_probability": _percent_to_float(percent.get("home")),
+        "draw_probability": _percent_to_float(percent.get("draw")),
+        "away_probability": _percent_to_float(percent.get("away")),
+        "total_home": (comparison.get("total") or {}).get("home"),
+        "total_away": (comparison.get("total") or {}).get("away"),
+        "raw_json": raw_json,
+        "updated_at": _utc_now_iso(),
+    }
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO fixture_api_predictions (
+                    fixture_id, advice, winner, home_probability, draw_probability,
+                    away_probability, total_home, total_away, raw_json, updated_at
+                )
+                VALUES (
+                    :fixture_id, :advice, :winner, :home_probability, :draw_probability,
+                    :away_probability, :total_home, :total_away, :raw_json, :updated_at
+                )
+                ON CONFLICT(fixture_id) DO UPDATE SET
+                    advice = excluded.advice,
+                    winner = excluded.winner,
+                    home_probability = excluded.home_probability,
+                    draw_probability = excluded.draw_probability,
+                    away_probability = excluded.away_probability,
+                    total_home = excluded.total_home,
+                    total_away = excluded.total_away,
+                    raw_json = excluded.raw_json,
+                    updated_at = excluded.updated_at
+                """
+            ),
+            row,
+        )
+    return status
+
+
+def _api_prediction(fixture_id: int, force_refresh: bool = False) -> dict:
+    schema_guard.ensure_fixture_api_cache_tables()
+    cached = _load_cached_prediction(fixture_id)
+    if cached and not force_refresh:
+        return cached
+
+    try:
+        response = api_client.get_predictions(int(fixture_id))
+    except Exception:
+        return cached
+    items = response.get("response") or []
+    if not items:
+        return cached
+
+    _save_prediction(int(fixture_id), items[0])
+    return _load_cached_prediction(fixture_id)
+
+
+def _enrich_with_api_details(upcoming: pd.DataFrame, force_refresh: bool = False, progress_callback=None) -> pd.DataFrame:
+    if upcoming.empty:
+        return upcoming
+
+    enriched = upcoming.copy()
+    for column in [
+        "api_round",
+        "api_venue",
+        "api_city",
+        "api_status_short",
+        "api_home_logo",
+        "api_away_logo",
+        "api_league_logo",
+    ]:
+        enriched[column] = ""
+
+    grouped = list(enriched.groupby(["league_id", "season"]))
+    total_groups = max(1, len(grouped))
+    for group_index, ((league_id, season), group) in enumerate(grouped, start=1):
+        if progress_callback:
+            progress_callback(group_index - 1, total_groups, f"Lecture SQLite: ligue {league_id}, saison {season}")
+        fixture_ids = tuple(int(value) for value in group["fixture_id"].dropna().tolist())
+        details = _load_cached_fixture_details(int(league_id), int(season), fixture_ids)
+        if not details:
+            continue
+        for index, row in group.iterrows():
+            fixture_details = details.get(int(row["fixture_id"])) or {}
+            for key, value in fixture_details.items():
+                enriched.at[index, key] = value or ""
+    if progress_callback:
+        progress_callback(total_groups, total_groups, "Détails chargés depuis SQLite")
+    return enriched
+
+
+def _enrich_with_api_predictions(
+    previews: pd.DataFrame,
+    fixture_ids: list[int],
+    enabled: bool,
+    limit: int,
+    force_refresh: bool = False,
+    progress_callback=None,
+) -> pd.DataFrame:
+    enriched = previews.copy()
+    for column in ["Conseil API", "Probas API 1/N/2", "Comparaison API"]:
+        enriched[column] = ""
+    if not enabled:
+        return enriched
+
+    limited_ids = [int(fixture_id) for fixture_id in fixture_ids[: int(limit)]]
+    allowed_ids = set(limited_ids)
+    total_predictions = max(1, len(limited_ids))
+    loaded_predictions = 0
+    for index, row in enriched.iterrows():
+        fixture_id = int(row["fixture_id"])
+        if fixture_id not in allowed_ids:
+            enriched.at[index, "Conseil API"] = "Non chargé"
+            continue
+        if progress_callback:
+            progress_callback(loaded_predictions, total_predictions, f"Conseil API: match {fixture_id}")
+        prediction = _api_prediction(fixture_id, force_refresh=force_refresh)
+        loaded_predictions += 1
+        if not prediction:
+            enriched.at[index, "Conseil API"] = "Indisponible"
+            continue
+        enriched.at[index, "Conseil API"] = _translate_api_advice(
+            prediction.get("api_advice"),
+            prediction.get("api_winner"),
+        )
+        enriched.at[index, "Probas API 1/N/2"] = (
+            f"{_format_probability(prediction.get('api_home_probability'))} / "
+            f"{_format_probability(prediction.get('api_draw_probability'))} / "
+            f"{_format_probability(prediction.get('api_away_probability'))}"
+        )
+        if prediction.get("api_total_home") or prediction.get("api_total_away"):
+            enriched.at[index, "Comparaison API"] = (
+                f"Domicile {prediction.get('api_total_home') or '-'} / "
+                f"Extérieur {prediction.get('api_total_away') or '-'}"
+            )
+    if progress_callback:
+        progress_callback(total_predictions, total_predictions, "Conseils API chargés")
+    return enriched
+
+
+def _prefetch_api_predictions(fixture_ids: list[int], force_refresh: bool = False, progress_callback=None) -> dict:
+    unique_ids = []
+    seen = set()
+    for fixture_id in fixture_ids:
+        value = int(fixture_id)
+        if value not in seen:
+            unique_ids.append(value)
+            seen.add(value)
+
+    if not force_refresh:
+        unique_ids = [fixture_id for fixture_id in unique_ids if not _load_cached_prediction(fixture_id)]
+
+    total = max(1, len(unique_ids))
+    stats = {"inserted": 0, "updated": 0, "unchanged": 0, "unavailable": 0}
+    for index, fixture_id in enumerate(unique_ids, start=1):
+        if progress_callback:
+            progress_callback(index - 1, total, f"Comparaison prédiction API: match {fixture_id}")
+        before = _load_cached_prediction(fixture_id)
+        prediction = _api_prediction(fixture_id, force_refresh=True)
+        after = _load_cached_prediction(fixture_id)
+        if not after:
+            stats["unavailable"] += 1
+        elif not before:
+            stats["inserted"] += 1
+        elif before != after:
+            stats["updated"] += 1
+        else:
+            stats["unchanged"] += 1
+    if progress_callback:
+        progress_callback(total, total, "Conseils API disponibles")
+    return stats
+
+
+def _confidence_label(confidence: float) -> str:
+    if confidence >= 65:
+        return "écart élevé entre les scénarios"
+    if confidence >= 55:
+        return "écart modéré entre les scénarios"
+    if confidence >= 45:
+        return "scénarios ouverts"
+    return "scénarios très proches"
+
+
+def _favorite_from_prediction(prediction: dict, home_name: str, away_name: str) -> tuple[str, str, float]:
+    outcomes = [
+        ("1", home_name, prediction["home_probability"]),
+        ("N", "Match nul", prediction["draw_probability"]),
+        ("2", away_name, prediction["away_probability"]),
+    ]
+    code, label, probability = max(outcomes, key=lambda item: item[2])
+    return code, label, float(probability)
+
+
+def _score_matches_outcome(score: dict, outcome_code: str) -> bool:
+    try:
+        home_goals = int(score.get("Buts domicile"))
+        away_goals = int(score.get("Buts extérieur"))
+    except Exception:
+        raw_score = str(score.get("Score") or "")
+        match = re.match(r"^\s*(\d+)\s*-\s*(\d+)\s*$", raw_score)
+        if not match:
+            return False
+        home_goals = int(match.group(1))
+        away_goals = int(match.group(2))
+
+    if outcome_code == "1":
+        return home_goals > away_goals
+    if outcome_code == "2":
+        return away_goals > home_goals
+    if outcome_code == "N":
+        return home_goals == away_goals
+    return False
+
+
+def _scores_for_outcome(scores: list[dict], outcome_code: str) -> list[dict]:
+    if not scores:
+        return []
+    compatible_score = next((score for score in scores if _score_matches_outcome(score, outcome_code)), None)
+    return [compatible_score or scores[0]]
+
+
+def _summary_sentence(home_name: str, away_name: str, prediction: dict, details: dict, scores: list[dict]) -> str:
+    code, favorite, probability = _favorite_from_prediction(prediction, home_name, away_name)
+    confidence = float(prediction.get("confidence") or probability)
+    label = _confidence_label(confidence)
+    score_text = ""
+    if scores:
+        best_score = scores[0]
+        score_text = f" Score probable: {best_score['Score']} ({best_score['Probabilité']} %)."
+
+    form_gap = details["home_form_score"] - details["away_form_score"]
+    if abs(form_gap) >= 10:
+        form_text = f"la forme récente avantage {'le domicile' if form_gap > 0 else 'l’extérieur'}"
+    else:
+        form_text = "les formes récentes sont proches"
+
+    return (
+        f"Lecture {code}: {favorite} ressort à {_format_probability(probability)} "
+        f"avec un score d’analyse de {confidence:.2f} % ({label}); {form_text}. "
+        f"Probabilités 1/N/2: {_format_probability(prediction['home_probability'])}, "
+        f"{_format_probability(prediction['draw_probability'])}, {_format_probability(prediction['away_probability'])}."
+        f"{score_text}"
+    )
+
+
+def _clean_hash_value(value):
+    if value is None:
+        return ""
+    try:
+        if pd.isna(value):
+            return ""
+    except Exception:
+        pass
+    return str(value)
+
+
+def _context_signature(context_df: pd.DataFrame) -> dict:
+    if context_df.empty:
+        return {"count": 0}
+    completed = context_df.dropna(subset=["home_goals", "away_goals"])
+    if completed.empty:
+        return {"count": 0}
+    fixture_ids = pd.to_numeric(completed["fixture_id"], errors="coerce") if "fixture_id" in completed else pd.Series(dtype="float64")
+    return {
+        "count": int(len(completed)),
+        "last_date": _clean_hash_value(completed["date"].max()),
+        "fixture_sum": int(fixture_ids.fillna(0).sum()),
+        "home_goals_sum": int(pd.to_numeric(completed["home_goals"], errors="coerce").fillna(0).sum()),
+        "away_goals_sum": int(pd.to_numeric(completed["away_goals"], errors="coerce").fillna(0).sum()),
+    }
+
+
+def _intelligence_signature(match) -> dict:
+    params = {
+        "fixture_id": int(match.fixture_id),
+        "home_team": int(match.home_team_id),
+        "away_team": int(match.away_team_id),
+        "season": int(match.season),
+        "match_date": str(match.date),
+    }
+    try:
+        with engine.begin() as conn:
+            season_updated = conn.execute(
+                text(
+                    """
+                    SELECT MAX(updated_at) FROM player_statistics
+                    WHERE team_id IN (:home_team, :away_team)
+                      AND season = :season
+                    """
+                ),
+                params,
+            ).scalar_one_or_none()
+            lineup_updated = conn.execute(
+                text(
+                    "SELECT MAX(updated_at) FROM fixture_lineups "
+                    "WHERE fixture_id = :fixture_id"
+                ),
+                params,
+            ).scalar_one_or_none()
+            recent_updated = conn.execute(
+                text(
+                    """
+                    SELECT MAX(fps.updated_at)
+                    FROM fixture_player_statistics fps
+                    JOIN matches m ON m.fixture_id = fps.fixture_id
+                    WHERE fps.team_id IN (:home_team, :away_team)
+                      AND m.date < :match_date
+                    """
+                ),
+                params,
+            ).scalar_one_or_none()
+            api_prediction_updated = conn.execute(
+                text(
+                    "SELECT MAX(updated_at) FROM fixture_api_predictions "
+                    "WHERE fixture_id = :fixture_id"
+                ),
+                params,
+            ).scalar_one_or_none()
+        return {
+            "season_players": _clean_hash_value(season_updated),
+            "lineup": _clean_hash_value(lineup_updated),
+            "recent_players": _clean_hash_value(recent_updated),
+            "api_prediction": _clean_hash_value(api_prediction_updated),
+        }
+    except Exception:
+        return {}
+
+
+def _preview_source_hash(match, context_df: pd.DataFrame) -> str:
+    payload = {
+        "cache_version": PREVIEW_CACHE_VERSION,
+        "fixture_id": int(match.fixture_id),
+        "league_id": int(match.league_id),
+        "season": _clean_hash_value(match.season),
+        "date": _clean_hash_value(match.date),
+        "home_team_id": int(match.home_team_id),
+        "away_team_id": int(match.away_team_id),
+        "home_name": _clean_hash_value(match.home_name),
+        "away_name": _clean_hash_value(match.away_name),
+        "league_name": _clean_hash_value(match.league_name),
+        "status": _clean_hash_value(match.status),
+        "api_round": _clean_hash_value(getattr(match, "api_round", "")),
+        "api_venue": _clean_hash_value(getattr(match, "api_venue", "")),
+        "api_city": _clean_hash_value(getattr(match, "api_city", "")),
+        "api_status_short": _clean_hash_value(getattr(match, "api_status_short", "")),
+        "api_home_logo": _clean_hash_value(getattr(match, "api_home_logo", "")),
+        "api_away_logo": _clean_hash_value(getattr(match, "api_away_logo", "")),
+        "context": _context_signature(context_df),
+        "player_intelligence": _intelligence_signature(match),
+    }
+    return hashlib.sha256(_json_dump(payload).encode("utf-8")).hexdigest()
+
+
+def _load_cached_previews(fixture_ids: list[int]) -> dict[int, dict]:
+    unique_ids = []
+    seen = set()
+    for fixture_id in fixture_ids:
+        value = int(fixture_id)
+        if value not in seen:
+            unique_ids.append(value)
+            seen.add(value)
+    if not unique_ids:
+        return {}
+
+    placeholders = ",".join([f":fixture_{index}" for index, _ in enumerate(unique_ids)])
+    params = {f"fixture_{index}": fixture_id for index, fixture_id in enumerate(unique_ids)}
+    try:
+        rows = pd.read_sql(
+            text(f"SELECT * FROM fixture_match_previews WHERE fixture_id IN ({placeholders})"),
+            engine,
+            params=params,
+        )
+    except Exception:
+        return {}
+
+    return {int(row.fixture_id): row._asdict() for row in rows.itertuples(index=False)}
+
+
+def _cached_preview_to_row(item: dict) -> dict:
+    return {
+        "fixture_id": int(item.get("fixture_id")),
+        "Date et heure": item.get("date_time") or "",
+        "Date": item.get("date_label") or "",
+        "Heure": item.get("time_label") or "",
+        "Saison sportive": item.get("season_label") or "",
+        "Championnat": item.get("league_name") or "",
+        "Journée": item.get("round_label") or "Journée non précisée",
+        "Round API": item.get("round_api") or "",
+        "Stade": item.get("venue") or "",
+        "Ville": item.get("city") or "",
+        "Logo domicile": item.get("home_logo") or "",
+        "Logo extérieur": item.get("away_logo") or "",
+        "Match": item.get("match_label") or "",
+        "Domicile": item.get("home_name") or "",
+        "Extérieur": item.get("away_name") or "",
+        "Statut": item.get("status") or "",
+        "Pronostic": item.get("pronostic") or "",
+        "Confiance": item.get("confidence") or "",
+        "Score probable": item.get("score_probable") or "",
+        "Résumé": item.get("summary") or "",
+    }
+
+
+def _save_match_preview(preview: dict, source_hash: str) -> None:
+    row = {
+        "fixture_id": int(preview["fixture_id"]),
+        "source_hash": source_hash,
+        "date_time": preview.get("Date et heure"),
+        "date_label": preview.get("Date"),
+        "time_label": preview.get("Heure"),
+        "season_label": preview.get("Saison sportive"),
+        "league_name": preview.get("Championnat"),
+        "round_label": preview.get("Journée"),
+        "round_api": preview.get("Round API"),
+        "venue": preview.get("Stade"),
+        "city": preview.get("Ville"),
+        "home_logo": preview.get("Logo domicile"),
+        "away_logo": preview.get("Logo extérieur"),
+        "match_label": preview.get("Match"),
+        "home_name": preview.get("Domicile"),
+        "away_name": preview.get("Extérieur"),
+        "status": preview.get("Statut"),
+        "pronostic": preview.get("Pronostic"),
+        "confidence": preview.get("Confiance"),
+        "score_probable": preview.get("Score probable"),
+        "summary": preview.get("Résumé"),
+        "updated_at": _utc_now_iso(),
+    }
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO fixture_match_previews (
+                    fixture_id, source_hash, date_time, date_label, time_label, season_label,
+                    league_name, round_label, round_api, venue, city, home_logo, away_logo,
+                    match_label, home_name, away_name, status, pronostic, confidence,
+                    score_probable, summary, updated_at
+                )
+                VALUES (
+                    :fixture_id, :source_hash, :date_time, :date_label, :time_label, :season_label,
+                    :league_name, :round_label, :round_api, :venue, :city, :home_logo, :away_logo,
+                    :match_label, :home_name, :away_name, :status, :pronostic, :confidence,
+                    :score_probable, :summary, :updated_at
+                )
+                ON CONFLICT(fixture_id) DO UPDATE SET
+                    source_hash = excluded.source_hash,
+                    date_time = excluded.date_time,
+                    date_label = excluded.date_label,
+                    time_label = excluded.time_label,
+                    season_label = excluded.season_label,
+                    league_name = excluded.league_name,
+                    round_label = excluded.round_label,
+                    round_api = excluded.round_api,
+                    venue = excluded.venue,
+                    city = excluded.city,
+                    home_logo = excluded.home_logo,
+                    away_logo = excluded.away_logo,
+                    match_label = excluded.match_label,
+                    home_name = excluded.home_name,
+                    away_name = excluded.away_name,
+                    status = excluded.status,
+                    pronostic = excluded.pronostic,
+                    confidence = excluded.confidence,
+                    score_probable = excluded.score_probable,
+                    summary = excluded.summary,
+                    updated_at = excluded.updated_at
+                """
+            ),
+            row,
+        )
+
+
+def _build_match_preview(match, context_df: pd.DataFrame) -> dict:
+    home_name = str(match.home_name)
+    away_name = str(match.away_name)
+    home_team_id = int(match.home_team_id)
+    away_team_id = int(match.away_team_id)
+
+    completed = context_df.dropna(subset=["home_goals", "away_goals"]) if not context_df.empty else context_df
+    team_rows = completed[
+        (completed["home_team_id"].isin([home_team_id, away_team_id]))
+        | (completed["away_team_id"].isin([home_team_id, away_team_id]))
+    ]
+
+    if completed.empty or team_rows.empty:
+        return {
+            "fixture_id": int(match.fixture_id),
+            "Date et heure": _format_datetime(match.date),
+            "Date": _format_date(match.date),
+            "Heure": _format_time(match.date),
+            "Saison sportive": season_period(match.season),
+            "Championnat": match.league_name,
+            "Journée": _round_label(getattr(match, "api_round", "") or ""),
+            "Round API": getattr(match, "api_round", "") or "",
+            "Stade": getattr(match, "api_venue", "") or "",
+            "Ville": getattr(match, "api_city", "") or "",
+            "Logo domicile": getattr(match, "api_home_logo", "") or "",
+            "Logo extérieur": getattr(match, "api_away_logo", "") or "",
+            "Match": f"{home_name} - {away_name}",
+            "Domicile": home_name,
+            "Extérieur": away_name,
+            "Statut": _status_label(getattr(match, "api_status_short", "") or match.status),
+            "Pronostic": "Données insuffisantes",
+            "Confiance": "",
+            "Score probable": "",
+            "Résumé": "Pas assez de matchs terminés dans la base pour produire une lecture fiable sur cette affiche.",
+        }
+
+    team_options = {
+        home_team_id: home_name,
+        away_team_id: away_name,
+    }
+    player_intelligence = lineup_service.get_match_intelligence(
+        fixture_id=int(match.fixture_id),
+        home_team_id=home_team_id,
+        away_team_id=away_team_id,
+        season=int(match.season),
+        match_date=match.date,
+    )
+    api_signal = cross_insight_service.load_fixture_api_signal(
+        int(match.fixture_id)
+    )
+    final = final_prediction_service.calculate(
+        context_df,
+        home_team_id,
+        away_team_id,
+        home_name,
+        away_name,
+        player_intelligence=player_intelligence,
+        api_signal=api_signal,
+        score_top_n=12,
+    )
+    prediction = final["prediction"]
+    details = final["model_details"]
+    consensus_advice = final["consensus_advice"]
+    score_prediction = final["score_prediction"]
+    analysis_store.save_analysis_snapshot(
+        analysis_type="aperçu_match_à_venir",
+        fixture_id=int(match.fixture_id),
+        league_id=int(match.league_id),
+        season=int(match.season),
+        home_team_id=home_team_id,
+        away_team_id=away_team_id,
+        prediction=prediction,
+        score_prediction=score_prediction,
+        player_intelligence=player_intelligence,
+        model_details=details,
+        context={"match_count": int(len(context_df))},
+    )
+    code, favorite, probability = _favorite_from_prediction(prediction, home_name, away_name)
+    scores = _scores_for_outcome(score_prediction.get("scores", []), code)
+    score_label = scores[0]["Score"] if scores else ""
+    return {
+        "fixture_id": int(match.fixture_id),
+        "Date et heure": _format_datetime(match.date),
+        "Date": _format_date(match.date),
+        "Heure": _format_time(match.date),
+        "Saison sportive": season_period(match.season),
+        "Championnat": match.league_name,
+        "Journée": _round_label(getattr(match, "api_round", "") or ""),
+        "Round API": getattr(match, "api_round", "") or "",
+        "Stade": getattr(match, "api_venue", "") or "",
+        "Ville": getattr(match, "api_city", "") or "",
+        "Logo domicile": getattr(match, "api_home_logo", "") or "",
+        "Logo extérieur": getattr(match, "api_away_logo", "") or "",
+        "Match": f"{home_name} - {away_name}",
+        "Domicile": home_name,
+        "Extérieur": away_name,
+        "Statut": _status_label(getattr(match, "api_status_short", "") or match.status),
+        "Pronostic": f"{code} - {favorite}",
+        "Confiance": _format_probability(prediction["confidence"]),
+        "Score probable": score_label,
+        "Résumé": (
+            _summary_sentence(home_name, away_name, prediction, details, scores)
+            + " "
+            + consensus_advice["message"]
+        ),
+    }
+
+
+def _build_previews(upcoming: pd.DataFrame, max_per_league: int, progress_callback=None) -> pd.DataFrame:
+    schema_guard.ensure_fixture_api_cache_tables()
+    rows = []
+    limited_groups = [
+        (league_id, league_matches.sort_values("date").head(int(max_per_league)))
+        for league_id, league_matches in upcoming.groupby("league_id", sort=False)
+    ]
+    fixture_ids = [
+        int(match.fixture_id)
+        for _, limited_matches in limited_groups
+        for match in limited_matches.itertuples()
+    ]
+    cached_previews = _load_cached_previews(fixture_ids)
+    total_matches = max(1, sum(len(league_matches) for _, league_matches in limited_groups))
+    processed_matches = 0
+    reused_count = 0
+    generated_count = 0
+    for league_id, limited_matches in limited_groups:
+        context_cache = {}
+        for match in limited_matches.itertuples():
+            if progress_callback:
+                progress_callback(processed_matches, total_matches, f"Lecture SQLite: {match.home_name} - {match.away_name}")
+            context_key = (int(league_id), str(match.date))
+            if context_key not in context_cache:
+                context_cache[context_key] = _load_prediction_context(int(league_id), match.date)
+            source_hash = _preview_source_hash(match, context_cache[context_key])
+            cached = cached_previews.get(int(match.fixture_id))
+            if cached and cached.get("source_hash") == source_hash:
+                rows.append(_cached_preview_to_row(cached))
+                reused_count += 1
+            else:
+                preview = _build_match_preview(match, context_cache[context_key])
+                _save_match_preview(preview, source_hash)
+                rows.append(preview)
+                generated_count += 1
+            processed_matches += 1
+    if progress_callback:
+        progress_callback(
+            total_matches,
+            total_matches,
+            f"Résumés SQLite prêts: {reused_count} déjà en base, {generated_count} mis à jour",
+        )
+    return pd.DataFrame(rows)
+
+
+def _update_progress(progress_bar, status_slot, current: int, total: int, label: str):
+    ratio = min(1.0, current / max(1, total))
+    percent = int(round(ratio * 100))
+    progress_bar.progress(ratio, text=f"{percent} % — {label}")
+    status_slot.caption(f"Progression : {percent} %")
+
+
+def _api_probability_line(prediction: dict) -> str:
+    if not prediction:
+        return ""
+    return (
+        f"{_format_probability(prediction.get('api_home_probability'))} / "
+        f"{_format_probability(prediction.get('api_draw_probability'))} / "
+        f"{_format_probability(prediction.get('api_away_probability'))}"
+    )
+
+
+def _api_prediction_for_display(api_signal: dict | None) -> dict:
+    """Adapte le signal partagé aux anciennes clés utilisées par l’affichage."""
+    if not api_signal:
+        return {}
+    return {
+        "api_advice": api_signal.get("advice"),
+        "api_winner": api_signal.get("winner"),
+        "api_home_probability": api_signal.get("home_probability"),
+        "api_draw_probability": api_signal.get("draw_probability"),
+        "api_away_probability": api_signal.get("away_probability"),
+        "api_total_home": api_signal.get("total_home"),
+        "api_total_away": api_signal.get("total_away"),
+    }
+
+
+def _translate_api_advice(advice: str | None, winner: str | None = None) -> str:
+    text_value = _display_text(advice) or _display_text(winner) or "Non disponible"
+    replacements = [
+        (r"\bDouble chance\s*:\s*", "Double chance : "),
+        (r"\bCombo Double chance\s*:\s*", "Combiné double chance : "),
+        (r"\bCombo Winner\s*:\s*", "Combiné gagnant : "),
+        (r"\bWinner\s*:\s*", "Gagnant : "),
+        (r"\bDraw\b", "Match nul"),
+        (r"\bdraw\b", "match nul"),
+        (r"\bor\b", "ou"),
+        (r"\band\b", "et"),
+        (r"\bgoals\b", "buts"),
+        (r"\bgoal\b", "but"),
+        (r"\bNo predictions available\b", "Conseil indisponible"),
+    ]
+    translated = text_value
+    for pattern, replacement in replacements:
+        translated = re.sub(pattern, replacement, translated)
+    translated = re.sub(r"\s+", " ", translated).strip()
+    return translated[:1].upper() + translated[1:] if translated else "Non disponible"
+
+
+def _render_match_detail(row: pd.Series, force_api_refresh: bool = False):
+    venue = _display_text(row.get("Stade"), "Stade non renseigné")
+    city = _display_text(row.get("Ville"))
+    st.markdown(f"### {row['Domicile']} - {row['Extérieur']}")
+    logo_cols = st.columns([0.16, 1, 0.16])
+    if row.get("Logo domicile"):
+        logo_cols[0].image(row["Logo domicile"], width=52)
+    logo_cols[1].markdown(
+        f"**{row['Championnat']} - {row['Journée']}**  \n"
+        f"{row['Date et heure']}  \n"
+        f"{venue}"
+        f"{', ' + city if city else ''}"
+    )
+    if row.get("Logo extérieur"):
+        logo_cols[2].image(row["Logo extérieur"], width=52)
+
+    signal_cols = st.columns(3)
+    signal_cols[0].metric("Pronostic", row.get("Pronostic") or "-")
+    signal_cols[1].metric("Score d’analyse", row.get("Confiance") or "-")
+    signal_cols[2].metric("Score", row.get("Score probable") or "-")
+
+    st.info(row.get("Résumé") or "Résumé non disponible.")
+
+    api_progress = st.progress(0.0, text="0 % — Vérification du conseil API")
+    api_progress.progress(25 / 100, text="25 % — Lecture des données enregistrées")
+    api_prediction = _api_prediction(int(row["fixture_id"]), force_refresh=force_api_refresh)
+    api_progress.progress(100 / 100, text="100 % — Conseil API disponible")
+
+    if api_prediction:
+        st.markdown("#### Conseil API")
+        advice = _translate_api_advice(api_prediction.get("api_advice"), api_prediction.get("api_winner"))
+        st.write(f"**{advice}**")
+        st.caption(f"Probabilités API 1/N/2: {_api_probability_line(api_prediction)}")
+        if api_prediction.get("api_total_home") or api_prediction.get("api_total_away"):
+            st.caption(
+                f"Comparaison API: domicile {api_prediction.get('api_total_home') or '-'} / "
+                f"extérieur {api_prediction.get('api_total_away') or '-'}"
+            )
+
+    meta_cols = st.columns(3)
+    meta_cols[0].caption("Statut")
+    meta_cols[0].write(f"**{row.get('Statut') or '-'}**")
+    meta_cols[1].caption("Stade")
+    meta_cols[1].write(f"**{venue}**")
+    meta_cols[2].caption("Ville")
+    meta_cols[2].write(f"**{city or 'Non renseignée'}**")
+
+
+def _render_match_card(row: pd.Series, force_api_refresh: bool = False):
+    fixture_id = int(row["fixture_id"])
+    venue = _display_text(row.get("Stade"), "Stade non renseigné")
+    city = _display_text(row.get("Ville"))
+    with st.container(border=True):
+        logo_cols = st.columns([0.16, 1, 0.16])
+        if row.get("Logo domicile"):
+            logo_cols[0].image(row["Logo domicile"], width=44)
+        logo_cols[1].markdown(f"### {row['Domicile']} - {row['Extérieur']}")
+        if row.get("Logo extérieur"):
+            logo_cols[2].image(row["Logo extérieur"], width=44)
+
+        st.caption(
+            f"{row['Championnat']} - {row['Journée']} | "
+            f"{row['Date']} à {row['Heure']} UTC"
+        )
+        st.write(f"**{venue}**{', ' + city if city else ''}")
+
+        signal_cols = st.columns(3)
+        signal_cols[0].caption("Pronostic")
+        signal_cols[0].write(f"**{row.get('Pronostic') or '-'}**")
+        signal_cols[1].caption("Score d’analyse")
+        signal_cols[1].write(f"**{row.get('Confiance') or '-'}**")
+        signal_cols[2].caption("Score")
+        signal_cols[2].write(f"**{row.get('Score probable') or '-'}**")
+
+        st.info(row.get("Résumé") or "Résumé non disponible.")
+
+        prediction = _load_cached_prediction(fixture_id)
+        if prediction:
+            st.markdown("**Conseil API**")
+            st.write(f"**{_translate_api_advice(prediction.get('api_advice'), prediction.get('api_winner'))}**")
+            st.caption(f"Probabilités API 1/N/2: {_api_probability_line(prediction)}")
+        else:
+            st.caption("Conseil API non synchronisé.")
+
+        if st.button(
+            "Voir l'analyse complète",
+            key=f"open_upcoming_match_{fixture_id}",
+            width="stretch",
+        ):
+            st.session_state["selected_upcoming_fixture"] = fixture_id
+            st.rerun()
+
+
+def _render_match_cards(round_rows: pd.DataFrame, force_api_refresh: bool = False):
+    for start in range(0, len(round_rows), 2):
+        cols = st.columns(2)
+        for col, (_, row) in zip(cols, round_rows.iloc[start:start + 2].iterrows()):
+            with col:
+                _render_match_card(row, force_api_refresh=force_api_refresh)
+
+
+def _load_fixture_for_analysis(fixture_id: int) -> pd.Series | None:
+    try:
+        rows = pd.read_sql(
+            text(
+                """
+                SELECT
+                    m.*,
+                    COALESCE(l.name, 'Championnat ' || m.league_id) AS league_name,
+                    COALESCE(home.name, 'Équipe ' || m.home_team_id) AS home_name,
+                    COALESCE(away.name, 'Équipe ' || m.away_team_id) AS away_name,
+                    details.round AS api_round,
+                    details.venue AS api_venue,
+                    details.city AS api_city,
+                    COALESCE(details.home_logo, home.logo) AS home_logo,
+                    COALESCE(details.away_logo, away.logo) AS away_logo
+                FROM matches m
+                LEFT JOIN leagues l ON l.id = m.league_id
+                LEFT JOIN teams home ON home.id = m.home_team_id
+                LEFT JOIN teams away ON away.id = m.away_team_id
+                LEFT JOIN fixture_api_details details
+                  ON details.fixture_id = m.fixture_id
+                WHERE m.fixture_id = :fixture_id
+                LIMIT 1
+                """
+            ),
+            engine,
+            params={"fixture_id": int(fixture_id)},
+        )
+    except Exception:
+        return None
+    return None if rows.empty else rows.iloc[0]
+
+
+def _lineup_position(value) -> str:
+    labels = {
+        "G": "Gardien",
+        "D": "Défenseur",
+        "M": "Milieu",
+        "F": "Attaquant",
+        "Goalkeeper": "Gardien",
+        "Defender": "Défenseur",
+        "Midfielder": "Milieu",
+        "Attacker": "Attaquant",
+    }
+    return labels.get(str(value or ""), str(value or "-"))
+
+
+def _lineup_table(players: list[dict]) -> pd.DataFrame:
+    rows = []
+    for player in players:
+        form_rating = player.get("form_rating")
+        rows.append(
+            {
+                "N°": _display_text(player.get("number"), "-"),
+                "Joueur": _display_text(player.get("player_name"), "Joueur"),
+                "Poste": _lineup_position(player.get("position") or player.get("games_position")),
+                "Note forme": round(float(form_rating), 2) if form_rating is not None else "-",
+                "Matchs récents": int(player.get("recent_matches") or 0),
+                "Buts récents": int(player.get("recent_goals") or 0),
+                "Passes récentes": int(player.get("recent_assists") or 0),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def _pitch_player_group(player: dict) -> str:
+    position = str(player.get("position") or player.get("games_position") or "")
+    return {
+        "G": "goalkeeper",
+        "Goalkeeper": "goalkeeper",
+        "D": "defense",
+        "Defender": "defense",
+        "M": "midfield",
+        "Midfielder": "midfield",
+        "F": "attack",
+        "Attacker": "attack",
+    }.get(position, "midfield")
+
+
+def _pitch_lines(team: dict) -> list[list[dict]]:
+    players = list(team.get("starters") or [])
+    groups = {
+        key: [player for player in players if _pitch_player_group(player) == key]
+        for key in ("goalkeeper", "defense", "midfield", "attack")
+    }
+    formation = str(team.get("formation") or "")
+    midfield_splits = {
+        "4-2-3-1": [3, 2],
+        "4-1-4-1": [4, 1],
+        "3-4-2-1": [2, 4],
+        "4-3-1-2": [1, 3],
+    }.get(formation)
+
+    lines = []
+    if groups["attack"]:
+        lines.append(groups["attack"])
+    if midfield_splits:
+        offset = 0
+        for count in midfield_splits:
+            line = groups["midfield"][offset:offset + count]
+            if line:
+                lines.append(line)
+            offset += count
+        if offset < len(groups["midfield"]):
+            lines.append(groups["midfield"][offset:])
+    elif groups["midfield"]:
+        lines.append(groups["midfield"])
+    if groups["defense"]:
+        lines.append(groups["defense"])
+    if groups["goalkeeper"]:
+        lines.append(groups["goalkeeper"])
+    return lines
+
+
+def _render_lineup_pitch(team: dict):
+    pitch_rows = []
+    for line in _pitch_lines(team):
+        players = []
+        for player in line:
+            name = html.escape(str(player.get("player_name") or "Joueur"))
+            photo = _display_text(player.get("player_photo"))
+            rating = player.get("form_rating")
+            rating_label = f"{float(rating):.1f}" if rating is not None else "–"
+            trend_status = player.get("trend_status", "stable")
+            trend_icon = {"progression": "↗", "regression": "↘", "stable": "→"}.get(trend_status, "→")
+            if photo:
+                portrait = (
+                    f'<img src="{html.escape(photo, quote=True)}" '
+                    f'alt="{name}" loading="lazy">'
+                )
+            else:
+                initials = "".join(part[:1] for part in name.split()[:2]).upper() or "?"
+                portrait = f'<span class="pitch-initials">{initials}</span>'
+            players.append(
+                f"""
+                <div class="pitch-player">
+                    <div class="pitch-photo">{portrait}</div>
+                    <div class="pitch-name">{name}</div>
+                    <div class="pitch-rating">★ {rating_label} {trend_icon}</div>
+                </div>
+                """
+            )
+        pitch_rows.append(f'<div class="pitch-row">{"".join(players)}</div>')
+
+    st.html(
+        f"""
+        <style>
+        .lineup-pitch {{
+            position: relative;
+            min-height: 480px;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-around;
+            gap: .35rem;
+            padding: 1rem .5rem;
+            margin: .65rem 0 1rem;
+            overflow: hidden;
+            border: 3px solid rgba(255,255,255,.85);
+            border-radius: 16px;
+            background:
+                linear-gradient(90deg, transparent 49.6%, rgba(255,255,255,.62) 49.6% 50.4%, transparent 50.4%),
+                repeating-linear-gradient(0deg, #24864f 0 58px, #207b48 58px 116px);
+            box-shadow: inset 0 0 0 1px rgba(10,55,31,.25), 0 14px 30px rgba(18,100,71,.14);
+        }}
+        .lineup-pitch::before {{
+            content: "";
+            position: absolute;
+            left: 50%;
+            top: 50%;
+            width: 104px;
+            height: 104px;
+            border: 2px solid rgba(255,255,255,.65);
+            border-radius: 50%;
+            transform: translate(-50%,-50%);
+        }}
+        .lineup-pitch::after {{
+            content: "";
+            position: absolute;
+            left: 25%;
+            right: 25%;
+            bottom: -2px;
+            height: 62px;
+            border: 2px solid rgba(255,255,255,.65);
+        }}
+        .pitch-row {{
+            position: relative;
+            z-index: 1;
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-around;
+            gap: .18rem;
+        }}
+        .pitch-player {{
+            width: 72px;
+            text-align: center;
+            color: white;
+            filter: drop-shadow(0 2px 3px rgba(0,0,0,.42));
+        }}
+        .pitch-photo {{
+            display: grid;
+            place-items: center;
+            width: 46px;
+            height: 46px;
+            margin: 0 auto .2rem;
+            overflow: hidden;
+            border: 2px solid #fff;
+            border-radius: 50%;
+            background: #dce6de;
+        }}
+        .pitch-photo img {{
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }}
+        .pitch-initials {{
+            color: #164a33;
+            font-size: .78rem;
+            font-weight: 900;
+        }}
+        .pitch-name {{
+            overflow: hidden;
+            font-size: .67rem;
+            font-weight: 900;
+            line-height: 1.1;
+            text-overflow: ellipsis;
+            text-shadow: 0 1px 3px #123;
+            white-space: nowrap;
+        }}
+        .pitch-rating {{
+            display: inline-block;
+            margin-top: .14rem;
+            padding: .08rem .28rem;
+            border-radius: 999px;
+            background: rgba(12,41,27,.82);
+            color: #9be5dc;
+            font-size: .62rem;
+            font-weight: 900;
+        }}
+        @media (max-width: 700px) {{
+            .lineup-pitch {{ min-height: 410px; padding-inline: .2rem; }}
+            .pitch-player {{ width: 58px; }}
+            .pitch-photo {{ width: 38px; height: 38px; }}
+            .pitch-name {{ font-size: .58rem; }}
+        }}
+        </style>
+        <div class="lineup-pitch">{"".join(pitch_rows)}</div>
+        """
+    )
+
+
+def _render_team_lineup(team: dict | None, team_name: str):
+    with st.container(border=True):
+        if not team:
+            st.markdown(f"### {team_name}")
+            st.info(
+                "Aucune composition officielle ou probable disponible. "
+                "Synchronisez les données joueurs pour construire une projection."
+            )
+            return
+        header = st.columns([1, 4])
+        logo = _display_text(team.get("team_logo"))
+        if logo:
+            header[0].image(logo, width=64)
+        header[1].markdown(f"### {team_name}")
+        status = (
+            "Composition officielle"
+            if team.get("official")
+            else "Composition probable — estimation statistique non officielle"
+        )
+        st.caption(
+            f"{status} · dispositif {team.get('formation') or 'indisponible'}"
+            + (f" · {team.get('formation_source')}" if team.get("formation_source") else "")
+            + (f" · entraîneur {team.get('coach_name')}" if team.get("coach_name") else "")
+        )
+        if not team.get("official"):
+            confidence = round(float(team.get("projection_confidence") or 0) * 100)
+            st.progress(
+                confidence / 100,
+                text=f"Confiance de la projection · {confidence} %",
+            )
+            st.caption(f"Joueurs : {team.get('player_source', 'historique disponible')}")
+        form_score = float(team.get("form_score") or 50)
+        st.progress(
+            max(0.0, min(1.0, form_score / 100)),
+            text=f"Forme estimée du onze · {form_score:.1f} / 100",
+        )
+        trend_delta = float(team.get("form_trend_delta") or 0)
+        trend_icon = "↗" if trend_delta >= 0.3 else "↘" if trend_delta <= -0.3 else "→"
+        st.caption(
+            f"Progression récente du onze : {trend_icon} {trend_delta:+.2f} point(s) de note "
+            "entre le début et la fin des matchs observés."
+        )
+        st.caption("Sur le terrain : ↗ en progression · → stable · ↘ en régression")
+        st.caption(
+            f"Note moyenne : {team.get('average_rating', '-')} · "
+            f"source : {team.get('form_source', 'indisponible')}"
+        )
+        _render_lineup_pitch(team)
+        starters = _lineup_table(team.get("starters") or [])
+        if not starters.empty:
+            with st.expander("Détails chiffrés des titulaires"):
+                st.dataframe(starters, hide_index=True, width="stretch")
+        st.markdown("**Stratégie éventuelle**")
+        st.write(team.get("strategy") or "Indisponible")
+        st.caption(
+            "Cette lecture décrit les possibilités habituelles du dispositif. "
+            "Elle ne constitue pas une consigne confirmée de l’entraîneur."
+        )
+        formation_history = team.get("formation_history") or []
+        if formation_history:
+            with st.expander("Historique des dispositifs étudiés"):
+                st.dataframe(
+                    pd.DataFrame(
+                        [
+                            {
+                                "Dispositif": item.get("formation"),
+                                "Matchs observés": int(item.get("uses") or 0),
+                                "Poids statistique": float(item.get("weight") or 0),
+                            }
+                            for item in formation_history
+                        ]
+                    ),
+                    hide_index=True,
+                    width="stretch",
+                )
+        substitutes = team.get("substitutes") or []
+        if substitutes:
+            with st.expander("Remplaçants"):
+                st.dataframe(_lineup_table(substitutes), hide_index=True, width="stretch")
+
+
+def _render_upcoming_match_analysis(fixture: pd.Series):
+    from pages import analyse_match as match_analysis
+
+    fixture_id = int(fixture["fixture_id"])
+    home_team = int(fixture["home_team_id"])
+    away_team = int(fixture["away_team_id"])
+    home_name = str(fixture["home_name"])
+    away_name = str(fixture["away_name"])
+    context_df = _load_prediction_context(
+        int(fixture["league_id"]), fixture["date"]
+    )
+
+    if st.button("← Retour aux matchs à venir", key="close_upcoming_match"):
+        st.session_state.pop("selected_upcoming_fixture", None)
+        st.rerun()
+
+    if context_df.empty:
+        st.warning(
+            "Aucun historique disponible avant cette rencontre pour construire "
+            "la fiche d'analyse."
+        )
+        return
+
+    team_options = prediction_helpers.fetch_teams(context_df)
+    team_options[home_team] = home_name
+    team_options[away_team] = away_name
+    player_intelligence = lineup_service.get_match_intelligence(
+        fixture_id=fixture_id,
+        home_team_id=home_team,
+        away_team_id=away_team,
+        season=int(fixture["season"]),
+        match_date=fixture["date"],
+    )
+    api_signal = cross_insight_service.load_fixture_api_signal(fixture_id)
+    api_prediction = _api_prediction_for_display(api_signal)
+    final = final_prediction_service.calculate(
+        context_df,
+        home_team,
+        away_team,
+        home_name,
+        away_name,
+        player_intelligence=player_intelligence,
+        api_signal=api_signal,
+    )
+    prediction = final["prediction"]
+    internal_prediction = final["internal_prediction"]
+    home_stats = final["home_stats"]
+    away_stats = final["away_stats"]
+    details = final["model_details"]
+    api_refinement = final["api_refinement"]
+    consensus_advice = final["consensus_advice"]
+    score_prediction = final["score_prediction"]
+    cross_insight = cross_insight_service.build_cross_insight(
+        matches_df=context_df,
+        home_team=home_team,
+        away_team=away_team,
+        home_name=home_name,
+        away_name=away_name,
+        prediction=internal_prediction,
+        score_prediction=score_prediction,
+        home_form_score=details["home_form_score"] / 100,
+        away_form_score=details["away_form_score"] / 100,
+        home_played=home_stats["played"],
+        away_played=away_stats["played"],
+        selected_seasons=sorted(
+            int(value)
+            for value in context_df["season"].dropna().unique().tolist()
+        ),
+        api_signal=api_signal,
+        player_intelligence=player_intelligence,
+    )
+    analysis_store.save_analysis_snapshot(
+        analysis_type="analyse_match_à_venir",
+        fixture_id=fixture_id,
+        league_id=int(fixture["league_id"]),
+        season=int(fixture["season"]),
+        home_team_id=home_team,
+        away_team_id=away_team,
+        prediction=prediction,
+        score_prediction=score_prediction,
+        player_intelligence=player_intelligence,
+        model_details=details,
+        cross_insight=cross_insight,
+        context={
+            "match_date": fixture["date"],
+            "league_name": fixture["league_name"],
+            "home_name": home_name,
+            "away_name": away_name,
+            "historical_match_count": int(len(context_df)),
+        },
+    )
+
+    match_analysis._render_match_header(
+        str(fixture["league_name"]),
+        (
+            f"{season_period(fixture['season'])} · "
+            f"{_format_datetime(fixture['date'])}"
+        ),
+        home_name,
+        away_name,
+        _display_text(fixture.get("home_logo")),
+        _display_text(fixture.get("away_logo")),
+        score_prediction,
+    )
+
+    overview_tab, form_tab, lineups_tab, h2h_tab, stats_tab, prediction_tab = st.tabs(
+        [
+            "Vue d'ensemble",
+            "Forme",
+            "Compositions",
+            "Face-à-face",
+            "Statistiques",
+            "Prédiction",
+        ]
+    )
+
+    with overview_tab:
+        st.subheader("Les deux équipes en un coup d'œil")
+        team_columns = st.columns(2)
+        for column, team_name, venue_label, stats, form_results in (
+            (
+                team_columns[0],
+                home_name,
+                "Domicile",
+                home_stats,
+                details["home_form_results"],
+            ),
+            (
+                team_columns[1],
+                away_name,
+                "Extérieur",
+                away_stats,
+                details["away_form_results"],
+            ),
+        ):
+            played = max(1, stats["played"])
+            with column:
+                with st.container(border=True):
+                    st.markdown(f"### {team_name}")
+                    st.caption(venue_label)
+                    summary = st.columns(3)
+                    summary[0].metric("Matchs", stats["played"])
+                    summary[1].metric("Victoires", stats["wins"])
+                    summary[2].metric(
+                        "Taux",
+                        f"{round(stats['wins'] / played * 100, 1)} %",
+                    )
+                    goals = st.columns(2)
+                    goals[0].metric(
+                        "Buts / match",
+                        round(stats["goals_for"] / played, 2),
+                    )
+                    goals[1].metric(
+                        "Encaissés / match",
+                        round(stats["goals_against"] / played, 2),
+                    )
+                    st.markdown("**Forme récente**")
+                    st.html(
+                        match_analysis._form_badges(form_results)
+                    )
+
+        st.subheader("Informations du match")
+        venue = _display_text(
+            fixture.get("api_venue"), "Stade non renseigné"
+        )
+        city = _display_text(fixture.get("api_city"))
+        metadata = st.columns(3)
+        metadata[0].metric(
+            "Journée", _round_label(_display_text(fixture.get("api_round")))
+        )
+        metadata[1].metric("Stade", venue)
+        metadata[2].metric("Ville", city or "Non renseignée")
+
+        probabilities = st.columns(4)
+        probabilities[0].metric(
+            f"Victoire {home_name}", f"{prediction['home_probability']} %"
+        )
+        probabilities[1].metric(
+            "Match nul", f"{prediction['draw_probability']} %"
+        )
+        probabilities[2].metric(
+            f"Victoire {away_name}", f"{prediction['away_probability']} %"
+        )
+        probabilities[3].metric(
+            (
+                "Score combiné"
+                if api_refinement.get("applied")
+                else "Score du modèle"
+            ),
+            f"{prediction['confidence']} %",
+        )
+        ui.render_api_refinement(api_refinement, consensus_advice)
+        adjustment = details.get("player_adjustment")
+        if adjustment:
+            shift = float(adjustment.get("probability_shift") or 0)
+            direction = home_name if shift > 0 else away_name if shift < 0 else "aucune équipe"
+            st.info(
+                f"Composition, forme et stratégie intégrées : déplacement de {abs(shift):.2f} point(s) "
+                f"vers {direction}, fiabilité {round(adjustment['reliability'] * 100)} %."
+            )
+        else:
+            st.caption(
+                "La prédiction reste fondée sur les équipes : les données joueurs "
+                "ne sont pas encore assez complètes pour appliquer un ajustement."
+            )
+        ui.render_cross_insight(cross_insight)
+
+    with form_tab:
+        st.subheader("Forme — 5 derniers matchs")
+        form_columns = st.columns(2)
+        for column, team_id, team_name, results in (
+            (
+                form_columns[0],
+                home_team,
+                home_name,
+                details["home_form_results"],
+            ),
+            (
+                form_columns[1],
+                away_team,
+                away_name,
+                details["away_form_results"],
+            ),
+        ):
+            with column:
+                with st.container(border=True):
+                    st.markdown(f"### {team_name}")
+                    st.html(match_analysis._form_badges(results[:5]))
+                    recent = match_analysis._recent_matches_table(
+                        context_df, team_id, team_options, 5
+                    )
+                    if recent.empty:
+                        st.info("Aucun match récent disponible.")
+                    else:
+                        match_analysis._render_recent_matches_list(recent)
+
+    with lineups_tab:
+        st.subheader("Compositions et forme individuelle")
+        sync_result = st.session_state.pop(f"lineup_sync_{fixture_id}", None)
+        if sync_result:
+            if sync_result.get("errors"):
+                st.warning(
+                    "Synchronisation partielle : " + " | ".join(sync_result["errors"][:4])
+                )
+            else:
+                st.success(
+                    f"Synchronisation terminée : {sync_result.get('recent_fixtures', 0)} "
+                    "match(s) récent(s) analysé(s)."
+                )
+        st.caption(
+            "Les compositions officielles sont généralement publiées peu avant le coup d’envoi. "
+            "Avant cela, la projection utilise les titularisations, minutes et blessures connues."
+        )
+        if st.button(
+            "Actualiser compositions et forme des joueurs",
+            type="primary",
+            key=f"sync_lineups_{fixture_id}",
+            width="stretch",
+        ):
+            try:
+                lineup_progress = st.progress(
+                    0.0,
+                    text="0 % — Préparation des compositions et performances",
+                )
+
+                def update_lineup_progress(current, total, label):
+                    ratio = min(1.0, current / max(1, total))
+                    lineup_progress.progress(
+                        ratio,
+                        text=f"{int(round(ratio * 100))} % — {label}",
+                    )
+
+                result = lineup_service.sync_match_intelligence(
+                    fixture_id=fixture_id,
+                    home_team_id=home_team,
+                    away_team_id=away_team,
+                    season=int(fixture["season"]),
+                    match_date=fixture["date"],
+                    progress_callback=update_lineup_progress,
+                )
+                st.session_state[f"lineup_sync_{fixture_id}"] = result
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Synchronisation impossible : {exc}")
+
+        lineup_columns = st.columns(2)
+        with lineup_columns[0]:
+            _render_team_lineup(player_intelligence.get("home"), home_name)
+        with lineup_columns[1]:
+            _render_team_lineup(player_intelligence.get("away"), away_name)
+        tactical.render_match_intelligence(
+            player_intelligence,
+            home_name,
+            away_name,
+            show_players=False,
+        )
+
+    h2h_df = context_df[
+        (
+            (context_df["home_team_id"] == home_team)
+            & (context_df["away_team_id"] == away_team)
+        )
+        | (
+            (context_df["home_team_id"] == away_team)
+            & (context_df["away_team_id"] == home_team)
+        )
+    ].copy()
+    h2h_table, h2h_totals = match_analysis._build_h2h_report(
+        h2h_df, home_team, away_team, home_name, away_name
+    )
+    with h2h_tab:
+        st.subheader("Confrontations directes")
+        summary = st.columns(4)
+        summary[0].metric("Matchs", len(h2h_table))
+        summary[1].metric(
+            f"Victoires {home_name}", h2h_totals[home_team]["wins"]
+        )
+        summary[2].metric("Nuls", h2h_totals[home_team]["draws"])
+        summary[3].metric(
+            f"Victoires {away_name}", h2h_totals[away_team]["wins"]
+        )
+        if h2h_table.empty:
+            st.info("Aucune confrontation directe disponible.")
+        else:
+            match_analysis._render_h2h_list(h2h_table)
+
+    with stats_tab:
+        st.subheader("Profil comparé")
+        home_attack = home_stats["goals_for"] / max(1, home_stats["played"])
+        away_attack = away_stats["goals_for"] / max(1, away_stats["played"])
+        home_defense = home_stats["goals_against"] / max(
+            1, home_stats["played"]
+        )
+        away_defense = away_stats["goals_against"] / max(
+            1, away_stats["played"]
+        )
+        radar = charts.radar_team_comparison(
+            ["Victoires", "Attaque", "Défense", "Forme"],
+            [
+                home_stats["wins"] / max(1, home_stats["played"]) * 100,
+                min(100, home_attack / 3 * 100),
+                max(0, 100 - home_defense / 3 * 100),
+                details["home_form_score"],
+            ],
+            [
+                away_stats["wins"] / max(1, away_stats["played"]) * 100,
+                min(100, away_attack / 3 * 100),
+                max(0, 100 - away_defense / 3 * 100),
+                details["away_form_score"],
+            ],
+            home_name,
+            away_name,
+        )
+        st.plotly_chart(
+            radar, width="stretch", key=f"upcoming_radar_{fixture_id}"
+        )
+        st.caption(
+            "Résumé du graphique : comparaison des victoires, de l’attaque, "
+            "de la défense et de la forme des deux équipes (0 = faible, 100 = fort)."
+        )
+
+    with prediction_tab:
+        adjustment = details.get("player_adjustment")
+        if adjustment:
+            st.subheader("Impact de la forme des joueurs")
+            impact = st.columns(5)
+            impact[0].metric(
+                f"Indice {home_name}", adjustment["home_player_form_score"]
+            )
+            impact[1].metric(
+                f"Indice {away_name}", adjustment["away_player_form_score"]
+            )
+            impact[2].metric(
+                "Fiabilité joueurs", f"{round(adjustment['reliability'] * 100)} %"
+            )
+            impact[3].metric(
+                "Impact tactique",
+                f"{adjustment['tactical_probability_shift']:+.2f} pt",
+            )
+            impact[4].metric(
+                "Ajustement 1/N/2",
+                f"{adjustment['probability_shift']:+.2f} pt",
+            )
+            base_prediction = details.get("prediction_before_player_adjustment") or {}
+            st.caption(
+                "Probabilités avant joueurs : "
+                f"{base_prediction.get('home_probability', '-')} / "
+                f"{base_prediction.get('draw_probability', '-')} / "
+                f"{base_prediction.get('away_probability', '-')} %. "
+                "L’impact joueurs est plafonné à 6 points, l’impact tactique à 3 points "
+                "et leur effet combiné à 8 points."
+            )
+        st.subheader("Scores probables")
+        expected = st.columns(2)
+        expected[0].metric(
+            f"Buts attendus {home_name}",
+            score_prediction["expected_home_goals"],
+        )
+        expected[1].metric(
+            f"Buts attendus {away_name}",
+            score_prediction["expected_away_goals"],
+        )
+        score_columns = st.columns(
+            min(3, max(1, len(score_prediction["scores"])))
+        )
+        for column, score in zip(
+            score_columns, score_prediction["scores"][:3]
+        ):
+            column.metric(
+                f"Score {score['Score']}",
+                f"{score['Probabilité']} %",
+            )
+        st.markdown("#### Conseils et synthèse")
+        if api_prediction and api_refinement.get("applied"):
+            st.markdown("**Conseil API brut**")
+            st.write(
+                f"**{_translate_api_advice(api_prediction.get('api_advice'), api_prediction.get('api_winner'))}**"
+            )
+            st.caption(
+                f"Probabilités API 1/N/2 : "
+                f"{_api_probability_line(api_prediction)}"
+            )
+        elif api_prediction:
+            st.info(
+                "L’API ne fournit pas de tendance exploitable pour cette "
+                "rencontre (réponse neutre 33/33/33). Elle n’est pas utilisée "
+                "dans le calcul affiné."
+            )
+        else:
+            st.caption("Conseil API non synchronisé pour cette rencontre.")
+
+        st.markdown("**Conseil affiné de l’étude**")
+        advice_columns = st.columns(4)
+        advice_columns[0].metric(
+            "Scénario principal",
+            consensus_advice["main_label"],
+            f"{consensus_advice['main_probability']} %",
+            delta_color="off",
+        )
+        advice_columns[1].metric(
+            "Scénario de repli",
+            consensus_advice["alternative_label"],
+            f"{consensus_advice['alternative_probability']} %",
+            delta_color="off",
+        )
+        advice_columns[2].metric(
+            "Couverture des deux",
+            f"{consensus_advice['top_two_coverage']} %",
+        )
+        advice_columns[3].metric(
+            "Écart principal / repli",
+            f"{consensus_advice['margin']} points",
+        )
+        if consensus_advice["level"] == "convergence":
+            st.success(consensus_advice["message"])
+        elif consensus_advice["level"] == "prudence":
+            st.warning(consensus_advice["message"])
+        else:
+            st.info(consensus_advice["message"])
+        st.caption(
+            "Cette lecture statistique hiérarchise les scénarios ; elle ne "
+            "constitue pas une garantie de résultat."
+        )
+
+
+def show():
+    schema_guard.ensure_fixture_api_cache_tables()
+    ui.page_hero(
+        "Matchs à venir",
+        "Consultez les prochaines affiches importées dans la base, avec dates, heures et résumé prévisionnel pour chaque ligue.",
+    )
+
+    selected_fixture_id = st.session_state.get("selected_upcoming_fixture")
+    if selected_fixture_id is not None:
+        selected_fixture = _load_fixture_for_analysis(selected_fixture_id)
+        if selected_fixture is None:
+            st.session_state.pop("selected_upcoming_fixture", None)
+            st.warning("Ce match n'est plus disponible dans la base.")
+        else:
+            _render_upcoming_match_analysis(selected_fixture)
+        return
+
+    leagues = _load_leagues_with_upcoming()
+    if leagues.empty:
+        st.warning("Aucun match à venir n'est présent dans la base. Lancez une mise à jour des championnats en cours.")
+        return
+
+    league_labels = {
+        int(row.id): f"{row.name} — {row.country}" if row.country else str(row.name)
+        for row in leagues.itertuples()
+    }
+    default_leagues = (
+        [61]
+        if 61 in league_labels
+        else [
+            league_id
+            for league_id, label in league_labels.items()
+            if "ligue 1" in label.lower()
+        ][:1]
+    )
+    if not default_leagues:
+        default_leagues = list(league_labels)[:1]
+
+    ui.section_label("Configuration")
+    with st.container(border=True):
+        cols = st.columns([1.4, 0.8])
+        selected_leagues = cols[0].multiselect(
+            "Ligues",
+            options=list(league_labels.keys()),
+            default=default_leagues,
+            format_func=lambda league_id: league_labels[league_id],
+            help="La Ligue 1 est sélectionnée par défaut. Ajoutez les autres ligues que vous souhaitez afficher.",
+        )
+        days_ahead = cols[1].number_input("Jours à venir", min_value=1, max_value=365, value=365, step=7)
+        compare_api = st.checkbox("Comparer avec l'API et mettre à jour", value=False)
+
+    if not selected_leagues:
+        st.info("Sélectionnez au moins une ligue pour afficher ses matchs à venir.")
+        return
+
+    if st.session_state.get("upcoming_sync_message"):
+        st.success(st.session_state.pop("upcoming_sync_message"))
+
+    upcoming = _load_upcoming_matches(int(days_ahead), selected_leagues)
+    if upcoming.empty:
+        st.info("Aucun match à venir ne correspond aux filtres sélectionnés.")
+        return
+
+    progress_bar = st.progress(0, text="0 % — Préparation du téléchargement")
+    status_slot = st.empty()
+
+    _sync_missing_fixture_details(
+        upcoming,
+        progress_callback=lambda current, total, label: _update_progress(progress_bar, status_slot, current, total, label),
+    )
+    upcoming = _enrich_with_api_details(
+        upcoming,
+        progress_callback=lambda current, total, label: _update_progress(progress_bar, status_slot, current, total, label),
+    )
+
+    total_matches = len(upcoming)
+    league_count = upcoming["league_id"].nunique()
+    first_match = _format_datetime(upcoming["date"].min())
+    last_match = _format_datetime(upcoming["date"].max())
+    cols = st.columns(4)
+    cols[0].metric("Matchs trouvés", total_matches)
+    cols[1].metric("Ligues", league_count)
+    cols[2].metric("Premier match", first_match)
+    cols[3].metric("Dernier match", last_match)
+
+    previews = _build_previews(
+        upcoming,
+        int(len(upcoming)),
+        progress_callback=lambda current, total, label: _update_progress(progress_bar, status_slot, current, total, label),
+    )
+    progress_bar.progress(1.0, text="Chargement terminé")
+    status_slot.caption("Toutes les données demandées sont prêtes.")
+
+    with st.container(border=True):
+        st.markdown("### Disponibilité complète")
+        st.caption(
+            "Ce bouton synchronise SQLite avec l’API pour tous les matchs à venir du filtre courant: "
+            "les données identiques restent inchangées, les différences sont mises à jour."
+        )
+        if st.button("Synchroniser toutes les journées", type="primary", width="stretch"):
+            bulk_progress = st.progress(
+                0,
+                text="0 % — Synchronisation des détails des matchs",
+            )
+            bulk_status = st.empty()
+            fixture_stats = _sync_fixture_details(
+                upcoming,
+                progress_callback=lambda current, total, label: _update_progress(bulk_progress, bulk_status, current, total, label),
+            )
+            prediction_stats = _prefetch_api_predictions(
+                previews["fixture_id"].tolist(),
+                force_refresh=bool(compare_api),
+                progress_callback=lambda current, total, label: _update_progress(bulk_progress, bulk_status, current, total, label),
+            )
+            bulk_progress.progress(1.0, text="Toutes les journées sont disponibles")
+            sync_message = (
+                "Détails matchs: "
+                f"{fixture_stats['inserted']} ajout(s), {fixture_stats['updated']} mise(s) à jour, "
+                f"{fixture_stats['unchanged']} inchangé(s). "
+                "Conseils API: "
+                f"{prediction_stats['inserted']} ajout(s), {prediction_stats['updated']} mise(s) à jour, "
+                f"{prediction_stats['unchanged']} inchangé(s), {prediction_stats['unavailable']} indisponible(s)."
+            )
+            bulk_status.caption(sync_message)
+            st.session_state["upcoming_sync_message"] = f"SQLite est synchronisée avec les données API disponibles. {sync_message}"
+            st.rerun()
+
+    ui.section_label("Journées")
+    league_options = previews["Championnat"].drop_duplicates().tolist()
+    ligue_1_name = next(
+        (
+            str(row.name)
+            for row in leagues.itertuples()
+            if int(row.id) == 61
+        ),
+        "",
+    )
+    selected_league = st.selectbox(
+        "Ligue",
+        options=league_options,
+        index=(
+            league_options.index(ligue_1_name)
+            if ligue_1_name in league_options
+            else 0
+        ),
+        key="upcoming_league",
+    )
+    league_rows = previews[previews["Championnat"] == selected_league].copy()
+    round_options = sorted(
+        league_rows["Journée"].dropna().drop_duplicates().tolist(),
+        key=_round_sort_key,
+    )
+    selected_round = st.selectbox("Journée", options=round_options, key="upcoming_round")
+    round_rows = league_rows[league_rows["Journée"] == selected_round].copy().sort_values(["Date", "Heure", "Match"])
+
+    api_progress = st.progress(0, text="0 % — Vérification des conseils API")
+    api_status = st.empty()
+    api_stats = _prefetch_api_predictions(
+        round_rows["fixture_id"].tolist(),
+        force_refresh=bool(compare_api),
+        progress_callback=lambda current, total, label: _update_progress(api_progress, api_status, current, total, label),
+    )
+    api_progress.progress(1.0, text="Conseils API vérifiés")
+    api_status.caption(
+        "Conseils API: "
+        f"{api_stats['inserted']} ajouté(s), {api_stats['updated']} mis à jour, "
+        f"{api_stats['unchanged']} déjà en base, {api_stats['unavailable']} indisponible(s)."
+    )
+
+    st.caption(f"{selected_league} - {selected_round} - {len(round_rows)} match(s)")
+    _render_match_cards(round_rows, force_api_refresh=False)
+
+    st.caption(
+        "Les horaires sont affichés en UTC, comme les dates stockées depuis l’API. "
+        "Les résumés sont calculés uniquement à partir des matchs déjà importés dans SQLite."
+    )
+
+
+if __name__ == "__main__":
+    ui.run_direct_page("Matchs à venir", show)

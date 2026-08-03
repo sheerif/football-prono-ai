@@ -1,0 +1,305 @@
+import importlib
+import os
+
+import pandas as pd
+import streamlit as st
+
+from components import ui
+from database.database import engine
+from services import background_jobs, full_sync_service, import_service, sync_registry
+from services.season_format import season_period, season_range
+
+
+LEAGUE_PRESETS = {
+    "Ligue des Champions": 2,
+    "Ligue 1": 61,
+    "Premier League": 39,
+    "La Liga": 140,
+    "Serie A": 135,
+    "Bundesliga": 78,
+}
+
+
+def _summary_counts() -> dict[str, int]:
+    try:
+        leagues = pd.read_sql("SELECT COUNT(*) AS count FROM leagues", engine).iloc[0]["count"]
+        teams = pd.read_sql("SELECT COUNT(*) AS count FROM teams", engine).iloc[0]["count"]
+        matches = pd.read_sql("SELECT COUNT(*) AS count FROM matches", engine).iloc[0]["count"]
+        standings = pd.read_sql("SELECT COUNT(*) AS count FROM standings", engine).iloc[0]["count"]
+        players = pd.read_sql("SELECT COUNT(*) AS count FROM players", engine).iloc[0]["count"]
+        lineups = pd.read_sql(
+            """
+            SELECT
+                (SELECT COUNT(*) FROM fixture_lineups)
+                + (SELECT COUNT(*) FROM projected_lineups) AS count
+            """,
+            engine,
+        ).iloc[0]["count"]
+        analyses = pd.read_sql("SELECT COUNT(*) AS count FROM match_analysis_snapshots", engine).iloc[0]["count"]
+    except Exception:
+        leagues = teams = matches = standings = players = lineups = analyses = 0
+    return {
+        "leagues": int(leagues),
+        "teams": int(teams),
+        "matches": int(matches),
+        "standings": int(standings),
+        "players": int(players),
+        "lineups": int(lineups),
+        "analyses": int(analyses),
+    }
+
+
+def _format_datetime(value):
+    timestamp = pd.to_datetime(value, errors="coerce")
+    if pd.isna(timestamp):
+        return value or "-"
+    return timestamp.strftime("%d/%m/%Y %H:%M")
+
+
+def _recent_logs(limit: int = 6) -> pd.DataFrame:
+    try:
+        logs = pd.read_sql(
+            """
+            SELECT event_type, status, started_at, finished_at, reason, error
+            FROM update_log
+            ORDER BY finished_at DESC, id DESC
+            LIMIT :limit
+            """,
+            engine,
+            params={"limit": int(limit)},
+        )
+    except Exception:
+        return pd.DataFrame()
+    if logs.empty:
+        return logs
+    return pd.DataFrame(
+        [
+            {
+                "Type": row.event_type,
+                "Statut": row.status,
+                "Début": _format_datetime(row.started_at),
+                "Fin": _format_datetime(row.finished_at),
+                "Message": row.error or row.reason or "",
+            }
+            for row in logs.itertuples()
+        ]
+    )
+
+
+def _render_jobs():
+    jobs = background_jobs.list_jobs()
+    active = [job for job in jobs if job.get("status") == "running"]
+    finished = [job for job in jobs if job.get("status") != "running"][:5]
+
+    ui.section_label("Téléchargements")
+    if not active:
+        st.info("Aucun téléchargement en cours.")
+    for job in active:
+        with st.container(border=True):
+            st.markdown(f"### {job.get('label', 'Mise à jour')}")
+            progress = float(job.get("progress") or 0)
+            st.progress(progress, text=ui.friendly_progress_message(job.get("message"), progress * 100))
+            st.caption("La mise à jour continue automatiquement en arrière-plan.")
+
+    if finished:
+        with st.expander("Dernières tâches terminées", expanded=False):
+            rows = []
+            for job in finished:
+                rows.append(
+                    {
+                        "Tâche": job.get("label"),
+                        "Statut": "Erreur" if job.get("status") == "error" else "Terminée",
+                        "Fin": _format_datetime(job.get("finished_at")),
+                        "Message": job.get("error") or job.get("message"),
+                    }
+                )
+            st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+
+
+def _launch_import(label: str, league_ids: list[int], seasons: list[int], pause: float = 2.0, max_retries: int = 6):
+    job_id = background_jobs.start_manual_import(
+        league_ids,
+        seasons=seasons,
+        pause=pause,
+        max_retries=max_retries,
+        selected_presets=[label],
+    )
+    st.success("Mise à jour lancée. Vous pouvez continuer à utiliser l’application.")
+
+
+def _start_prediction_sync() -> str:
+    """Lance la synchronisation même après un rechargement partiel Streamlit."""
+    starter = getattr(background_jobs, "start_prediction_sync", None)
+    sync_predictions = getattr(
+        full_sync_service, "sync_all_upcoming_predictions", None
+    )
+    if not callable(starter) or not callable(sync_predictions):
+        importlib.invalidate_caches()
+        importlib.reload(full_sync_service)
+        importlib.reload(background_jobs)
+        starter = getattr(background_jobs, "start_prediction_sync", None)
+    if not callable(starter):
+        raise RuntimeError(
+            "Le service de synchronisation n’est pas encore disponible. "
+            "Redémarrez l’application puis réessayez."
+        )
+    return starter()
+
+
+def show():
+    ui.page_hero(
+        "Mise à jour",
+        "Lancez une mise à jour et suivez son avancement simplement.",
+    )
+
+    counts = _summary_counts()
+    database_kpis = [
+            {"label": "Championnats", "value": counts["leagues"], "caption": "Compétitions suivies"},
+            {"label": "Équipes", "value": counts["teams"], "caption": "Clubs enregistrés"},
+            {"label": "Matchs", "value": counts["matches"], "caption": "Rencontres en base"},
+            {"label": "Classements", "value": counts["standings"], "caption": "Positions disponibles"},
+            {"label": "Joueurs", "value": counts["players"], "caption": "Profils persistés"},
+            {"label": "Compositions", "value": counts["lineups"], "caption": "Onze officiels ou projetés"},
+            {"label": "Analyses", "value": counts["analyses"], "caption": "Études conservées"},
+        ]
+    try:
+        ui.kpi_grid(database_kpis, columns=4)
+    except TypeError:
+        ui.kpi_grid(database_kpis)
+
+    _render_jobs()
+    data_job_active = background_jobs.data_job_running()
+
+    ui.section_label("Synchronisation globale")
+    with st.container(border=True):
+        st.markdown("### Tout mettre à jour")
+        st.write(
+            "L’application ajoute les informations manquantes et actualise les "
+            "données récentes déjà enregistrées."
+        )
+        api_key_missing = not (os.getenv("API_FOOTBALL_KEY") or "").strip()
+        if api_key_missing:
+            st.error("Synchronisation indisponible : la clé API_FOOTBALL_KEY est absente. Ajoutez-la dans .env ou les secrets Streamlit.")
+        if st.button(
+            "↻ Tout mettre à jour en arrière-plan",
+            type="primary",
+            width="stretch",
+            disabled=api_key_missing or data_job_active,
+        ):
+            job_id = background_jobs.start_full_sync()
+            st.success("Mise à jour lancée. Vous pouvez continuer à utiliser l’application.")
+        registry_counts = sync_registry.counts()
+        if registry_counts:
+            st.caption(
+                "Avancement : "
+                f"{registry_counts.get('complete', 0)} terminé(s) · "
+                f"{registry_counts.get('running', 0)} en cours · "
+                f"{registry_counts.get('unavailable', 0)} indisponible(s) · "
+                f"{registry_counts.get('error', 0)} en erreur."
+            )
+        st.caption(
+            "Les éléments non disponibles seront repris lors de la prochaine mise à jour."
+        )
+
+    ui.section_label("Actions simples")
+    config = import_service.get_auto_refresh_config()
+    end_season = int(config["end_season"])
+    recent_start = max(config["start_season"], end_season - 1)
+
+    with st.container(border=True):
+        st.markdown("### Conseils API des matchs à venir")
+        coverage = full_sync_service.prediction_coverage()
+        st.write(
+            f"{coverage['available']} conseil(s) disponible(s) sur "
+            f"{coverage['total']} match(s) futur(s) en base "
+            f"({coverage['percentage']} %)."
+        )
+        st.caption(
+            "La synchronisation reprend là où elle s’est arrêtée, ignore les "
+            "conseils déjà enregistrés et respecte la limite quotidienne de l’API."
+        )
+        if st.button(
+            "Télécharger tous les conseils API",
+            type="primary",
+            width="stretch",
+            disabled=api_key_missing or data_job_active,
+        ):
+            try:
+                _start_prediction_sync()
+            except Exception as exc:
+                st.error(str(exc))
+            else:
+                st.success(
+                    "Téléchargement lancé en arrière-plan. Les analyses utiliseront "
+                    "automatiquement les conseils disponibles."
+                )
+
+    with st.container(border=True):
+        st.markdown("### Mises à jour recommandées")
+        if data_job_active:
+            st.info(
+                "Une mise à jour des données est déjà en cours. Les autres "
+                "imports seront disponibles lorsqu’elle sera terminée."
+            )
+        action_cols = st.columns(3)
+        if action_cols[0].button(
+            "Mettre à jour les saisons récentes",
+            type="primary",
+            width="stretch",
+            disabled=data_job_active,
+        ):
+            seasons = list(range(recent_start, end_season + 1))
+            _launch_import("Saisons récentes", list(LEAGUE_PRESETS.values()), seasons)
+        if action_cols[1].button(
+            "Mettre à jour la saison en cours",
+            width="stretch",
+            disabled=data_job_active,
+        ):
+            _launch_import("Saison en cours", list(LEAGUE_PRESETS.values()), [end_season])
+        if action_cols[2].button(
+            "Mettre à jour Ligue 1",
+            width="stretch",
+            disabled=data_job_active,
+        ):
+            seasons = list(range(recent_start, end_season + 1))
+            _launch_import("Ligue 1", [LEAGUE_PRESETS["Ligue 1"]], seasons)
+        st.caption(
+            f"Saisons récentes: {season_range(range(recent_start, end_season + 1))}. "
+            "Les imports continuent en arrière-plan."
+        )
+
+    with st.expander("Import personnalisé", expanded=False):
+        selected_labels = st.multiselect(
+            "Ligues",
+            options=list(LEAGUE_PRESETS.keys()),
+            default=list(LEAGUE_PRESETS.keys()),
+        )
+        col1, col2 = st.columns(2)
+        start_season = col1.number_input("Début", min_value=2016, max_value=end_season, value=recent_start, step=1)
+        selected_end = col2.number_input("Fin", min_value=2016, max_value=end_season, value=end_season, step=1)
+        pause = st.number_input("Pause entre requêtes API", min_value=0.5, max_value=10.0, value=2.0, step=0.5)
+        if st.button(
+            "Lancer l’import personnalisé",
+            width="stretch",
+            disabled=data_job_active,
+        ):
+            if start_season > selected_end:
+                st.error("La saison de début doit être inférieure ou égale à la saison de fin.")
+            else:
+                _launch_import(
+                    "Import personnalisé",
+                    [LEAGUE_PRESETS[label] for label in selected_labels],
+                    list(range(int(start_season), int(selected_end) + 1)),
+                    pause=float(pause),
+                )
+
+    ui.section_label("Historique récent")
+    logs = _recent_logs()
+    if logs.empty:
+        st.info("Aucun historique enregistré.")
+    else:
+        st.dataframe(logs, hide_index=True, width="stretch")
+
+
+if __name__ == "__main__":
+    ui.run_direct_page("Mise à jour", show)
