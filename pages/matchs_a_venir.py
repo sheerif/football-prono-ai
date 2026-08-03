@@ -1,6 +1,7 @@
 import datetime
 import hashlib
 import html
+import inspect
 import json
 import pandas as pd
 import re
@@ -10,7 +11,7 @@ from sqlalchemy import text
 from components import charts, tactical, ui
 from database.database import engine
 from services.api_football import ApiFootballClient
-from services import analysis_store, cross_insight_service, final_prediction_service, lineup_service, prediction_helpers
+from services import analysis_store, cross_insight_service, final_prediction_service, lineup_service, prediction_helpers, ranking_service
 from services import schema_guard
 from services.season_format import season_period
 
@@ -113,6 +114,29 @@ def _load_prediction_context(league_id: int, match_date) -> pd.DataFrame:
         )
     except Exception:
         return pd.DataFrame()
+
+
+def _calculate_final_prediction(*args, match_date=None, **kwargs) -> dict:
+    """Appelle le service récent ou son ancienne signature mise en cache."""
+    calculate = final_prediction_service.calculate
+    try:
+        parameters = inspect.signature(calculate).parameters
+    except (TypeError, ValueError):
+        parameters = {}
+    if match_date is not None and (
+        "match_date" in parameters
+        or any(
+            parameter.kind is inspect.Parameter.VAR_KEYWORD
+            for parameter in parameters.values()
+        )
+    ):
+        kwargs["match_date"] = match_date
+    final = calculate(*args, **kwargs)
+    prediction = final.get("prediction") or {}
+    if "ranking_score" not in prediction:
+        final = dict(final)
+        final["prediction"] = ranking_service.attach_ranking(prediction)
+    return final
 
 
 def _format_datetime(value) -> str:
@@ -978,7 +1002,7 @@ def _build_match_preview(match, context_df: pd.DataFrame) -> dict:
     api_signal = cross_insight_service.load_fixture_api_signal(
         int(match.fixture_id)
     )
-    final = final_prediction_service.calculate(
+    final = _calculate_final_prediction(
         context_df,
         home_team_id,
         away_team_id,
@@ -1605,7 +1629,7 @@ def _render_upcoming_match_analysis(fixture: pd.Series):
     )
     api_signal = cross_insight_service.load_fixture_api_signal(fixture_id)
     api_prediction = _api_prediction_for_display(api_signal)
-    final = final_prediction_service.calculate(
+    final = _calculate_final_prediction(
         context_df,
         home_team,
         away_team,

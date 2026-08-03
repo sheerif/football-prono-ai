@@ -10,10 +10,48 @@ from services import (
     prediction_helpers,
     prediction_service,
 )
-from pages import matchs_a_venir
+from pages import matchs_a_venir, prediction_ia
 
 
 class PredictionBusinessRuleTests(unittest.TestCase):
+    def test_pages_support_legacy_final_service_signature_during_deploy(self):
+        def legacy_calculate(
+            matches_df,
+            home_team,
+            away_team,
+            home_name,
+            away_name,
+            *,
+            player_intelligence=None,
+            api_signal=None,
+            score_top_n=6,
+        ):
+            return {
+                "prediction": {
+                    "home_probability": 50,
+                    "draw_probability": 30,
+                    "away_probability": 20,
+                    "confidence": 50,
+                }
+            }
+
+        for page in (matchs_a_venir, prediction_ia):
+            with patch.object(
+                page.final_prediction_service,
+                "calculate",
+                legacy_calculate,
+            ):
+                final = page._calculate_final_prediction(
+                    pd.DataFrame(),
+                    1,
+                    2,
+                    "Domicile",
+                    "Extérieur",
+                    match_date="2026-08-21T18:45:00Z",
+                )
+            self.assertEqual(final["prediction"]["confidence"], 50)
+            self.assertIn("ranking_score", final["prediction"])
+
     def test_upcoming_api_signal_is_initialized_for_prediction_display(self):
         self.assertEqual(matchs_a_venir._api_prediction_for_display(None), {})
         display = matchs_a_venir._api_prediction_for_display(
