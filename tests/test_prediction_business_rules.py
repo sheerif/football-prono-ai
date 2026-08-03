@@ -14,6 +14,23 @@ from pages import matchs_a_venir
 
 
 class PredictionBusinessRuleTests(unittest.TestCase):
+    def test_upcoming_api_signal_is_initialized_for_prediction_display(self):
+        self.assertEqual(matchs_a_venir._api_prediction_for_display(None), {})
+        display = matchs_a_venir._api_prediction_for_display(
+            {
+                "advice": "Home or draw",
+                "winner": "Ajaccio",
+                "home_probability": 45,
+                "draw_probability": 30,
+                "away_probability": 25,
+                "total_home": "55%",
+                "total_away": "45%",
+            }
+        )
+        self.assertEqual(display["api_advice"], "Home or draw")
+        self.assertEqual(display["api_home_probability"], 45)
+        self.assertEqual(display["api_total_away"], "45%")
+
     def test_upcoming_page_falls_back_when_shared_history_loader_is_missing(self):
         expected = pd.DataFrame([{"fixture_id": 1}])
         with (
