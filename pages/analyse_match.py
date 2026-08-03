@@ -3,7 +3,7 @@ import html
 import streamlit as st
 import pandas as pd
 from database.database import engine
-from components import charts, tactical, ui
+from components import charts, ranking_summary, tactical, ui
 from services import analysis_store, cross_insight_service, final_prediction_service, lineup_service, prediction_service, stats_service
 from services import prediction_helpers
 from services.season_format import season_list, season_period, season_range
@@ -1041,7 +1041,7 @@ def _legacy_show():
         pred_cols[3].metric(
             "Probabilité scénario principal", f"{pred.get('confidence')} %"
         )
-        ui.render_ranking_summary(pred)
+        ranking_summary.render(pred)
 
         favorite = home_view['team_name'] if pred['home_probability'] > pred['away_probability'] and pred['home_probability'] > pred['draw_probability'] else away_view['team_name'] if pred['away_probability'] > pred['home_probability'] and pred['away_probability'] > pred['draw_probability'] else 'Match équilibré'
         if favorite == 'Match équilibré':
@@ -1551,7 +1551,7 @@ def show():
             "Probabilité scénario principal",
             f"{prediction.get('confidence')} %",
         )
-        ui.render_ranking_summary(prediction)
+        ranking_summary.render(prediction)
         ui.render_api_refinement(api_refinement, consensus_advice)
 
         reasons = []

@@ -8,7 +8,7 @@ import re
 import streamlit as st
 from sqlalchemy import text
 
-from components import charts, tactical, ui
+from components import charts, ranking_summary, tactical, ui
 from database.database import engine
 from services.api_football import ApiFootballClient
 from services import analysis_store, cross_insight_service, final_prediction_service, lineup_service, prediction_helpers, ranking_service
@@ -1782,7 +1782,7 @@ def _render_upcoming_match_analysis(fixture: pd.Series):
             "Probabilité scénario principal",
             f"{prediction['confidence']} %",
         )
-        ui.render_ranking_summary(prediction)
+        ranking_summary.render(prediction)
         ui.render_api_refinement(api_refinement, consensus_advice)
         adjustment = details.get("player_adjustment")
         if adjustment:
