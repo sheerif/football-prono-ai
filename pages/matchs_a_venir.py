@@ -10,7 +10,7 @@ from sqlalchemy import text
 from components import charts, tactical, ui
 from database.database import engine
 from services.api_football import ApiFootballClient
-from services import analysis_store, cross_insight_service, lineup_service, prediction_helpers, prediction_service
+from services import analysis_store, cross_insight_service, final_prediction_service, lineup_service, prediction_helpers
 from services import schema_guard
 from services.season_format import season_period
 
@@ -86,19 +86,7 @@ def _load_leagues_with_upcoming() -> pd.DataFrame:
 
 
 def _load_prediction_context(league_id: int, match_date) -> pd.DataFrame:
-    query = text(
-        """
-        SELECT *
-        FROM matches
-        WHERE league_id = :league_id
-          AND date < :match_date
-        ORDER BY date DESC
-        """
-    )
-    try:
-        return pd.read_sql(query, engine, params={"league_id": int(league_id), "match_date": str(match_date)})
-    except Exception:
-        return pd.DataFrame()
+    return prediction_helpers.load_historical_context(league_id, match_date)
 
 
 def _format_datetime(value) -> str:
@@ -959,42 +947,23 @@ def _build_match_preview(match, context_df: pd.DataFrame) -> dict:
         season=int(match.season),
         match_date=match.date,
     )
-    prediction, _, _, details = prediction_helpers.predict_match(
-        context_df,
-        home_team_id,
-        away_team_id,
-        player_intelligence=player_intelligence,
-    )
     api_signal = cross_insight_service.load_fixture_api_signal(
         int(match.fixture_id)
     )
-    prediction, api_refinement = prediction_service.blend_with_api_prediction(
-        prediction,
-        api_signal,
-    )
-    consensus_advice = prediction_service.build_consensus_advice(
-        prediction,
-        api_refinement,
-        home_name,
-        away_name,
-    )
-    details["api_refinement"] = api_refinement
-    details["consensus_advice"] = consensus_advice
-    player_reliability = float(player_intelligence.get("reliability") or 0)
-    score_prediction = prediction_service.predict_scorelines(
+    final = final_prediction_service.calculate(
         context_df,
         home_team_id,
         away_team_id,
-        home_form_score=details["home_form_score"] / 100,
-        away_form_score=details["away_form_score"] / 100,
-        home_player_factor=_player_goal_factor(
-            player_intelligence.get("home"), player_reliability
-        ),
-        away_player_factor=_player_goal_factor(
-            player_intelligence.get("away"), player_reliability
-        ),
-        top_n=12,
+        home_name,
+        away_name,
+        player_intelligence=player_intelligence,
+        api_signal=api_signal,
+        score_top_n=12,
     )
+    prediction = final["prediction"]
+    details = final["model_details"]
+    consensus_advice = final["consensus_advice"]
+    score_prediction = final["score_prediction"]
     analysis_store.save_analysis_snapshot(
         analysis_type="aperçu_match_à_venir",
         fixture_id=int(match.fixture_id),
@@ -1555,14 +1524,6 @@ def _render_team_lineup(team: dict | None, team_name: str):
                 st.dataframe(_lineup_table(substitutes), hide_index=True, width="stretch")
 
 
-def _player_goal_factor(team: dict | None, reliability: float) -> float:
-    if not team:
-        return 1.0
-    score = float(team.get("form_score") or 50)
-    reliability = max(0.0, min(1.0, float(reliability or 0)))
-    return max(0.92, min(1.08, 1 + ((score - 50) / 50) * 0.08 * reliability))
-
-
 def _render_upcoming_match_analysis(fixture: pd.Series):
     from pages import analyse_match as match_analysis
 
@@ -1596,43 +1557,24 @@ def _render_upcoming_match_analysis(fixture: pd.Series):
         season=int(fixture["season"]),
         match_date=fixture["date"],
     )
-    prediction, home_stats, away_stats, details = (
-        prediction_helpers.predict_match(
-            context_df,
-            home_team,
-            away_team,
-            player_intelligence=player_intelligence,
-        )
-    )
-    internal_prediction = dict(prediction)
     api_signal = cross_insight_service.load_fixture_api_signal(fixture_id)
-    prediction, api_refinement = prediction_service.blend_with_api_prediction(
-        prediction,
-        api_signal,
-    )
-    consensus_advice = prediction_service.build_consensus_advice(
-        prediction,
-        api_refinement,
-        home_name,
-        away_name,
-    )
-    details["api_refinement"] = api_refinement
-    details["consensus_advice"] = consensus_advice
-    player_reliability = float(player_intelligence.get("reliability") or 0)
-    score_prediction = prediction_service.predict_scorelines(
+    final = final_prediction_service.calculate(
         context_df,
         home_team,
         away_team,
-        home_form_score=details["home_form_score"] / 100,
-        away_form_score=details["away_form_score"] / 100,
-        home_player_factor=_player_goal_factor(
-            player_intelligence.get("home"), player_reliability
-        ),
-        away_player_factor=_player_goal_factor(
-            player_intelligence.get("away"), player_reliability
-        ),
-        top_n=6,
+        home_name,
+        away_name,
+        player_intelligence=player_intelligence,
+        api_signal=api_signal,
     )
+    prediction = final["prediction"]
+    internal_prediction = final["internal_prediction"]
+    home_stats = final["home_stats"]
+    away_stats = final["away_stats"]
+    details = final["model_details"]
+    api_refinement = final["api_refinement"]
+    consensus_advice = final["consensus_advice"]
+    score_prediction = final["score_prediction"]
     cross_insight = cross_insight_service.build_cross_insight(
         matches_df=context_df,
         home_team=home_team,

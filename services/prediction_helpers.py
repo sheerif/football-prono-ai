@@ -107,6 +107,28 @@ def load_matches(league_id: int, seasons):
         return pd.DataFrame()
 
 
+def load_historical_context(league_id: int, kickoff) -> pd.DataFrame:
+    """Charge le contexte canonique d'une fixture, strictement avant son début."""
+    try:
+        return pd.read_sql(
+            text(
+                """
+                SELECT *
+                FROM matches
+                WHERE league_id = :league_id
+                  AND date < :kickoff
+                  AND home_goals IS NOT NULL
+                  AND away_goals IS NOT NULL
+                ORDER BY date DESC, fixture_id DESC
+                """
+            ),
+            engine,
+            params={"league_id": int(league_id), "kickoff": str(kickoff)},
+        )
+    except Exception:
+        return pd.DataFrame()
+
+
 def upcoming_fixtures(
     matches_df: pd.DataFrame,
     team_ids=None,
