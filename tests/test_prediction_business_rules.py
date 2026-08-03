@@ -3,10 +3,38 @@ from unittest.mock import patch
 
 import pandas as pd
 
-from services import cross_insight_service, final_prediction_service, prediction_helpers, prediction_service
+from services import (
+    cross_insight_service,
+    final_prediction_service,
+    lineup_service,
+    prediction_helpers,
+    prediction_service,
+)
+from pages import matchs_a_venir
 
 
 class PredictionBusinessRuleTests(unittest.TestCase):
+    def test_upcoming_page_falls_back_when_shared_history_loader_is_missing(self):
+        expected = pd.DataFrame([{"fixture_id": 1}])
+        with (
+            patch.object(
+                matchs_a_venir.prediction_helpers,
+                "load_historical_context",
+                None,
+            ),
+            patch.object(pd, "read_sql", return_value=expected) as read_sql,
+        ):
+            result = matchs_a_venir._load_prediction_context(
+                61,
+                "2026-08-21T18:45:00Z",
+            )
+
+        self.assertIs(result, expected)
+        self.assertEqual(
+            read_sql.call_args.kwargs["params"],
+            {"league_id": 61, "kickoff": "2026-08-21T18:45:00Z"},
+        )
+
     def test_load_matches_still_returns_selected_seasons(self):
         expected = pd.DataFrame([{"fixture_id": 1}])
         with patch.object(pd, "read_sql", return_value=expected) as read_sql:
@@ -62,6 +90,70 @@ class PredictionBusinessRuleTests(unittest.TestCase):
             result["model_details"]["consensus_advice"],
             result["consensus_advice"],
         )
+
+    def test_final_service_keeps_internal_prediction_with_older_modules(self):
+        internal = {
+            "home_probability": 48,
+            "draw_probability": 28,
+            "away_probability": 24,
+            "confidence": 48,
+        }
+        details = {
+            "home_form_score": 60,
+            "away_form_score": 40,
+        }
+
+        def legacy_scorelines(
+            matches_df,
+            home_team,
+            away_team,
+            home_form_score=0.5,
+            away_form_score=0.5,
+            top_n=6,
+        ):
+            return {
+                "expected_home_goals": 1.2,
+                "expected_away_goals": 0.8,
+                "scores": [],
+                "method": "legacy",
+            }
+
+        with (
+            patch.object(
+                prediction_helpers,
+                "predict_match",
+                return_value=(internal, {"played": 10}, {"played": 10}, details),
+            ),
+            patch.object(
+                prediction_service,
+                "blend_with_api_prediction",
+                None,
+            ),
+            patch.object(
+                prediction_service,
+                "build_consensus_advice",
+                None,
+            ),
+            patch.object(
+                prediction_service,
+                "predict_scorelines",
+                legacy_scorelines,
+            ),
+            patch.object(lineup_service, "player_goal_factors", None),
+        ):
+            result = final_prediction_service.calculate(
+                pd.DataFrame(),
+                1,
+                2,
+                "Domicile",
+                "Extérieur",
+                api_signal={"home_probability": 70},
+            )
+
+        self.assertEqual(result["prediction"]["home_probability"], 48)
+        self.assertFalse(result["api_refinement"]["applied"])
+        self.assertEqual(result["consensus_advice"]["main_code"], "1")
+        self.assertEqual(result["score_prediction"]["method"], "legacy")
 
     def test_api_probabilities_refine_without_overriding_internal_model(self):
         refined, details = prediction_service.blend_with_api_prediction(

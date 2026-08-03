@@ -1,6 +1,8 @@
+import importlib
+import os
+
 import pandas as pd
 import streamlit as st
-import os
 
 from components import ui
 from database.database import engine
@@ -125,6 +127,25 @@ def _launch_import(label: str, league_ids: list[int], seasons: list[int], pause:
     st.success("Mise à jour lancée. Vous pouvez continuer à utiliser l’application.")
 
 
+def _start_prediction_sync() -> str:
+    """Lance la synchronisation même après un rechargement partiel Streamlit."""
+    starter = getattr(background_jobs, "start_prediction_sync", None)
+    sync_predictions = getattr(
+        full_sync_service, "sync_all_upcoming_predictions", None
+    )
+    if not callable(starter) or not callable(sync_predictions):
+        importlib.invalidate_caches()
+        importlib.reload(full_sync_service)
+        importlib.reload(background_jobs)
+        starter = getattr(background_jobs, "start_prediction_sync", None)
+    if not callable(starter):
+        raise RuntimeError(
+            "Le service de synchronisation n’est pas encore disponible. "
+            "Redémarrez l’application puis réessayez."
+        )
+    return starter()
+
+
 def show():
     ui.page_hero(
         "Mise à jour",
@@ -203,11 +224,15 @@ def show():
             width="stretch",
             disabled=api_key_missing or data_job_active,
         ):
-            background_jobs.start_prediction_sync()
-            st.success(
-                "Téléchargement lancé en arrière-plan. Les analyses utiliseront "
-                "automatiquement les conseils disponibles."
-            )
+            try:
+                _start_prediction_sync()
+            except Exception as exc:
+                st.error(str(exc))
+            else:
+                st.success(
+                    "Téléchargement lancé en arrière-plan. Les analyses utiliseront "
+                    "automatiquement les conseils disponibles."
+                )
 
     with st.container(border=True):
         st.markdown("### Mises à jour recommandées")

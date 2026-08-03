@@ -2,6 +2,7 @@ import os
 import unittest
 from unittest.mock import Mock, patch
 
+from pages import data_management
 from services import background_jobs, full_sync_service
 
 
@@ -113,6 +114,28 @@ class PredictionSyncTests(unittest.TestCase):
         self.assertTrue(first_created)
         self.assertFalse(second_created)
         self.assertEqual(first, second)
+
+    def test_update_page_refreshes_stale_prediction_services(self):
+        starter = Mock(return_value="prediction-job")
+
+        def refresh(module):
+            if module is background_jobs:
+                module.start_prediction_sync = starter
+            elif module is full_sync_service:
+                module.sync_all_upcoming_predictions = Mock()
+            return module
+
+        with (
+            patch.object(background_jobs, "start_prediction_sync", None),
+            patch.object(full_sync_service, "sync_all_upcoming_predictions", None),
+            patch.object(data_management.importlib, "invalidate_caches"),
+            patch.object(data_management.importlib, "reload", side_effect=refresh) as reload_module,
+        ):
+            job_id = data_management._start_prediction_sync()
+
+        self.assertEqual(job_id, "prediction-job")
+        starter.assert_called_once_with()
+        self.assertEqual(reload_module.call_count, 2)
 
 
 if __name__ == "__main__":
