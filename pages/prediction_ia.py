@@ -1,9 +1,34 @@
+import inspect
+
 import pandas as pd
 import streamlit as st
 
 from components import tactical, ui
-from services import analysis_store, cross_insight_service, final_prediction_service, lineup_service, prediction_helpers
+from services import analysis_store, cross_insight_service, final_prediction_service, lineup_service, prediction_helpers, ranking_service
 from services.season_format import season_period
+
+
+def _calculate_final_prediction(*args, match_date=None, **kwargs) -> dict:
+    """Reste compatible avec un service encore en cache pendant le déploiement."""
+    calculate = final_prediction_service.calculate
+    try:
+        parameters = inspect.signature(calculate).parameters
+    except (TypeError, ValueError):
+        parameters = {}
+    if match_date is not None and (
+        "match_date" in parameters
+        or any(
+            parameter.kind is inspect.Parameter.VAR_KEYWORD
+            for parameter in parameters.values()
+        )
+    ):
+        kwargs["match_date"] = match_date
+    final = calculate(*args, **kwargs)
+    prediction = final.get("prediction") or {}
+    if "ranking_score" not in prediction:
+        final = dict(final)
+        final["prediction"] = ranking_service.attach_ranking(prediction)
+    return final
 
 
 def _stats_table(stats: dict) -> pd.DataFrame:
@@ -372,7 +397,7 @@ def _show_match_prediction():
             home_team,
             away_team,
         )
-        final = final_prediction_service.calculate(
+        final = _calculate_final_prediction(
             matches_df,
             home_team,
             away_team,
@@ -380,7 +405,6 @@ def _show_match_prediction():
             away_name,
             player_intelligence=player_intelligence,
             api_signal=api_signal,
-            match_date=match.date,
         )
         pred = final["prediction"]
         internal_prediction = final["internal_prediction"]
@@ -642,7 +666,7 @@ def _build_rankings(
         api_signal = cross_insight_service.load_fixture_api_signal(fixture_id)
         home_name = team_options[home_team]
         away_name = team_options[away_team]
-        final = final_prediction_service.calculate(
+        final = _calculate_final_prediction(
             historical_context,
             home_team,
             away_team,
@@ -650,6 +674,7 @@ def _build_rankings(
             away_name,
             player_intelligence=player_intelligence,
             api_signal=api_signal,
+            match_date=match.date,
         )
         pred = final["prediction"]
         details = final["model_details"]
