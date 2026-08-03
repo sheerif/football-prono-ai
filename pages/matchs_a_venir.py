@@ -1096,6 +1096,21 @@ def _api_probability_line(prediction: dict) -> str:
     )
 
 
+def _api_prediction_for_display(api_signal: dict | None) -> dict:
+    """Adapte le signal partagé aux anciennes clés utilisées par l’affichage."""
+    if not api_signal:
+        return {}
+    return {
+        "api_advice": api_signal.get("advice"),
+        "api_winner": api_signal.get("winner"),
+        "api_home_probability": api_signal.get("home_probability"),
+        "api_draw_probability": api_signal.get("draw_probability"),
+        "api_away_probability": api_signal.get("away_probability"),
+        "api_total_home": api_signal.get("total_home"),
+        "api_total_away": api_signal.get("total_away"),
+    }
+
+
 def _translate_api_advice(advice: str | None, winner: str | None = None) -> str:
     text_value = _display_text(advice) or _display_text(winner) or "Non disponible"
     replacements = [
@@ -1584,6 +1599,7 @@ def _render_upcoming_match_analysis(fixture: pd.Series):
         match_date=fixture["date"],
     )
     api_signal = cross_insight_service.load_fixture_api_signal(fixture_id)
+    api_prediction = _api_prediction_for_display(api_signal)
     final = final_prediction_service.calculate(
         context_df,
         home_team,
