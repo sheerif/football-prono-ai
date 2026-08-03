@@ -3,7 +3,7 @@ import inspect
 import pandas as pd
 import streamlit as st
 
-from components import tactical, ui
+from components import ranking_summary, tactical, ui
 from services import analysis_store, cross_insight_service, final_prediction_service, lineup_service, prediction_helpers, ranking_service
 from services.season_format import season_period
 
@@ -488,7 +488,7 @@ def _show_match_prediction():
         except TypeError:
             ui.kpi_grid(result_kpis)
 
-        ui.render_ranking_summary(pred)
+        ranking_summary.render(pred)
         st.dataframe(_glossary_table(), hide_index=True, width="stretch")
         ui.render_api_refinement(api_refinement, consensus_advice)
 
