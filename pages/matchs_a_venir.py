@@ -86,7 +86,33 @@ def _load_leagues_with_upcoming() -> pd.DataFrame:
 
 
 def _load_prediction_context(league_id: int, match_date) -> pd.DataFrame:
-    return prediction_helpers.load_historical_context(league_id, match_date)
+    shared_loader = getattr(prediction_helpers, "load_historical_context", None)
+    if callable(shared_loader):
+        return shared_loader(league_id, match_date)
+
+    # Compatibilité avec une instance Streamlit ayant encore une ancienne
+    # version de prediction_helpers en mémoire pendant un redéploiement.
+    try:
+        return pd.read_sql(
+            text(
+                """
+                SELECT *
+                FROM matches
+                WHERE league_id = :league_id
+                  AND date < :kickoff
+                  AND home_goals IS NOT NULL
+                  AND away_goals IS NOT NULL
+                ORDER BY date DESC, fixture_id DESC
+                """
+            ),
+            engine,
+            params={
+                "league_id": int(league_id),
+                "kickoff": str(match_date),
+            },
+        )
+    except Exception:
+        return pd.DataFrame()
 
 
 def _format_datetime(value) -> str:
