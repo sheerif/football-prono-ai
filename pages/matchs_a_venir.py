@@ -11,7 +11,7 @@ from sqlalchemy import text
 from components import charts, ranking_summary, tactical, ui
 from database.database import engine
 from services.api_football import ApiFootballClient
-from services import analysis_store, cross_insight_service, final_prediction_service, lineup_service, prediction_helpers, ranking_service
+from services import analysis_store, cross_insight_service, final_prediction_service, lineup_service, pdf_report_service, prediction_helpers, ranking_service
 from services import schema_guard
 from services.season_format import season_period
 
@@ -2244,6 +2244,139 @@ def show():
 
     st.caption(f"{selected_league} - {selected_round} - {len(round_rows)} match(s)")
     _render_match_cards(round_rows, force_api_refresh=False)
+
+    with st.expander("Rapport PDF visuel — saisons et journées", expanded=False):
+        st.markdown("### Télécharger les prédictions d’une journée")
+        st.caption(
+            "Le PDF inclut les probabilités 1/N/2, le score probable, les buts attendus, "
+            "la solidité, le risque et le marché recommandé. Les saisons passées sont "
+            "recalculées chronologiquement, avant chaque coup d’envoi."
+        )
+        try:
+            report_leagues = pdf_report_service.available_leagues()
+        except Exception:
+            report_leagues = pd.DataFrame(columns=["id", "name", "country"])
+        if report_leagues.empty:
+            st.info("Aucune saison exploitable n’est encore disponible pour l’export PDF.")
+        else:
+            report_ids = report_leagues["id"].astype(int).tolist()
+            report_labels = {
+                int(row.id): f"{row.name} — {row.country}".strip(" —")
+                for row in report_leagues.itertuples(index=False)
+            }
+            report_league_id = st.selectbox(
+                "Ligue du rapport",
+                report_ids,
+                index=report_ids.index(61) if 61 in report_ids else 0,
+                format_func=lambda value: report_labels[int(value)],
+                key="pdf_report_league",
+            )
+            report_seasons = pdf_report_service.available_seasons(report_league_id)
+            if not report_seasons:
+                st.info("Aucune saison disponible pour cette ligue.")
+            else:
+                report_season = st.selectbox(
+                    "Saison sportive", report_seasons, key="pdf_report_season"
+                )
+                season_fixtures = pdf_report_service.load_fixtures(
+                    report_league_id, report_season
+                )
+                season_fixtures["_report_round"] = season_fixtures["api_round"].map(
+                    pdf_report_service.round_label
+                )
+                season_fixtures["_report_month"] = pd.to_datetime(
+                    season_fixtures["date"], errors="coerce"
+                ).dt.strftime("%m/%Y")
+                export_mode = st.radio(
+                    "Contenu du rapport",
+                    ("Journée complète", "Mois complet", "Sélection de matchs"),
+                    horizontal=True,
+                    key="pdf_report_mode",
+                )
+                report_title = ""
+                if export_mode == "Journée complète":
+                    report_rounds = sorted(
+                        season_fixtures["_report_round"].dropna().unique().tolist(),
+                        key=_round_sort_key,
+                    )
+                    report_round = st.selectbox(
+                        "Journée à exporter", report_rounds, key="pdf_report_round"
+                    )
+                    selected_fixtures = season_fixtures[
+                        season_fixtures["_report_round"] == report_round
+                    ].copy()
+                    report_title = report_round
+                elif export_mode == "Mois complet":
+                    months = sorted(
+                        season_fixtures["_report_month"].dropna().unique().tolist(),
+                        key=lambda value: pd.to_datetime(f"01/{value}", dayfirst=True),
+                    )
+                    selected_month = st.selectbox(
+                        "Mois à exporter", months, key="pdf_report_month"
+                    )
+                    selected_fixtures = season_fixtures[
+                        season_fixtures["_report_month"] == selected_month
+                    ].copy()
+                    report_title = f"Mois {selected_month}"
+                else:
+                    fixture_options = {
+                        int(row.fixture_id): (
+                            f"{pd.to_datetime(row.date, errors='coerce').strftime('%d/%m %H:%M')} — "
+                            f"{row.home_name} vs {row.away_name}"
+                        )
+                        for row in season_fixtures.itertuples(index=False)
+                    }
+                    selected_ids = st.multiselect(
+                        "Matchs à inclure",
+                        options=list(fixture_options),
+                        format_func=lambda fixture_id: fixture_options[int(fixture_id)],
+                        key="pdf_report_matches",
+                    )
+                    selected_fixtures = season_fixtures[
+                        season_fixtures["fixture_id"].isin(selected_ids)
+                    ].copy()
+                    report_title = "Sélection personnalisée"
+                if selected_fixtures.empty:
+                    st.info("Choisis au moins un match pour générer le PDF.")
+                else:
+                    st.info(f"Le PDF contiendra {len(selected_fixtures)} match(s).")
+                    if len(selected_fixtures) > 20:
+                        st.warning(
+                            "Cette sélection est volumineuse : la génération peut prendre quelques instants."
+                        )
+                    selected_signature = ",".join(
+                        str(value)
+                        for value in sorted(selected_fixtures["fixture_id"].astype(int).tolist())
+                    )
+                    report_key = f"{report_league_id}-{report_season}-{export_mode}-{report_title}-{selected_signature}"
+                    if st.button("Générer le rapport PDF", type="primary", key="generate_pdf_report"):
+                        with st.spinner("Calcul des prédictions et mise en page du PDF…"):
+                            reports = pdf_report_service.build_fixture_reports(selected_fixtures)
+                            st.session_state["pdf_report_data"] = pdf_report_service.build_pdf(
+                                reports,
+                                league=report_labels[int(report_league_id)],
+                                season=season_period(report_season),
+                                round_name=report_title,
+                            )
+                            st.session_state["pdf_report_key"] = report_key
+                    if st.session_state.get("pdf_report_key") == report_key:
+                        filename_label = re.sub(
+                            r"[^a-z0-9-]+",
+                            "-",
+                            report_title.lower().replace("é", "e").replace("è", "e"),
+                        ).strip("-")
+                        filename = (
+                            f"prono-insight-{report_league_id}-{report_season}-"
+                            f"{filename_label or 'rapport'}.pdf"
+                        )
+                        st.download_button(
+                            "Télécharger le rapport PDF",
+                            data=st.session_state["pdf_report_data"],
+                            file_name=filename,
+                            mime="application/pdf",
+                            width="stretch",
+                            key="download_pdf_report",
+                        )
 
     st.caption(
         "Les horaires sont affichés en UTC, comme les dates stockées depuis l’API. "
