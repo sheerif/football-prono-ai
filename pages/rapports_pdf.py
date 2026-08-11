@@ -7,7 +7,7 @@ import re
 import pandas as pd
 import streamlit as st
 
-from components import sidebar, ui
+from components import ui
 from services import pdf_report_service
 from services.season_format import season_period
 
@@ -18,7 +18,6 @@ def _round_key(value: object) -> int:
 
 
 def show() -> None:
-    sidebar.render_app_rail("Rapports PDF")
     ui.page_hero("Rapports PDF", "Exportez une journée, un mois ou votre propre sélection de matchs.")
     st.info("Le PDF comprend 1/N/2, score probable, buts attendus, solidité, risque et recommandation.")
     leagues = pdf_report_service.available_leagues()
