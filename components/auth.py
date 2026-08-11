@@ -124,11 +124,16 @@ def login_page() -> bool:
     st.markdown("## Connexion")
     st.caption("Connectez-vous pour accéder au tableau de bord Prono insight.")
 
-    with st.container(border=True):
-        username = st.text_input("Identifiant", value="")
-        password = st.text_input("Mot de passe", value="", type="password")
+    with st.form("login_form", border=True, clear_on_submit=False):
+        # Les clés stables et le formulaire atomique évitent qu'un navigateur
+        # ayant auto-rempli les champs n'envoie d'abord les anciennes valeurs
+        # lors du premier clic sur le bouton.
+        username = st.text_input("Identifiant", value="", key="login_username")
+        password = st.text_input(
+            "Mot de passe", value="", type="password", key="login_password"
+        )
         remaining = _lockout_seconds_remaining()
-        submitted = st.button(
+        submitted = st.form_submit_button(
             "Se connecter",
             type="primary",
             width="stretch",

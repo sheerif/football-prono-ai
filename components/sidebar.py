@@ -20,6 +20,7 @@ NAV_ITEMS = [
     "Joueurs",
     "Équipes",
     "Matchs à venir",
+    "Rapports PDF",
     "Analyse & comparaison",
     "Prédictions",
 ]
@@ -31,6 +32,7 @@ NAV_TARGETS = {
     "Joueurs": "./joueurs",
     "Équipes": "./progression",
     "Matchs à venir": "./matchs_a_venir",
+    "Rapports PDF": "./rapports_pdf",
     "Analyse & comparaison": "./analyse_match",
     "Prédictions": "./prediction_ia",
 }
@@ -42,6 +44,7 @@ NAV_ICONS = {
     "Joueurs": "♙",
     "Équipes": "↗",
     "Matchs à venir": "◷",
+    "Rapports PDF": "⇩",
     "Analyse & comparaison": "◈",
     "Prédictions": "✦",
 }
@@ -65,6 +68,7 @@ def switch_to_nav(nav: str):
         "Joueurs": "pages/joueurs.py",
         "Équipes": "pages/progression.py",
         "Matchs à venir": "pages/matchs_a_venir.py",
+        "Rapports PDF": "pages/rapports_pdf.py",
         "Analyse & comparaison": "pages/analyse_match.py",
         "Prédictions": "pages/prediction_ia.py",
     }
