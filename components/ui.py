@@ -1049,6 +1049,7 @@ def run_direct_page(title: str, show_func):
         "Joueurs": "Joueurs",
         "Équipes": "Équipes",
         "Matchs à venir": "Matchs à venir",
+        "Rapports PDF": "Rapports PDF",
         "Analyse & comparaison": "Analyse & comparaison",
         "Prédictions": "Prédictions",
     }.get(title, "Tableau de bord")
