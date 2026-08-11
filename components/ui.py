@@ -594,21 +594,14 @@ def inject_app_style():
             display: none !important;
         }
 
-        /* Force sidebar expanded and visible (override client-side collapse) */
-        [data-testid="stSidebar"] {
-            width: 260px !important;
-            min-width: 260px !important;
-            transform: none !important;
-        }
-        [data-testid="stSidebar"] > div,
-        [data-testid="stSidebarContent"] {
-            display: block !important;
-            opacity: 1 !important;
-            visibility: visible !important;
-            transform: none !important;
-        }
-        [data-testid="stSidebarNavItems"] {
-            display: block !important;
+        /* Sur grand écran, la navigation conserve une largeur régulière.
+           Sur mobile, Streamlit garde son comportement natif : le panneau est
+           replié derrière le bouton de menu et ne masque jamais le contenu. */
+        @media (min-width: 901px) {
+            [data-testid="stSidebar"] {
+                width: 260px;
+                min-width: 260px;
+            }
         }
         /* Mobile portrait and small phones */
         @media (max-width: 600px) {
@@ -730,16 +723,6 @@ def inject_app_style():
             [data-testid="stImage"] img {
                 max-width: 100% !important;
                 height: auto;
-            }
-            [data-testid="stSidebar"] {
-                width: 100% !important;
-                min-width: 0 !important;
-                max-width: 100% !important;
-                border-right: 0;
-                border-bottom: 1px solid rgba(22, 32, 27, 0.10);
-            }
-            [data-testid="stSidebarContent"] {
-                padding: 0.75rem;
             }
             [data-testid="stSidebar"] .stButton > button {
                 min-height: 2.35rem;
