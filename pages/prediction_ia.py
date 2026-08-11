@@ -489,6 +489,7 @@ def _show_match_prediction():
             ui.kpi_grid(result_kpis)
 
         ranking_summary.render(pred)
+        ranking_summary.render_decision(pred)
         st.dataframe(_glossary_table(), hide_index=True, width="stretch")
         ui.render_api_refinement(api_refinement, consensus_advice)
 

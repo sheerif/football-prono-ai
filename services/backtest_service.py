@@ -189,6 +189,41 @@ def _accuracy_by_ranking_score(records: list[dict]) -> list[dict]:
     return rows
 
 
+def _double_chance_metrics(records: list[tuple[list[float], int]]) -> dict:
+    """Évalue une double chance strictement dérivée des probabilités 1/N/2."""
+    if not records:
+        return {"matches": 0, "accuracy": None, "mean_probability": None}
+    correct = 0
+    probabilities = []
+    for values, outcome in records:
+        # La paire est constituée des deux issues les plus probables, soit
+        # exactement la double chance qui exclut l'issue la moins probable.
+        ordered = sorted(range(3), key=values.__getitem__, reverse=True)
+        correct += outcome in ordered[:2]
+        probabilities.append(values[ordered[0]] + values[ordered[1]])
+    return {
+        "matches": len(records),
+        "accuracy": round(correct / len(records), 6),
+        "mean_probability": round(sum(probabilities) / len(probabilities), 6),
+    }
+
+
+def _balanced_match_metrics(records: list[dict]) -> dict:
+    """Mesure les cas où la marge est faible et la prudence est nécessaire."""
+    balanced = [record for record in records if float(record["margin"]) < 7.0]
+    if not balanced:
+        return {"matches": 0, "top_pick_accuracy": None, "draw_rate": None}
+    return {
+        "matches": len(balanced),
+        "top_pick_accuracy": round(
+            sum(bool(record["correct"]) for record in balanced) / len(balanced), 6
+        ),
+        "draw_rate": round(
+            sum(int(record["outcome"]) == 1 for record in balanced) / len(balanced), 6
+        ),
+    }
+
+
 def load_dataset() -> pd.DataFrame:
     return pd.read_sql(
         text(
@@ -340,6 +375,8 @@ def run(
                                 range(3), key=new_values.__getitem__
                             )
                             == outcome,
+                            "outcome": outcome,
+                            "margin": ranking["margin"],
                         }
                     )
 
@@ -416,6 +453,8 @@ def run(
     new_metrics["accuracy_by_ranking_score"] = _accuracy_by_ranking_score(
         ranking_records
     )
+    new_metrics["double_chance"] = _double_chance_metrics(new_records)
+    new_metrics["balanced_matches"] = _balanced_match_metrics(ranking_records)
     return {
         "configuration": {
             "start_season": start_season,

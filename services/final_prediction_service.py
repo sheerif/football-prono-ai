@@ -8,6 +8,7 @@ import pandas as pd
 
 from services import (
     lineup_service,
+    decision_engine,
     prediction_helpers,
     prediction_service,
     ranking_service,
@@ -181,32 +182,6 @@ def calculate(
         ),
     )
     internal_prediction = dict(internal)
-    blend_prediction = getattr(
-        prediction_service,
-        "blend_with_api_prediction",
-        None,
-    )
-    if callable(blend_prediction):
-        prediction, api_refinement = blend_prediction(internal, api_signal)
-    else:
-        prediction, api_refinement = _internal_only_refinement(
-            internal,
-            "Fusion API indisponible sur cette instance ; modèle interne conservé.",
-        )
-    build_advice = getattr(prediction_service, "build_consensus_advice", None)
-    if callable(build_advice):
-        consensus_advice = build_advice(
-            prediction,
-            api_refinement,
-            str(home_name),
-            str(away_name),
-        )
-    else:
-        consensus_advice = _fallback_consensus_advice(
-            prediction,
-            str(home_name),
-            str(away_name),
-        )
     statistics_coverage = (
         float(int((home_stats or {}).get("played") or 0) > 0)
         + float(int((away_stats or {}).get("played") or 0) > 0)
@@ -216,48 +191,6 @@ def calculate(
         float(bool(intelligence.get("home")))
         + float(bool(intelligence.get("away")))
     ) / 2
-    api_coverage = 0.0
-    if api_signal:
-        api_coverage = max(
-            0.5,
-            float(api_refinement.get("api_quality") or 0.0),
-        )
-    data_quality = ranking_service.compute_data_quality(
-        historical_match_count=len(matches_df),
-        statistics_coverage=statistics_coverage,
-        lineup_coverage=lineup_coverage,
-        freshness=_freshness_score(matches_df, match_date),
-        api_coverage=api_coverage,
-    )
-    stability_score = _prediction_stability(
-        predict_match,
-        matches_df,
-        int(home_team),
-        int(away_team),
-        internal_prediction,
-    )
-    agreement_score = ranking_service.compute_agreement(api_refinement)
-    prediction = ranking_service.attach_ranking(
-        prediction,
-        data_quality=data_quality,
-        stability_score=stability_score,
-        agreement_score=agreement_score,
-        calibrator=probability_calibrator,
-    )
-    details["api_refinement"] = api_refinement
-    details["consensus_advice"] = consensus_advice
-    details["ranking"] = {
-        key: prediction[key]
-        for key in (
-            "ranking_score",
-            "calibrated_probability",
-            "margin",
-            "margin_score",
-            "data_quality",
-            "stability_score",
-            "agreement_score",
-        )
-    }
     player_goal_factors = getattr(lineup_service, "player_goal_factors", None)
     if callable(player_goal_factors):
         home_player_factor, away_player_factor = player_goal_factors(
@@ -281,6 +214,59 @@ def calculate(
             },
         ),
     )
+    # La matrice Poisson est la source canonique 1/N/2. L'ancien calcul de
+    # forces reste disponible comme référence interne, mais ne peut plus créer
+    # une distribution contradictoire avec les scores exacts.
+    score_probabilities = score_prediction.get("probabilities") or internal
+    statistical_prediction = {
+        **internal,
+        **score_probabilities,
+        "confidence": float(max(score_probabilities.values())),
+    }
+    blend_prediction = getattr(prediction_service, "blend_with_api_prediction", None)
+    if callable(blend_prediction):
+        blended_prediction, api_refinement = blend_prediction(
+            statistical_prediction, api_signal
+        )
+    else:
+        blended_prediction, api_refinement = _internal_only_refinement(
+            statistical_prediction,
+            "Fusion API indisponible sur cette instance ; modèle interne conservé.",
+        )
+    api_coverage = 0.0
+    if api_signal:
+        api_coverage = max(0.5, float(api_refinement.get("api_quality") or 0.0))
+    data_quality = ranking_service.compute_data_quality(
+        historical_match_count=len(matches_df),
+        statistics_coverage=statistics_coverage,
+        lineup_coverage=lineup_coverage,
+        freshness=_freshness_score(matches_df, match_date),
+        api_coverage=api_coverage,
+    )
+    stability_score = _prediction_stability(
+        predict_match, matches_df, int(home_team), int(away_team), internal_prediction
+    )
+    decision = decision_engine.calculate(
+        blended_prediction,
+        data_quality=data_quality,
+        stability_score=stability_score,
+        api_refinement=api_refinement,
+        probability_calibrator=probability_calibrator,
+    )
+    prediction = decision["prediction"]
+    build_advice = getattr(prediction_service, "build_consensus_advice", None)
+    consensus_advice = (
+        build_advice(prediction, api_refinement, str(home_name), str(away_name))
+        if callable(build_advice)
+        else _fallback_consensus_advice(prediction, str(home_name), str(away_name))
+    )
+    details["api_refinement"] = api_refinement
+    details["consensus_advice"] = consensus_advice
+    details["decision"] = decision
+    details["ranking"] = {key: prediction[key] for key in (
+        "ranking_score", "calibrated_probability", "margin", "margin_score",
+        "data_quality", "stability_score", "agreement_score",
+    )}
     return {
         "prediction": prediction,
         "internal_prediction": internal_prediction,
@@ -289,5 +275,6 @@ def calculate(
         "model_details": details,
         "api_refinement": api_refinement,
         "consensus_advice": consensus_advice,
+        "decision": decision,
         "score_prediction": score_prediction,
     }

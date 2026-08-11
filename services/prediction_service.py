@@ -490,11 +490,40 @@ def predict_scorelines(
     grid_total = grid_total if math.isfinite(grid_total) and grid_total > 0 else 1.0
     for row in score_rows:
         row["Probabilité"] = round(row.pop("raw_probability") / grid_total * 100.0, 2)
-    score_rows = sorted(score_rows, key=lambda row: row["Probabilité"], reverse=True)[:top_n]
+    outcome_probabilities = normalize_probs([
+        sum(
+            row["Probabilité"]
+            for row in score_rows
+            if row["Buts domicile"] > row["Buts extérieur"]
+        ),
+        sum(
+            row["Probabilité"]
+            for row in score_rows
+            if row["Buts domicile"] == row["Buts extérieur"]
+        ),
+        sum(
+            row["Probabilité"]
+            for row in score_rows
+            if row["Buts domicile"] < row["Buts extérieur"]
+        ),
+    ])
+    all_score_rows = sorted(
+        score_rows,
+        key=lambda row: row["Probabilité"],
+        reverse=True,
+    )
     return {
         "expected_home_goals": round(expected_home, 2),
         "expected_away_goals": round(expected_away, 2),
-        "scores": score_rows,
+        # Cette distribution est la source unique : les 1/N/2 sont la somme
+        # des cellules de cette même matrice de scores, jamais un second modèle.
+        "probabilities": {
+            "home_probability": outcome_probabilities[0],
+            "draw_probability": outcome_probabilities[1],
+            "away_probability": outcome_probabilities[2],
+        },
+        "matrix": all_score_rows,
+        "scores": all_score_rows[:top_n],
         "player_factors": {
             "home": round(home_player_factor, 3),
             "away": round(away_player_factor, 3),
