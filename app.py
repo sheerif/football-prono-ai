@@ -7,7 +7,7 @@ from services import background_jobs, import_service, schema_guard
 from components import auth, sidebar, ui
 from pages import dashboard, data_management, api_widgets, matchs_a_venir, analyse_match, prediction_ia
 
-st.set_page_config(page_title="Prono insight", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="Prono insight", layout="wide", initial_sidebar_state="auto")
 ui.inject_app_style()
 
 if not auth.is_authenticated():

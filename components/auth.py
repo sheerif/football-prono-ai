@@ -124,19 +124,22 @@ def login_page() -> bool:
     st.markdown("## Connexion")
     st.caption("Connectez-vous pour accéder au tableau de bord Prono insight.")
 
-    with st.form("login_form", border=True, clear_on_submit=False):
-        # Les clés stables et le formulaire atomique évitent qu'un navigateur
-        # ayant auto-rempli les champs n'envoie d'abord les anciennes valeurs
-        # lors du premier clic sur le bouton.
+    # Les widgets sont volontairement hors d'un ``st.form``. Certaines versions
+    # de Streamlit Cloud ont signalé à tort "Missing Submit Button" sur ce
+    # formulaire, ce qui bloquait l'affichage initial sur mobile. Les clés
+    # stables permettent toujours de relire correctement les valeurs
+    # auto-remplies par le navigateur au premier clic.
+    with st.container(border=True):
         username = st.text_input("Identifiant", value="", key="login_username")
         password = st.text_input(
             "Mot de passe", value="", type="password", key="login_password"
         )
         remaining = _lockout_seconds_remaining()
-        submitted = st.form_submit_button(
+        submitted = st.button(
             "Se connecter",
             type="primary",
             width="stretch",
+            key="login_submit",
         )
 
     if remaining > 0:
