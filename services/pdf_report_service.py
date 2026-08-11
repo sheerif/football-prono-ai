@@ -130,7 +130,9 @@ def build_fixture_reports(fixtures: pd.DataFrame) -> list[dict]:
             context, int(fixture.home_team_id), int(fixture.away_team_id),
             str(fixture.home_name), str(fixture.away_name),
             player_intelligence=intelligence,
-            api_signal=cross_insight_service.load_fixture_api_signal(int(fixture.fixture_id)),
+            api_signal=cross_insight_service.load_fixture_api_signal_before(
+                int(fixture.fixture_id), fixture.date
+            ),
             score_top_n=1, match_date=fixture.date,
         )
         prediction = final["prediction"]

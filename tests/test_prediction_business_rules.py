@@ -98,7 +98,7 @@ class PredictionBusinessRuleTests(unittest.TestCase):
         params = read_sql.call_args.kwargs["params"]
         self.assertEqual(params, {"lid": 61, "s0": 2024, "s1": 2025})
 
-    def test_shared_final_service_applies_api_once_and_owns_scenario(self):
+    def test_shared_final_service_keeps_poisson_distribution_when_api_is_available(self):
         internal = {
             "home_probability": 50,
             "draw_probability": 25,
@@ -112,11 +112,6 @@ class PredictionBusinessRuleTests(unittest.TestCase):
                 "predict_match",
                 return_value=(internal, {"played": 10}, {"played": 10}, details),
             ),
-            patch.object(
-                prediction_service,
-                "blend_with_api_prediction",
-                wraps=prediction_service.blend_with_api_prediction,
-            ) as blend,
             patch.object(
                 prediction_service,
                 "predict_scorelines",
@@ -136,7 +131,8 @@ class PredictionBusinessRuleTests(unittest.TestCase):
                     "away_probability": 20,
                 },
             )
-        blend.assert_called_once()
+        self.assertFalse(result["api_refinement"]["applied"])
+        self.assertEqual(result["api_refinement"]["source_status"], "AVAILABLE")
         self.assertEqual(
             result["model_details"]["api_refinement"],
             result["api_refinement"],

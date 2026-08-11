@@ -85,6 +85,16 @@ class BacktestServiceTests(unittest.TestCase):
         )
         self.assertEqual(result["post_kickoff_api_predictions_excluded"], 1)
 
+    def test_production_pipeline_uses_the_final_poisson_engine(self):
+        result = backtest_service.run(
+            _dataset("2023-02-04T12:00:00Z"), start_season=2024,
+            min_prior_matches=30, include_production_pipeline=True,
+            production_max_matches=2,
+        )
+        metrics = result["production_poisson_decision_engine"]
+        self.assertEqual(metrics["matches"], 2)
+        self.assertIn("brier_score", metrics)
+
 
 if __name__ == "__main__":
     unittest.main()

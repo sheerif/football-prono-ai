@@ -12,6 +12,8 @@ from services import (
     prediction_helpers,
     prediction_service,
     ranking_service,
+    probability_validation,
+    source_service,
 )
 
 
@@ -223,19 +225,28 @@ def calculate(
         **score_probabilities,
         "confidence": float(max(score_probabilities.values())),
     }
-    blend_prediction = getattr(prediction_service, "blend_with_api_prediction", None)
-    if callable(blend_prediction):
-        blended_prediction, api_refinement = blend_prediction(
-            statistical_prediction, api_signal
+    probability_validation.validate_distribution(statistical_prediction)
+    if score_prediction.get("matrix"):
+        probability_validation.validate_score_matrix(
+            score_prediction["matrix"], score_prediction["probabilities"]
         )
-    else:
-        blended_prediction, api_refinement = _internal_only_refinement(
-            statistical_prediction,
-            "Fusion API indisponible sur cette instance ; modèle interne conservé.",
-        )
+    # L'API est une source séparée. La fusion directe après le Poisson créait
+    # une distribution 1/N/2 incompatible avec le score exact ; elle est donc
+    # volontairement exclue de la distribution canonique.
+    api_description = source_service.describe("API", api_signal)
+    api_refinement = {
+        "applied": False,
+        "api_weight": 0.0,
+        "internal_probabilities": [statistical_prediction[key] for key in ranking_service.OUTCOME_KEYS],
+        "api_probabilities": api_description["distribution"],
+        "api_quality": float(api_description.get("reliability") or 0.0),
+        "source_status": api_description["status"],
+        "market_advice": api_description["market"],
+        "ignored_reason": "L'API n'altère pas la matrice Poisson canonique.",
+    }
     api_coverage = 0.0
-    if api_signal:
-        api_coverage = max(0.5, float(api_refinement.get("api_quality") or 0.0))
+    if api_description["status"] == source_service.AVAILABLE:
+        api_coverage = max(0.5, float(api_description.get("reliability") or 0.0))
     data_quality = ranking_service.compute_data_quality(
         historical_match_count=len(matches_df),
         statistics_coverage=statistics_coverage,
@@ -247,10 +258,10 @@ def calculate(
         predict_match, matches_df, int(home_team), int(away_team), internal_prediction
     )
     decision = decision_engine.calculate(
-        blended_prediction,
+        statistical_prediction,
         data_quality=data_quality,
         stability_score=stability_score,
-        api_refinement=api_refinement,
+        api_source=api_signal,
         probability_calibrator=probability_calibrator,
     )
     prediction = decision["prediction"]

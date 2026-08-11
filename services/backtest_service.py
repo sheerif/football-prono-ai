@@ -20,6 +20,7 @@ from services import (
     prediction_helpers,
     prediction_service,
     ranking_service,
+    final_prediction_service,
 )
 
 
@@ -248,11 +249,53 @@ def load_dataset() -> pd.DataFrame:
     )
 
 
+def _production_pipeline_records(
+    frame: pd.DataFrame,
+    candidate_ids: set[int],
+    *,
+    min_prior_matches: int,
+    max_matches: int | None,
+) -> list[tuple[list[float], int]]:
+    """Backteste le pipeline réellement déployé, sans donnée postérieure.
+
+    Cette voie est volontairement distincte du backtest léger historique : le
+    Poisson parcourt le contexte complet avant chaque coup d'envoi et peut donc
+    être plus coûteux. ``max_matches`` permet une comparaison reproductible
+    sur un échantillon chronologique avant un lancement intégral.
+    """
+    records: list[tuple[list[float], int]] = []
+    for league_id, league in frame.groupby("league_id", sort=True):
+        prior_rows: list[dict] = []
+        for _kickoff, batch in league.groupby("_kickoff", sort=True):
+            if len(prior_rows) >= min_prior_matches:
+                context = pd.DataFrame(prior_rows)
+                for _, match in batch.iterrows():
+                    if int(match["fixture_id"]) not in candidate_ids:
+                        continue
+                    final = final_prediction_service.calculate(
+                        context,
+                        int(match["home_team_id"]), int(match["away_team_id"]),
+                        str(match["home_team_id"]), str(match["away_team_id"]),
+                        # Une API historique ne peut être intégrée ici sans
+                        # son horodatage pré-coup d'envoi vérifié.
+                        api_signal=None,
+                        match_date=match["date"],
+                    )
+                    prediction = final["prediction"]
+                    records.append(([prediction[key] for key in PROBABILITY_KEYS], _outcome(match)))
+                    if max_matches is not None and len(records) >= max_matches:
+                        return records
+            prior_rows.extend(batch.drop(columns=["_kickoff"], errors="ignore").to_dict("records"))
+    return records
+
+
 def run(
     matches: pd.DataFrame,
     *,
     start_season: int | None = None,
     min_prior_matches: int = 30,
+    include_production_pipeline: bool = False,
+    production_max_matches: int | None = 500,
 ) -> dict:
     """Exécute un backtest walk-forward déterministe sur un DataFrame complet."""
     frame = matches.copy()
@@ -455,7 +498,7 @@ def run(
     )
     new_metrics["double_chance"] = _double_chance_metrics(new_records)
     new_metrics["balanced_matches"] = _balanced_match_metrics(ranking_records)
-    return {
+    result = {
         "configuration": {
             "start_season": start_season,
             "min_prior_matches": int(min_prior_matches),
@@ -472,6 +515,15 @@ def run(
         },
         "post_kickoff_api_predictions_excluded": post_kickoff_api_excluded,
     }
+    if include_production_pipeline:
+        production_records = _production_pipeline_records(
+            frame, candidate_ids,
+            min_prior_matches=int(min_prior_matches),
+            max_matches=production_max_matches,
+        )
+        result["production_poisson_decision_engine"] = _metrics(production_records)
+        result["production_poisson_decision_engine"]["matches_limit"] = production_max_matches
+    return result
 
 
 def run_from_database(**kwargs) -> dict:
