@@ -140,6 +140,26 @@ def load_fixture_api_signal(fixture_id: int) -> dict | None:
     return None if rows.empty else _api_signal_from_row(rows.iloc[0])
 
 
+def load_fixture_api_signal_before(fixture_id: int, kickoff) -> dict | None:
+    """Charge une prédiction API uniquement si elle était connue avant le match."""
+    try:
+        rows = pd.read_sql(
+            text(
+                """
+                SELECT m.fixture_id, m.date, p.advice, p.winner,
+                       p.home_probability, p.draw_probability, p.away_probability,
+                       p.total_home, p.total_away, p.raw_json, p.updated_at
+                FROM matches m JOIN fixture_api_predictions p ON p.fixture_id = m.fixture_id
+                WHERE m.fixture_id = :fixture_id AND p.updated_at < :kickoff
+                LIMIT 1
+                """
+            ), engine, params={"fixture_id": int(fixture_id), "kickoff": str(kickoff)}
+        )
+    except Exception:
+        return None
+    return None if rows.empty else _api_signal_from_row(rows.iloc[0])
+
+
 def load_upcoming_api_signal(home_team: int, away_team: int) -> dict | None:
     try:
         rows = pd.read_sql(

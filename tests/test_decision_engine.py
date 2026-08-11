@@ -17,7 +17,7 @@ class DecisionEngineTests(unittest.TestCase):
             {"home_probability": 39, "draw_probability": 27, "away_probability": 34},
             data_quality=0.9,
             stability_score=0.9,
-            api_refinement={"applied": True, "api_probabilities": [38, 29, 33]},
+            api_source={"home_probability": 38, "draw_probability": 29, "away_probability": 33},
         )
         prediction = result["prediction"]
         self.assertAlmostEqual(
@@ -40,6 +40,19 @@ class DecisionEngineTests(unittest.TestCase):
         self.assertEqual(result["consensus"]["level"], "divergence")
         self.assertIn(result["risk"]["level"], {"modéré", "élevé"})
         self.assertNotEqual(result["recommendation"]["market"], "1")
+
+    def test_missing_or_invalid_ai_is_not_a_contradictory_signal(self):
+        result = decision_engine.calculate(
+            {"home_probability": 55, "draw_probability": 25, "away_probability": 20},
+            data_quality=0.8,
+            stability_score=0.8,
+            ai_primary=None,
+            ai_secondary={"home_probability": 70},
+        )
+        states = result["prediction"]["sources"]
+        self.assertEqual(states["ai_a"]["status"], "NO_SIGNAL")
+        self.assertEqual(states["ai_b"]["status"], "INVALID")
+        self.assertEqual(result["consensus"]["sources"], ["modèle"])
 
     def test_score_matrix_sums_to_the_same_1n2_distribution(self):
         matches = pd.DataFrame(

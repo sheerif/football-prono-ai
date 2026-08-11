@@ -10,7 +10,7 @@ from __future__ import annotations
 import math
 from collections.abc import Mapping, Sequence
 
-from services import prediction_service, ranking_service
+from services import prediction_service, ranking_service, source_service
 
 
 OUTCOME_CODES = ("1", "N", "2")
@@ -57,30 +57,27 @@ def compute_consensus(
     *,
     ai_primary: Mapping[str, object] | None = None,
     ai_secondary: Mapping[str, object] | None = None,
-    api_probabilities: Mapping[str, object] | None = None,
+    api_source: Mapping[str, object] | None = None,
     data_quality: float = 0.5,
 ) -> dict[str, object]:
     """Mesure la convergence de sources indépendantes sans faire une moyenne."""
     sources: list[tuple[str, list[float], float]] = []
+    source_states = {"statistical": {"status": source_service.AVAILABLE}}
     model = _distribution(statistical_prediction)
     if model is None:
         raise ValueError("La distribution statistique 1/N/2 est obligatoire.")
     sources.append(("modèle", model, 1.0))
-    for label, source, default_reliability in (
-        ("IA 1", ai_primary, 0.70),
-        ("IA 2", ai_secondary, 0.70),
-        ("API", api_probabilities, 0.65),
+    for key, label, source in (
+        ("ai_a", "IA A", ai_primary),
+        ("ai_b", "IA B", ai_secondary),
+        ("api", "API", api_source),
     ):
-        distribution = _distribution(source)
-        if distribution is None:
+        described = source_service.describe(label, source)
+        source_states[key] = described
+        distribution = described["distribution"]
+        if described["status"] != source_service.AVAILABLE or distribution is None:
             continue
-        reliability = default_reliability
-        if isinstance(source, Mapping):
-            try:
-                reliability = float(source.get("reliability", default_reliability))
-            except (TypeError, ValueError):
-                pass
-        sources.append((label, distribution, max(0.0, min(1.0, reliability))))
+        sources.append((label, distribution, float(described["reliability"] or 0.7)))
 
     favorites = [_favorite(distribution) for _, distribution, _ in sources]
     base_favorite = favorites[0]
@@ -108,6 +105,7 @@ def compute_consensus(
         "favorites": dict(zip([label for label, _, _ in sources], favorites, strict=True)),
         "agreement_ratio": round(agreements, 4),
         "proximity": round(proximity, 4),
+        "source_states": source_states,
     }
 
 
@@ -130,7 +128,7 @@ def compute_risk(
         + 0.15 * quality_risk
         + 0.15 * stability_risk
     )
-    level = "élevé" if score >= 65 else "modéré" if score >= 35 else "faible"
+    level = "très élevé" if score >= 80 else "élevé" if score >= 65 else "modéré" if score >= 35 else "faible"
     return {"score": round(max(0.0, min(100.0, score)), 2), "level": level}
 
 
@@ -160,20 +158,17 @@ def calculate(
     *,
     data_quality: float,
     stability_score: float,
-    api_refinement: Mapping[str, object] | None = None,
+    api_source: Mapping[str, object] | None = None,
     ai_primary: Mapping[str, object] | None = None,
     ai_secondary: Mapping[str, object] | None = None,
     probability_calibrator: ranking_service.ProbabilityCalibrator | None = None,
 ) -> dict[str, object]:
     """Produit une décision finale explicable à partir du socle statistique."""
-    api_probabilities = None
-    if api_refinement and api_refinement.get("applied"):
-        api_probabilities = api_refinement.get("api_probabilities")
     consensus = compute_consensus(
         statistical_prediction,
         ai_primary=ai_primary,
         ai_secondary=ai_secondary,
-        api_probabilities=api_probabilities,
+        api_source=api_source,
         data_quality=data_quality,
     )
     agreement_score = max(0.60, float(consensus["score"]) / 100)
@@ -191,6 +186,15 @@ def calculate(
         stability_score=stability_score,
     )
     recommendation = recommend_market(prediction, risk)
+    available_sources = [
+        name for name, source in consensus["source_states"].items()
+        if source.get("status") == source_service.AVAILABLE
+    ]
+    explanation = (
+        f"Sources disponibles : {', '.join(available_sources)}. "
+        f"Consensus {consensus['level'].replace('_', ' ')}, marge de {prediction['margin']} points, "
+        f"risque {risk['level']}. {recommendation['reason']}"
+    )
     prediction.update(
         {
             "double_chances": compute_double_chances(prediction),
@@ -199,6 +203,9 @@ def calculate(
             "risk_score": risk["score"],
             "risk_level": risk["level"],
             "recommended_market": recommendation["market"],
+            "scenario_probability": prediction["confidence"],
+            "sources": consensus["source_states"],
+            "explanation": explanation,
         }
     )
     return {
