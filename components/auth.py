@@ -137,7 +137,6 @@ def login_page() -> bool:
             "Se connecter",
             type="primary",
             width="stretch",
-            disabled=remaining > 0,
         )
 
     if remaining > 0:
@@ -154,6 +153,14 @@ def login_page() -> bool:
             _start_auth_session(clean_username)
             st.rerun()
             return True
+        # Une authentification valide ne doit jamais être empêchée par des
+        # erreurs précédentes (par exemple après un auto-remplissage tardif).
+        # Le verrouillage reste appliqué uniquement aux nouveaux essais faux.
+        if remaining > 0:
+            st.warning(
+                f"Trop de tentatives. Réessayez dans {remaining} seconde(s)."
+            )
+            return False
         _record_failed_attempt()
         st.error("Identifiant ou mot de passe incorrect.")
 
