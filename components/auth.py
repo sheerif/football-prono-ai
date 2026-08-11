@@ -124,18 +124,18 @@ def login_page() -> bool:
     st.markdown("## Connexion")
     st.caption("Connectez-vous pour accéder au tableau de bord Prono insight.")
 
-    # Les widgets sont volontairement hors d'un ``st.form``. Certaines versions
-    # de Streamlit Cloud ont signalé à tort "Missing Submit Button" sur ce
-    # formulaire, ce qui bloquait l'affichage initial sur mobile. Les clés
-    # stables permettent toujours de relire correctement les valeurs
-    # auto-remplies par le navigateur au premier clic.
-    with st.container(border=True):
+    # Un formulaire regroupe identifiant, mot de passe et validation dans une
+    # seule requête. Sur mobile, cela évite qu'un premier appui serve seulement
+    # à fermer le clavier ou synchroniser le dernier champ avec Streamlit.
+    # La clé explicite du bouton garantit que Streamlit l'enregistre bien comme
+    # bouton de soumission du formulaire.
+    with st.form("login_form", border=True, clear_on_submit=False):
         username = st.text_input("Identifiant", value="", key="login_username")
         password = st.text_input(
             "Mot de passe", value="", type="password", key="login_password"
         )
         remaining = _lockout_seconds_remaining()
-        submitted = st.button(
+        submitted = st.form_submit_button(
             "Se connecter",
             type="primary",
             width="stretch",
