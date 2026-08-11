@@ -60,6 +60,8 @@ class BacktestServiceTests(unittest.TestCase):
         )
         self.assertEqual(result["post_kickoff_api_predictions_excluded"], 0)
         metrics = result["new_draw_formula"]
+        self.assertIn("double_chance", metrics)
+        self.assertIn("balanced_matches", metrics)
         self.assertIn("expected_calibration_error", metrics)
         self.assertTrue(metrics["calibration_curve"])
         self.assertEqual(

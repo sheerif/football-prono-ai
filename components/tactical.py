@@ -14,11 +14,24 @@ POSITION_LABELS = {
 }
 
 
+def _player_number(value):
+    """Normalise les numéros reçus sous forme de flottants par l’API."""
+    if value is None:
+        return "-"
+    try:
+        if pd.isna(value):
+            return "-"
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return str(value or "-")
+    return int(numeric) if numeric.is_integer() else str(value)
+
+
 def _players_table(players: list[dict]) -> pd.DataFrame:
     return pd.DataFrame(
         [
             {
-                "N°": str(player.get("number") or "-"),
+                "N°": _player_number(player.get("number")),
                 "Joueur": str(player.get("player_name") or "Joueur"),
                 "Poste": POSITION_LABELS.get(
                     str(player.get("position") or player.get("games_position") or ""),

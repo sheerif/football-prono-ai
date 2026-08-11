@@ -1552,6 +1552,7 @@ def show():
             f"{prediction.get('confidence')} %",
         )
         ranking_summary.render(prediction)
+        ranking_summary.render_decision(prediction)
         ui.render_api_refinement(api_refinement, consensus_advice)
 
         reasons = []

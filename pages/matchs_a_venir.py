@@ -1310,13 +1310,26 @@ def _lineup_position(value) -> str:
     return labels.get(str(value or ""), str(value or "-"))
 
 
+def _lineup_number(value):
+    """Affiche un numéro de maillot entier sans suffixe décimal."""
+    if value is None:
+        return "-"
+    try:
+        if pd.isna(value):
+            return "-"
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return _display_text(value, "-")
+    return int(numeric) if numeric.is_integer() else _display_text(value, "-")
+
+
 def _lineup_table(players: list[dict]) -> pd.DataFrame:
     rows = []
     for player in players:
         form_rating = player.get("form_rating")
         rows.append(
             {
-                "N°": _display_text(player.get("number"), "-"),
+                "N°": _lineup_number(player.get("number")),
                 "Joueur": _display_text(player.get("player_name"), "Joueur"),
                 "Poste": _lineup_position(player.get("position") or player.get("games_position")),
                 "Note forme": round(float(form_rating), 2) if form_rating is not None else "-",
@@ -1783,6 +1796,7 @@ def _render_upcoming_match_analysis(fixture: pd.Series):
             f"{prediction['confidence']} %",
         )
         ranking_summary.render(prediction)
+        ranking_summary.render_decision(prediction)
         ui.render_api_refinement(api_refinement, consensus_advice)
         adjustment = details.get("player_adjustment")
         if adjustment:

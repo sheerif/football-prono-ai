@@ -28,3 +28,14 @@ def render(prediction: dict) -> None:
         f"{prediction.get('margin', 0)} points",
     )
     columns[3].caption("Écart entre les deux premiers scénarios")
+
+
+def render_decision(prediction: dict) -> None:
+    """Affiche consensus, risque et marché sans les assimiler à une probabilité."""
+    columns = st.columns(3)
+    columns[0].metric("Consensus des sources", f"{prediction.get('consensus_score', 0)} / 100")
+    columns[1].metric("Niveau de risque", str(prediction.get("risk_level", "modéré")).capitalize())
+    columns[2].metric("Recommandation", str(prediction.get("recommended_market", "PRUDENCE")))
+    columns[0].caption("Accord entre le modèle et les signaux disponibles")
+    columns[1].caption("Incertitude globale, pas une probabilité")
+    columns[2].caption("Marché dérivé uniquement de la distribution 1/N/2")
