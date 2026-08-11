@@ -1796,7 +1796,9 @@ def _render_upcoming_match_analysis(fixture: pd.Series):
             f"{prediction['confidence']} %",
         )
         ranking_summary.render(prediction)
-        ranking_summary.render_decision(prediction)
+        render_decision = getattr(ranking_summary, "render_decision", None)
+        if callable(render_decision):
+            render_decision(prediction)
         ui.render_api_refinement(api_refinement, consensus_advice)
         adjustment = details.get("player_adjustment")
         if adjustment:
