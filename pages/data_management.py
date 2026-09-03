@@ -97,7 +97,9 @@ def _recent_logs(limit: int = 6) -> pd.DataFrame:
     )
 
 
+@st.fragment(run_every="1s")
 def _render_jobs():
+    """Rafraîchit la progression des tâches de fond en temps réel."""
     jobs = background_jobs.list_jobs()
     active = [job for job in jobs if job.get("status") == "running"]
     finished = [job for job in jobs if job.get("status") != "running"][:5]

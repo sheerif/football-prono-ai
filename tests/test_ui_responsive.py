@@ -45,6 +45,15 @@ class ResponsiveUiContractTests(unittest.TestCase):
             for token in forbidden:
                 self.assertNotIn(token.replace(" ", ""), content, str(path))
 
+    def test_background_progress_panels_refresh_automatically(self):
+        sidebar_source = (ROOT / "components" / "ui.py").read_text(encoding="utf-8")
+        updates_source = (ROOT / "pages" / "data_management.py").read_text(
+            encoding="utf-8"
+        )
+        decorator = '@st.fragment(run_every="1s")'
+        self.assertIn(f"{decorator}\ndef render_background_jobs", sidebar_source)
+        self.assertIn(f"{decorator}\ndef _render_jobs", updates_source)
+
 
 if __name__ == "__main__":
     unittest.main()

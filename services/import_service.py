@@ -578,13 +578,19 @@ def _last_refresh_is_recent(interval_minutes: int) -> bool:
     return age.total_seconds() < interval_minutes * 60
 
 
-def audit_configured_season_access(config: dict | None = None) -> dict:
+def audit_configured_season_access(
+    config: dict | None = None,
+    progress_callback=None,
+) -> dict:
     config = config or get_auto_refresh_config()
     seasons = list(range(config["start_season"], config["end_season"] + 1))
     sample_league = config["league_ids"][0]
     accessible = []
     unavailable = []
-    for season in seasons:
+    total_seasons = max(1, len(seasons))
+    if progress_callback:
+        progress_callback(0, total_seasons, "Vérification de l’accès aux saisons")
+    for index, season in enumerate(seasons, start=1):
         try:
             resp = client.get_fixtures(sample_league, season)
             errors = resp.get("errors") or {}
@@ -594,6 +600,12 @@ def audit_configured_season_access(config: dict | None = None) -> dict:
                 accessible.append(season)
         except Exception as exc:
             unavailable.append({"season": season, "reason": str(exc)})
+        if progress_callback:
+            progress_callback(
+                index,
+                total_seasons,
+                f"Accès à la saison {season} vérifié",
+            )
     summary = {"sample_league": sample_league, "accessible": accessible, "unavailable": unavailable}
     _set_sync_value("last_api_access_audit", str(summary))
     return summary
@@ -828,7 +840,14 @@ def _active_season_for_league(session, league_id: int, fallback_season: int) -> 
     return max(stored_season, fallback_season)
 
 
-def _refresh_league_season(session, league_id: int, season: int, pause: float, max_retries: int):
+def _refresh_league_season(
+    session,
+    league_id: int,
+    season: int,
+    pause: float,
+    max_retries: int,
+    progress_callback=None,
+):
     _sync_league_metadata(session, league_id, season)
 
     tries = 0
@@ -850,6 +869,9 @@ def _refresh_league_season(session, league_id: int, season: int, pause: float, m
             session.rollback()
             logger.warning(f"Error refreshing teams {league_id}/{season}: {exc} — retry {tries}")
             time.sleep(pause * tries)
+
+    if progress_callback:
+        progress_callback(1, 3, f"Équipes {league_id}/{season} vérifiées")
 
     time.sleep(pause)
 
@@ -887,6 +909,9 @@ def _refresh_league_season(session, league_id: int, season: int, pause: float, m
             session.rollback()
             logger.warning(f"Error refreshing fixtures {league_id}/{season}: {exc} — retry {tries}")
             time.sleep(pause * tries)
+
+    if progress_callback:
+        progress_callback(2, 3, f"Matchs {league_id}/{season} vérifiés")
 
     time.sleep(pause)
 
@@ -944,8 +969,11 @@ def _refresh_league_season(session, league_id: int, season: int, pause: float, m
             logger.warning(f"Error refreshing standings {league_id}/{season}: {exc} — retry {tries}")
             time.sleep(pause * tries)
 
+    if progress_callback:
+        progress_callback(3, 3, f"Classement {league_id}/{season} vérifié")
 
-def refresh_current_competitions_on_connection() -> dict:
+
+def refresh_current_competitions_on_connection(progress_callback=None) -> dict:
     """Refresh active seasons for every configured competition once per app session."""
     config = get_auto_refresh_config()
     if not config["enabled"] or not config["current_enabled"]:
@@ -954,8 +982,12 @@ def refresh_current_competitions_on_connection() -> dict:
     register_league_seasons(config["league_ids"], [config["end_season"]], source="current_refresh")
     session = SessionLocal()
     refreshed = []
+    league_ids = config["league_ids"]
+    total_steps = max(1, len(league_ids) * 3)
+    if progress_callback:
+        progress_callback(0, total_steps, "Préparation des championnats en cours")
     try:
-        for league_id in config["league_ids"]:
+        for league_index, league_id in enumerate(league_ids):
             season = _active_season_for_league(session, league_id, config["end_season"])
             logger.info(f"Refreshing active competition {league_id} season {season}")
             _refresh_league_season(
@@ -964,6 +996,15 @@ def refresh_current_competitions_on_connection() -> dict:
                 season,
                 pause=config["pause"],
                 max_retries=config["max_retries"],
+                progress_callback=(
+                    lambda current, total, label, offset=league_index * 3: progress_callback(
+                        offset + current,
+                        total_steps,
+                        label,
+                    )
+                    if progress_callback
+                    else None
+                ),
             )
             refreshed.append({"league_id": league_id, "season": season})
             time.sleep(config["pause"])
@@ -1185,7 +1226,7 @@ def import_leagues_cautious(
         session.close()
 
 
-def auto_refresh_if_due(force: bool = False) -> dict:
+def auto_refresh_if_due(force: bool = False, progress_callback=None) -> dict:
     """Refresh imported football data when the configured interval has elapsed.
 
     The refresh checks every configured season from the start year to the current
@@ -1199,7 +1240,26 @@ def auto_refresh_if_due(force: bool = False) -> dict:
     if not force and _last_refresh_is_recent(config["interval_minutes"]):
         return {"ran": False, "reason": "Synchronisation récente, aucun appel API relancé.", "config": config}
 
-    audit = audit_configured_season_access(config)
+    def report_phase(current, total, start, end, label):
+        if not progress_callback:
+            return
+        ratio = min(1.0, max(0.0, current / max(1, total)))
+        progress_callback(
+            int(round(start + (end - start) * ratio)),
+            100,
+            label,
+        )
+
+    audit = audit_configured_season_access(
+        config,
+        progress_callback=lambda current, total, label: report_phase(
+            current,
+            total,
+            0,
+            15,
+            label,
+        ),
+    )
     seasons = audit["accessible"]
     if not seasons:
         _set_sync_value("last_auto_refresh_utc", utc_now().isoformat())
@@ -1218,6 +1278,13 @@ def auto_refresh_if_due(force: bool = False) -> dict:
         pause=config["pause"],
         max_retries=config["max_retries"],
         force_refresh_seasons=force_refresh_seasons,
+        progress_callback=lambda current, total, label: report_phase(
+            current,
+            total,
+            15,
+            100,
+            label,
+        ),
     )
     now = utc_now().isoformat()
     _set_sync_value("last_auto_refresh_utc", now)

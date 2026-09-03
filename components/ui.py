@@ -1047,7 +1047,9 @@ def run_direct_page(title: str, show_func):
     show_func()
 
 
+@st.fragment(run_every="1s")
 def render_background_jobs():
+    """Actualise le suivi sans attendre une interaction sur la page."""
     from services import background_jobs
 
     jobs = background_jobs.active_jobs()

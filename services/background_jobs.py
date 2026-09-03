@@ -92,6 +92,21 @@ def _progress(job_id: str, current: int, total: int, label: str):
     _set_job(job_id, progress=ratio, message=f"{percent} % — {label}")
 
 
+def _phase_progress(
+    job_id: str,
+    current: int,
+    total: int,
+    start: float,
+    end: float,
+    label: str,
+):
+    """Projette la progression d'une sous-tâche dans sa portion du total."""
+    phase_ratio = min(1.0, max(0.0, current / max(1, total)))
+    ratio = min(1.0, max(0.0, start + (end - start) * phase_ratio))
+    percent = int(round(ratio * 100))
+    _set_job(job_id, progress=ratio, message=f"{percent} % — {label}")
+
+
 def start_manual_import(
     league_ids: list[int],
     seasons: list[int],
@@ -394,22 +409,40 @@ def start_startup_updates_once(connection_log_id: int | None = None) -> str | No
     def run():
         try:
             started_at = _now()
-            _progress(job_id, 0, 4, "Initialisation de la base...")
+            _progress(job_id, 0, 100, "Initialisation de la base...")
             import_service.init_db()
 
-            _progress(job_id, 1, 4, "Mise à jour des championnats en cours...")
+            _progress(job_id, 2, 100, "Mise à jour des championnats en cours...")
             current_started_at = _now()
-            current_result = import_service.refresh_current_competitions_on_connection()
+            current_result = import_service.refresh_current_competitions_on_connection(
+                progress_callback=lambda current, total, label: _phase_progress(
+                    job_id,
+                    current,
+                    total,
+                    0.02,
+                    0.48,
+                    label,
+                )
+            )
             import_service.record_update_result("championnats_en_cours", current_started_at, current_result)
             if current_result.get("ran") and connection_log_id:
                 import_service.mark_connection_current_refreshed(connection_log_id)
 
-            _progress(job_id, 2, 4, "Synchronisation historique si nécessaire...")
+            _progress(job_id, 50, 100, "Synchronisation historique si nécessaire...")
             auto_started_at = _now()
-            auto_result = import_service.auto_refresh_if_due()
+            auto_result = import_service.auto_refresh_if_due(
+                progress_callback=lambda current, total, label: _phase_progress(
+                    job_id,
+                    current,
+                    total,
+                    0.50,
+                    0.98,
+                    label,
+                )
+            )
             import_service.record_update_result("historique_auto", auto_started_at, auto_result)
 
-            _progress(job_id, 4, 4, "Mises à jour de démarrage terminées")
+            _progress(job_id, 100, 100, "Mises à jour de démarrage terminées")
             _set_job(
                 job_id,
                 status="done",
