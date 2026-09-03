@@ -98,6 +98,9 @@ class ApiFootballClient:
     def get_fixture(self, fixture_id):
         return self._get("/fixtures", {"id": fixture_id})
 
+    def get_fixture_statistics(self, fixture_id):
+        return self._get("/fixtures/statistics", {"fixture": int(fixture_id)})
+
     def get_headtohead(self, h2h):
         return self._get("/fixtures/headtohead", {"h2h": h2h})
 

@@ -173,6 +173,123 @@ def _ensure_fixture_api_cache_tables():
         conn.execute(
             text(
                 """
+                CREATE TABLE IF NOT EXISTS xg_ingestion_audit (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    sync_run_id TEXT NOT NULL,
+                    fixture_id INTEGER NOT NULL,
+                    source TEXT NOT NULL,
+                    endpoint TEXT NOT NULL,
+                    request_json TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    requested_at TEXT NOT NULL,
+                    completed_at TEXT NOT NULL,
+                    item_count INTEGER NOT NULL DEFAULT 0,
+                    has_xg INTEGER NOT NULL DEFAULT 0,
+                    payload_sha256 TEXT,
+                    response_json TEXT,
+                    error TEXT,
+                    FOREIGN KEY(fixture_id) REFERENCES matches(fixture_id)
+                )
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS fixture_team_statistics (
+                    fixture_id INTEGER NOT NULL,
+                    team_id INTEGER NOT NULL,
+                    team_name TEXT,
+                    is_home INTEGER,
+                    expected_goals REAL,
+                    goals_prevented REAL,
+                    source TEXT NOT NULL DEFAULT 'API-Football',
+                    source_endpoint TEXT NOT NULL DEFAULT '/fixtures/statistics',
+                    source_field TEXT NOT NULL DEFAULT 'expected_goals',
+                    retrieved_at TEXT,
+                    payload_sha256 TEXT,
+                    ingestion_id INTEGER,
+                    raw_json TEXT,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (fixture_id, team_id),
+                    FOREIGN KEY(fixture_id) REFERENCES matches(fixture_id),
+                    FOREIGN KEY(team_id) REFERENCES teams(id),
+                    FOREIGN KEY(ingestion_id) REFERENCES xg_ingestion_audit(id)
+                )
+                """
+            )
+        )
+        columns = {
+            column["name"]
+            for column in inspect(conn).get_columns("fixture_team_statistics")
+        }
+        additions = {
+            "source": "TEXT NOT NULL DEFAULT 'API-Football'",
+            "source_endpoint": "TEXT NOT NULL DEFAULT '/fixtures/statistics'",
+            "source_field": "TEXT NOT NULL DEFAULT 'expected_goals'",
+            "retrieved_at": "TEXT",
+            "payload_sha256": "TEXT",
+            "ingestion_id": "INTEGER",
+        }
+        for name, column_type in additions.items():
+            if name not in columns:
+                conn.execute(
+                    text(
+                        f"ALTER TABLE fixture_team_statistics "
+                        f"ADD COLUMN {name} {column_type}"
+                    )
+                )
+        conn.execute(
+            text(
+                """
+                CREATE TRIGGER IF NOT EXISTS xg_ingestion_audit_no_update
+                BEFORE UPDATE ON xg_ingestion_audit
+                BEGIN
+                    SELECT RAISE(ABORT, 'xg_ingestion_audit is append-only');
+                END
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                CREATE TRIGGER IF NOT EXISTS xg_ingestion_audit_no_delete
+                BEFORE DELETE ON xg_ingestion_audit
+                BEGIN
+                    SELECT RAISE(ABORT, 'xg_ingestion_audit is append-only');
+                END
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                CREATE TRIGGER IF NOT EXISTS fixture_team_statistics_ingestion_insert
+                BEFORE INSERT ON fixture_team_statistics
+                WHEN NEW.ingestion_id IS NOT NULL
+                 AND NOT EXISTS (SELECT 1 FROM xg_ingestion_audit WHERE id = NEW.ingestion_id)
+                BEGIN
+                    SELECT RAISE(ABORT, 'unknown xG ingestion_id');
+                END
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                CREATE TRIGGER IF NOT EXISTS fixture_team_statistics_ingestion_update
+                BEFORE UPDATE OF ingestion_id ON fixture_team_statistics
+                WHEN NEW.ingestion_id IS NOT NULL
+                 AND NOT EXISTS (SELECT 1 FROM xg_ingestion_audit WHERE id = NEW.ingestion_id)
+                BEGIN
+                    SELECT RAISE(ABORT, 'unknown xG ingestion_id');
+                END
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
                 CREATE TABLE IF NOT EXISTS fixture_api_details (
                     fixture_id INTEGER PRIMARY KEY,
                     league_id INTEGER NOT NULL,

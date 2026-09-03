@@ -7,7 +7,7 @@ import time
 from sqlalchemy import text
 
 from database.database import engine
-from services import import_service, lineup_service, player_service, sync_registry
+from services import import_service, lineup_service, player_service, sync_registry, xg_service
 from services.api_football import ApiFootballClient
 
 
@@ -412,6 +412,182 @@ def sync_all_upcoming_predictions(
     return summary
 
 
+def _sync_xg_rows(
+    rows,
+    *,
+    pause: float,
+    retry_hours: int,
+    progress_callback=None,
+    sync_run_id: str | None = None,
+) -> dict:
+    """Synchronise une liste figée de matchs terminés, avec reprise sur quota."""
+    sync_run_id = sync_run_id or xg_service.new_sync_run_id()
+    summary = {
+        "sync_run_id": sync_run_id,
+        "total": len(rows),
+        "downloaded": 0,
+        "skipped": 0,
+        "unavailable": 0,
+        "errors": [],
+        "quota_reached": False,
+    }
+    for index, row in enumerate(rows, start=1):
+        fixture_id = int(row["fixture_id"])
+        key = f"fixture-statistics:{fixture_id}"
+        if xg_service.fixture_statistics_present(fixture_id):
+            sync_registry.mark(
+                key,
+                "fixture_statistics",
+                "complete",
+                item_count=2,
+                message="Déjà en base",
+            )
+            result = "skipped"
+        elif (
+            (state := sync_registry.get(key))
+            and state.get("status") != "complete"
+            and not sync_registry.should_download(key, retry_hours)
+        ):
+            result = "skipped"
+        else:
+            requested_at = _now_iso()
+            response = None
+            try:
+                sync_registry.mark(key, "fixture_statistics", "running")
+                response = client.get_fixture_statistics(fixture_id)
+                error = _api_error(response)
+                if error:
+                    raise RuntimeError(error)
+                items = response.get("response") or []
+                if not items:
+                    xg_service.record_ingestion(
+                        fixture_id,
+                        sync_run_id=sync_run_id,
+                        status="unavailable",
+                        requested_at=requested_at,
+                        payload=response,
+                    )
+                    sync_registry.mark(
+                        key,
+                        "fixture_statistics",
+                        "unavailable",
+                        message="Statistiques non publiées par l’API",
+                    )
+                    result = "unavailable"
+                else:
+                    count = xg_service.save_fixture_statistics(
+                        fixture_id,
+                        items,
+                        sync_run_id=sync_run_id,
+                        requested_at=requested_at,
+                        audit_payload=response,
+                    )
+                    has_xg = any(
+                        row.get("expected_goals") is not None
+                        for row in xg_service.parse_fixture_statistics(items)
+                    )
+                    sync_registry.mark(
+                        key,
+                        "fixture_statistics",
+                        "complete" if has_xg else "unavailable",
+                        item_count=count,
+                        message=None if has_xg else "Statistiques publiées sans xG",
+                    )
+                    result = "downloaded" if has_xg else "unavailable"
+            except Exception as exc:
+                try:
+                    xg_service.record_ingestion(
+                        fixture_id,
+                        sync_run_id=sync_run_id,
+                        status="error",
+                        requested_at=requested_at,
+                        payload=response,
+                        error=str(exc),
+                    )
+                except Exception as audit_exc:
+                    summary["errors"].append(
+                        f"fixture-statistics-audit:{fixture_id}: {audit_exc}"
+                    )
+                sync_registry.mark(
+                    key, "fixture_statistics", "error", message=str(exc)
+                )
+                summary["errors"].append(f"{key}: {exc}")
+                if _is_quota_error(exc):
+                    summary["quota_reached"] = True
+                    break
+                result = "error"
+            if result != "skipped":
+                time.sleep(pause)
+        if result in summary:
+            summary[result] += 1
+        if progress_callback:
+            progress_callback(
+                index,
+                max(1, len(rows)),
+                f"xG historiques : match {index}/{len(rows)}",
+            )
+    return summary
+
+
+def sync_historical_xg(
+    *,
+    league_ids=None,
+    seasons=None,
+    max_matches: int | None = None,
+    pause: float | None = None,
+    retry_hours: int = 24,
+    progress_callback=None,
+) -> dict:
+    """Télécharge les statistiques des matchs terminés, du plus récent au plus ancien."""
+    import_service.init_db()
+    sync_registry.ensure_table()
+    pause = (
+        _nonnegative_float_env("XG_SYNC_PAUSE_SECONDS", 0.25)
+        if pause is None
+        else max(0.0, float(pause))
+    )
+    filters = ["m.home_goals IS NOT NULL", "m.away_goals IS NOT NULL"]
+    params = {}
+    if league_ids:
+        placeholders = ",".join(f":league_{i}" for i, _ in enumerate(league_ids))
+        filters.append(f"m.league_id IN ({placeholders})")
+        params.update({f"league_{i}": int(value) for i, value in enumerate(league_ids)})
+    if seasons:
+        placeholders = ",".join(f":season_{i}" for i, _ in enumerate(seasons))
+        filters.append(f"m.season IN ({placeholders})")
+        params.update({f"season_{i}": int(value) for i, value in enumerate(seasons)})
+    limit_sql = ""
+    if max_matches is not None:
+        params["limit"] = max(1, int(max_matches))
+        limit_sql = "LIMIT :limit"
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text(
+                f"""
+                SELECT m.fixture_id, m.date, m.league_id, m.season
+                FROM matches m
+                LEFT JOIN fixture_team_statistics s
+                  ON s.fixture_id = m.fixture_id
+                WHERE {' AND '.join(filters)}
+                GROUP BY m.fixture_id, m.date, m.league_id, m.season
+                HAVING COUNT(CASE WHEN s.expected_goals IS NOT NULL THEN 1 END) = 0
+                ORDER BY m.date DESC, m.fixture_id DESC
+                {limit_sql}
+                """
+            ),
+            params,
+        ).mappings().all()
+    summary = _sync_xg_rows(
+        rows,
+        pause=pause,
+        retry_hours=retry_hours,
+        progress_callback=progress_callback,
+        sync_run_id=xg_service.new_sync_run_id(),
+    )
+    summary["coverage"] = xg_service.coverage(league_ids, seasons)
+    return summary
+
+
 def run_full_sync(progress_callback=None) -> dict:
     """Complète les données manquantes et conserve un état de reprise en base."""
     import_service.init_db()
@@ -420,6 +596,7 @@ def run_full_sync(progress_callback=None) -> dict:
     days = int(os.getenv("FULL_SYNC_UPCOMING_DAYS", "30"))
     pause = float(os.getenv("FULL_SYNC_PAUSE_SECONDS", str(config["pause"])))
     summary = {
+        "sync_run_id": xg_service.new_sync_run_id(),
         "core": "pending",
         "downloaded": 0,
         "skipped": 0,
@@ -460,7 +637,7 @@ def run_full_sync(progress_callback=None) -> dict:
     upcoming = _upcoming_matches(days)
     recent_ids = _recent_fixture_ids(upcoming)
     scopes = _player_scopes()
-    total_items = max(1, len(upcoming) * 3 + len(recent_ids) + len(scopes))
+    total_items = max(1, len(upcoming) * 3 + len(recent_ids) * 2 + len(scopes))
     completed = 0
 
     def advance(label):
@@ -557,6 +734,20 @@ def run_full_sync(progress_callback=None) -> dict:
         if result in summary:
             summary[result] += 1
         advance(f"Forme des joueurs: match {fixture_id}")
+
+        xg_result = _sync_xg_rows(
+            [{"fixture_id": fixture_id}],
+            pause=pause,
+            retry_hours=24,
+            sync_run_id=summary["sync_run_id"],
+        )
+        for result_key in ("downloaded", "skipped", "unavailable"):
+            summary[result_key] += int(xg_result.get(result_key) or 0)
+        summary["errors"].extend(xg_result.get("errors") or [])
+        if xg_result.get("quota_reached"):
+            summary["quota_reached"] = True
+            return summary
+        advance(f"xG historiques: match {fixture_id}")
 
     for scope in scopes:
         league_id = int(scope["league_id"])

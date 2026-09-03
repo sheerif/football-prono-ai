@@ -13,6 +13,7 @@ DATA_JOB_KINDS = {
     "manual_import",
     "full_sync",
     "prediction_sync",
+    "xg_sync",
     "startup_updates",
 }
 
@@ -223,6 +224,89 @@ def start_prediction_sync(days: int | None = None) -> str:
     threading.Thread(
         target=run,
         name=f"football-prono-predictions-{job_id[:8]}",
+        daemon=True,
+    ).start()
+    return job_id
+
+
+def start_xg_sync(
+    league_ids: list[int] | None = None,
+    seasons: list[int] | None = None,
+    max_matches: int | None = 100,
+) -> str:
+    """Complète en arrière-plan l'historique xG sans dépasser le lot demandé."""
+    job_id, created = _create_unique_data_job(
+        "xg_sync",
+        "xG historiques",
+        {
+            "league_ids": league_ids or [],
+            "seasons": seasons or [],
+            "max_matches": max_matches,
+            "incremental": True,
+        },
+    )
+    if not created:
+        return job_id
+
+    def run():
+        from services import full_sync_service
+
+        started_at = _now()
+        try:
+            result = full_sync_service.sync_historical_xg(
+                league_ids=league_ids,
+                seasons=seasons,
+                max_matches=max_matches,
+                progress_callback=lambda current, total, label: _progress(
+                    job_id, current, total, label
+                ),
+            )
+            quota_reached = bool(result.get("quota_reached"))
+            message = (
+                "Limite API atteinte : les xG enregistrés sont conservés."
+                if quota_reached
+                else "xG historiques synchronisés"
+            )
+            _set_job(
+                job_id,
+                status="partial" if quota_reached else "done",
+                progress=1.0,
+                message=message,
+                finished_at=_now(),
+                details=result,
+            )
+            import_service.record_update_log(
+                event_type="synchronisation_xg",
+                status="partielle" if quota_reached else "effectuée",
+                started_at=started_at,
+                reason=message,
+                leagues=league_ids,
+                seasons=seasons,
+                details={**result, "background": True, "incremental": True},
+            )
+        except Exception as exc:
+            _set_job(
+                job_id,
+                status="error",
+                error=str(exc),
+                message="Erreur pendant la synchronisation des xG",
+                finished_at=_now(),
+                traceback=traceback.format_exc(),
+            )
+            import_service.record_update_log(
+                event_type="synchronisation_xg",
+                status="erreur",
+                started_at=started_at,
+                reason="Erreur pendant la synchronisation des xG.",
+                leagues=league_ids,
+                seasons=seasons,
+                details={"background": True, "incremental": True},
+                error=str(exc),
+            )
+
+    threading.Thread(
+        target=run,
+        name=f"football-prono-xg-{job_id[:8]}",
         daemon=True,
     ).start()
     return job_id

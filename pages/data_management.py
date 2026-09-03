@@ -6,7 +6,13 @@ import streamlit as st
 
 from components import ui
 from database.database import engine
-from services import background_jobs, full_sync_service, import_service, sync_registry
+from services import (
+    background_jobs,
+    full_sync_service,
+    import_service,
+    sync_registry,
+    xg_service,
+)
 from services.season_format import season_period, season_range
 
 
@@ -36,8 +42,12 @@ def _summary_counts() -> dict[str, int]:
             engine,
         ).iloc[0]["count"]
         analyses = pd.read_sql("SELECT COUNT(*) AS count FROM match_analysis_snapshots", engine).iloc[0]["count"]
+        xg_matches = pd.read_sql(
+            "SELECT COUNT(DISTINCT fixture_id) AS count FROM fixture_team_statistics",
+            engine,
+        ).iloc[0]["count"]
     except Exception:
-        leagues = teams = matches = standings = players = lineups = analyses = 0
+        leagues = teams = matches = standings = players = lineups = analyses = xg_matches = 0
     return {
         "leagues": int(leagues),
         "teams": int(teams),
@@ -46,6 +56,7 @@ def _summary_counts() -> dict[str, int]:
         "players": int(players),
         "lineups": int(lineups),
         "analyses": int(analyses),
+        "xg_matches": int(xg_matches),
     }
 
 
@@ -161,6 +172,7 @@ def show():
             {"label": "Joueurs", "value": counts["players"], "caption": "Profils persistés"},
             {"label": "Compositions", "value": counts["lineups"], "caption": "Onze officiels ou projetés"},
             {"label": "Analyses", "value": counts["analyses"], "caption": "Études conservées"},
+            {"label": "Matchs avec xG", "value": counts["xg_matches"], "caption": "Statistiques API stockées"},
         ]
     try:
         ui.kpi_grid(database_kpis, columns=4)
@@ -232,6 +244,88 @@ def show():
                 st.success(
                     "Téléchargement lancé en arrière-plan. Les analyses utiliseront "
                     "automatiquement les conseils disponibles."
+                )
+
+    with st.container(border=True):
+        st.markdown("### xG historiques")
+        xg_seasons = list(range(recent_start, end_season + 1))
+        xg_coverage = xg_service.coverage(
+            list(LEAGUE_PRESETS.values()), xg_seasons
+        )
+        st.write(
+            f"{xg_coverage['available']} match(s) avec xG sur "
+            f"{xg_coverage['total']} match(s) terminé(s) des saisons récentes "
+            f"({xg_coverage['percentage']} %)."
+        )
+        st.caption(
+            "Chaque lancement traite au maximum 100 matchs, du plus récent au "
+            "plus ancien. Les matchs déjà enregistrés ne consomment aucune requête."
+        )
+        if st.button(
+            "Télécharger le prochain lot de xG",
+            type="primary",
+            width="stretch",
+            disabled=api_key_missing or data_job_active,
+        ):
+            background_jobs.start_xg_sync(
+                list(LEAGUE_PRESETS.values()),
+                xg_seasons,
+                max_matches=100,
+            )
+            st.success(
+                "Téléchargement xG lancé en arrière-plan. La progression est conservée."
+            )
+        audit = xg_service.recent_audit(25)
+        with st.expander("Journal de traçabilité xG", expanded=False):
+            if audit.empty:
+                st.info("Aucune tentative d’ingestion xG journalisée.")
+            else:
+                audit = audit.copy()
+                audit["match"] = (
+                    audit["home_name"].fillna("?")
+                    + " – "
+                    + audit["away_name"].fillna("?")
+                )
+                st.dataframe(
+                    audit[
+                        [
+                            "id",
+                            "sync_run_id",
+                            "fixture_id",
+                            "match",
+                            "source",
+                            "endpoint",
+                            "status",
+                            "requested_at",
+                            "completed_at",
+                            "item_count",
+                            "has_xg",
+                            "payload_sha256",
+                            "error",
+                        ]
+                    ].rename(
+                        columns={
+                            "id": "Audit",
+                            "sync_run_id": "Lot",
+                            "fixture_id": "Fixture",
+                            "match": "Match",
+                            "source": "Source",
+                            "endpoint": "Endpoint",
+                            "status": "Statut",
+                            "requested_at": "Début",
+                            "completed_at": "Fin",
+                            "item_count": "Éléments",
+                            "has_xg": "xG présent",
+                            "payload_sha256": "SHA-256",
+                            "error": "Erreur",
+                        }
+                    ),
+                    hide_index=True,
+                    width="stretch",
+                )
+                st.caption(
+                    "Chaque ligne est une tentative conservée. La réponse brute complète "
+                    "est stockée avec son empreinte SHA-256 dans SQLite."
                 )
 
     with st.container(border=True):

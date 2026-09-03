@@ -3,8 +3,8 @@ import html
 import streamlit as st
 import pandas as pd
 from database.database import engine
-from components import charts, ranking_summary, tactical, ui
-from services import analysis_store, cross_insight_service, final_prediction_service, lineup_service, prediction_service, stats_service
+from components import charts, ranking_summary, statistics_guide, tactical, ui
+from services import analysis_store, cross_insight_service, final_prediction_service, lineup_service, prediction_service, stats_service, xg_service
 from services import prediction_helpers
 from services.season_format import season_list, season_period, season_range
 from sqlalchemy import text
@@ -153,6 +153,15 @@ def _result_label(goals_for, goals_against):
     return "❌ Défaite"
 
 
+def _match_xg_label(match, team_id: int) -> str:
+    is_home = int(match["home_team_id"]) == int(team_id)
+    own = match.get("home_xg" if is_home else "away_xg")
+    against = match.get("away_xg" if is_home else "home_xg")
+    if pd.isna(own) or pd.isna(against):
+        return "—"
+    return f"{float(own):.2f}–{float(against):.2f}"
+
+
 def _team_matches_history_table(matches_df: pd.DataFrame, team_id: int, team_options: dict[int, str]) -> pd.DataFrame:
     team_matches = matches_df[
         (matches_df["home_team_id"] == team_id) | (matches_df["away_team_id"] == team_id)
@@ -175,6 +184,7 @@ def _team_matches_history_table(matches_df: pd.DataFrame, team_id: int, team_opt
                 "Lieu": "Domicile" if is_home else "Extérieur",
                 "Adversaire": team_options.get(int(opponent_id), str(opponent_id)),
                 "Score": _score_label(home_goals, away_goals),
+                "xG (pour–contre)": _match_xg_label(match, team_id),
                 "Résultat": _result_label(goals_for, goals_against),
                 "Statut": match.get("status") or "Statut inconnu",
             }
@@ -355,6 +365,7 @@ def _recent_matches_table(
                 "Domicile": team_options.get(home_id, str(home_id)),
                 "Score": _score_label(match.get("home_goals"), match.get("away_goals"))
                 .replace("Score non disponible", "—"),
+                "xG": _match_xg_label(match, team_id),
                 "Extérieur": team_options.get(away_id, str(away_id)),
                 "Résultat": result_icons.get(result, "⏳"),
             }
@@ -404,6 +415,7 @@ def _render_recent_matches_list(table: pd.DataFrame):
             '<div class="compact-match-teams">'
             f'<span>{html.escape(str(match["Domicile"]))}</span>'
             f'<strong>{html.escape(str(match["Score"]))}</strong>'
+            f'<small>xG {html.escape(str(match.get("xG", "—")))}</small>'
             f'<span>{html.escape(str(match["Extérieur"]))}</span>'
             "</div>"
             f'{_result_badge_markup(match["Résultat"])}'
@@ -423,6 +435,7 @@ def _render_team_history_list(table: pd.DataFrame):
             f'{html.escape(str(match["Horodatage"]))}</span>'
             "</div>"
             f'<strong class="history-score">{html.escape(str(match["Score"]))}</strong>'
+            f'<small>xG {html.escape(str(match.get("xG (pour–contre)", "—")))}</small>'
             f'{_result_badge_markup(match["Résultat"])}'
             "</div>"
         )
@@ -1079,8 +1092,8 @@ def _legacy_show():
             top_n=6,
         )
         expected_cols = st.columns(2)
-        expected_cols[0].metric(f"Buts attendus {home_view['team_name']}", score_prediction["expected_home_goals"])
-        expected_cols[1].metric(f"Buts attendus {away_view['team_name']}", score_prediction["expected_away_goals"])
+        expected_cols[0].metric(f"Buts projetés {home_view['team_name']}", score_prediction["expected_home_goals"])
+        expected_cols[1].metric(f"Buts projetés {away_view['team_name']}", score_prediction["expected_away_goals"])
         if score_prediction["scores"]:
             st.dataframe(pd.DataFrame(score_prediction["scores"]), width="stretch", hide_index=True)
             best_score = score_prediction["scores"][0]
@@ -1240,6 +1253,8 @@ def show():
     api_refinement = final["api_refinement"]
     consensus_advice = final["consensus_advice"]
     score_prediction = final["score_prediction"]
+    home_xg_summary = xg_service.summarize_team(matches_df, home_team)
+    away_xg_summary = xg_service.summarize_team(matches_df, away_team)
     cross_insight = cross_insight_service.build_cross_insight(
         matches_df=matches_df,
         home_team=home_team,
@@ -1297,6 +1312,7 @@ def show():
     )
 
     with overview_tab:
+        statistics_guide.render("overview")
         st.subheader("Les deux équipes en un coup d'œil")
         home_column, away_column = st.columns(2)
         for column, view, venue in (
@@ -1386,6 +1402,7 @@ def show():
             )
 
     with tactical_tab:
+        statistics_guide.render("lineups")
         st.subheader("Compositions probables et opposition tactique")
         st.caption(
             f"Projection construite sur {season_period(analysis_season)}. "
@@ -1398,6 +1415,7 @@ def show():
         )
 
     with form_tab:
+        statistics_guide.render("form")
         st.subheader("Forme — 5 derniers matchs")
         st.caption(
             "✅ victoire · 🟡 match nul · ❌ défaite. Le résultat est toujours "
@@ -1460,6 +1478,7 @@ def show():
     )
 
     with h2h_tab:
+        statistics_guide.render("h2h")
         st.subheader("Confrontations directes")
         h2h_columns = st.columns(4)
         h2h_columns[0].metric("Matchs", len(h2h_table))
@@ -1482,7 +1501,51 @@ def show():
             _render_h2h_list(h2h_table)
 
     with stats_tab:
+        statistics_guide.render("statistics")
         st.subheader("Contexte statistique")
+        if home_xg_summary["matches"] or away_xg_summary["matches"]:
+            st.markdown("#### xG observés — 8 derniers matchs disponibles")
+            xg_columns = st.columns(6)
+            for offset, name, summary in (
+                (0, home_view["team_name"], home_xg_summary),
+                (3, away_view["team_name"], away_xg_summary),
+            ):
+                xg_columns[offset].metric(
+                    f"xG / match · {name}",
+                    summary["xg_for"] if summary["xg_for"] is not None else "—",
+                    help="Qualité moyenne des occasions créées sur les huit derniers matchs couverts.",
+                )
+                xg_columns[offset + 1].metric(
+                    "xGA / match",
+                    summary["xg_against"] if summary["xg_against"] is not None else "—",
+                    help="Qualité moyenne des occasions concédées à l’adversaire.",
+                )
+                difference = summary["difference"]
+                xg_columns[offset + 2].metric(
+                    "Différentiel xG",
+                    f"{difference:+.2f}" if difference is not None else "—",
+                    help=(
+                        "xG par match moins xGA par match. Une valeur positive est favorable. "
+                        f"{summary['matches']} match(s) avec xG sur "
+                        f"{summary['window_matches']} dans la fenêtre."
+                    ),
+                )
+            retrievals = [
+                value
+                for value in (
+                    home_xg_summary.get("latest_retrieved_at"),
+                    away_xg_summary.get("latest_retrieved_at"),
+                )
+                if value
+            ]
+            provenance = f" · Dernière récupération : {max(retrievals)} UTC" if retrievals else ""
+            st.caption(
+                "Source : API-Football `/fixtures/statistics` · xG = occasions créées · "
+                "xGA = occasions concédées. Valeurs observées après les matchs, jamais "
+                f"celles de la rencontre à prédire{provenance}."
+            )
+        else:
+            st.info("Aucun xG historique n’est encore stocké pour ces équipes.")
         completed_matches = matches_df.dropna(
             subset=["home_goals", "away_goals"]
         )
@@ -1534,6 +1597,7 @@ def show():
             )
 
     with prediction_tab:
+        statistics_guide.render("prediction")
         st.subheader("Prédiction du match")
         prediction_columns = st.columns(4)
         prediction_columns[0].metric(
@@ -1611,12 +1675,14 @@ def show():
         st.markdown("#### Scores probables")
         expected_columns = st.columns(2)
         expected_columns[0].metric(
-            f"Buts attendus {home_view['team_name']}",
+            f"Buts projetés {home_view['team_name']}",
             score_prediction["expected_home_goals"],
+            help="Moyenne de buts estimée avant le match par le modèle Poisson ; ce n’est pas un xG observé.",
         )
         expected_columns[1].metric(
-            f"Buts attendus {away_view['team_name']}",
+            f"Buts projetés {away_view['team_name']}",
             score_prediction["expected_away_goals"],
+            help="Moyenne de buts estimée avant le match par le modèle Poisson ; ce n’est pas un xG observé.",
         )
         if score_prediction["scores"]:
             st.dataframe(

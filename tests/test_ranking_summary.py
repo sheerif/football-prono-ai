@@ -18,15 +18,25 @@ class RankingSummaryTests(unittest.TestCase):
             )
 
         columns[0].metric.assert_called_once_with(
-            "Probabilité scénario principal", "57 %"
+            "Probabilité scénario principal",
+            "57 %",
+            help="La plus élevée des probabilités 1/N/2. Ce n’est ni la solidité ni une garantie.",
         )
         columns[1].metric.assert_called_once_with(
-            "Indice de solidité", "72 / 100"
+            "Indice de solidité",
+            "72 / 100",
+            help="Indice composite de robustesse : marge, qualité des données, stabilité et accord.",
         )
         columns[2].metric.assert_called_once_with(
-            "Qualité des données", "91 / 100"
+            "Qualité des données",
+            "91 / 100",
+            help="Complétude et fraîcheur de l’historique, des statistiques, des compositions et des sources API.",
         )
-        columns[3].metric.assert_called_once_with("Marge", "18 points")
+        columns[3].metric.assert_called_once_with(
+            "Marge",
+            "18 points",
+            help="Écart entre les deux issues 1/N/2 classées en tête. Une petite marge indique un match indécis.",
+        )
 
 
 if __name__ == "__main__":

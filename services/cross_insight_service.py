@@ -237,7 +237,7 @@ def build_cross_insight(
             home_venue["rate"] - away_venue["rate"]
         ),
         "Face-à-face": _clip(h2h["signal"]),
-        "Buts attendus": _clip((expected_home - expected_away) / 3),
+        "Projection de buts": _clip((expected_home - expected_away) / 3),
     }
     if player_intelligence and player_intelligence.get("complete"):
         home_players = player_intelligence.get("home") or {}
@@ -258,7 +258,7 @@ def build_cross_insight(
         "Forme récente": 0.18,
         "Domicile / extérieur": 0.14,
         "Face-à-face": 0.14,
-        "Buts attendus": 0.14,
+        "Projection de buts": 0.14,
         "Forme des joueurs prévus": 0.05,
         "Opposition tactique": 0.05,
     }

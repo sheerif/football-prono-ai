@@ -219,7 +219,7 @@ def build_pdf(reports: Iterable[dict], *, league: str, season: str, round_name: 
         label("N", 178, y - 77, f"{probabilities[1]:.1f} %")
         label("2", 308, y - 77, f"{probabilities[2]:.1f} %")
         label("Score probable", 48, y - 107, report["score_probable"])
-        label("Buts attendus", 188, y - 107, f"{report['expected_home_goals']:.2f} — {report['expected_away_goals']:.2f}")
+        label("Buts projetés", 188, y - 107, f"{report['expected_home_goals']:.2f} — {report['expected_away_goals']:.2f}")
         label("Solidité", 338, y - 107, f"{report['solidity']:.0f}/100")
         risk_color = GREEN if report["risk"] == "faible" else ORANGE if report["risk"] == "modéré" else RED
         pdf.setFillColor(risk_color)
@@ -230,6 +230,6 @@ def build_pdf(reports: Iterable[dict], *, league: str, season: str, round_name: 
         y -= card_height + 10
     pdf.setFillColor(MUTED)
     pdf.setFont("Helvetica", 7.5)
-    pdf.drawString(36, 24, "Les probabilités, scores et buts attendus sont des estimations calculées avec les données disponibles avant chaque match.")
+    pdf.drawString(36, 24, "Les probabilités, scores et buts projetés sont des estimations calculées avec les données disponibles avant chaque match.")
     pdf.save()
     return output.getvalue()

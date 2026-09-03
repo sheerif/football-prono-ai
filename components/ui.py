@@ -926,7 +926,7 @@ def render_cross_insight(insight: dict):
     section_label("Lecture croisée")
     st.caption(
         "Synthèse commune de la forme, du rendement domicile/extérieur, des "
-        "face-à-face, du modèle probabiliste et des buts attendus."
+        "face-à-face, du modèle probabiliste et des buts projetés."
     )
     kpi_grid(
         [

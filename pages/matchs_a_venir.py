@@ -8,10 +8,10 @@ import re
 import streamlit as st
 from sqlalchemy import text
 
-from components import charts, ranking_summary, tactical, ui
+from components import charts, ranking_summary, statistics_guide, tactical, ui
 from database.database import engine
 from services.api_football import ApiFootballClient
-from services import analysis_store, cross_insight_service, final_prediction_service, lineup_service, pdf_report_service, prediction_helpers, ranking_service
+from services import analysis_store, cross_insight_service, final_prediction_service, lineup_service, pdf_report_service, prediction_helpers, ranking_service, xg_service
 from services import schema_guard
 from services.season_format import season_period
 
@@ -1725,6 +1725,7 @@ def _render_upcoming_match_analysis(fixture: pd.Series):
     )
 
     with overview_tab:
+        statistics_guide.render("overview")
         st.subheader("Les deux équipes en un coup d'œil")
         team_columns = st.columns(2)
         for column, team_name, venue_label, stats, form_results in (
@@ -1783,13 +1784,19 @@ def _render_upcoming_match_analysis(fixture: pd.Series):
 
         probabilities = st.columns(4)
         probabilities[0].metric(
-            f"Victoire {home_name}", f"{prediction['home_probability']} %"
+            f"Victoire {home_name}",
+            f"{prediction['home_probability']} %",
+            help="Probabilité estimée de victoire de l’équipe à domicile.",
         )
         probabilities[1].metric(
-            "Match nul", f"{prediction['draw_probability']} %"
+            "Match nul",
+            f"{prediction['draw_probability']} %",
+            help="Probabilité estimée que les deux équipes terminent à égalité.",
         )
         probabilities[2].metric(
-            f"Victoire {away_name}", f"{prediction['away_probability']} %"
+            f"Victoire {away_name}",
+            f"{prediction['away_probability']} %",
+            help="Probabilité estimée de victoire de l’équipe à l’extérieur.",
         )
         probabilities[3].metric(
             "Probabilité scénario principal",
@@ -1816,6 +1823,7 @@ def _render_upcoming_match_analysis(fixture: pd.Series):
         ui.render_cross_insight(cross_insight)
 
     with form_tab:
+        statistics_guide.render("form")
         st.subheader("Forme — 5 derniers matchs")
         form_columns = st.columns(2)
         for column, team_id, team_name, results in (
@@ -1845,6 +1853,7 @@ def _render_upcoming_match_analysis(fixture: pd.Series):
                         match_analysis._render_recent_matches_list(recent)
 
     with lineups_tab:
+        statistics_guide.render("lineups")
         st.subheader("Compositions et forme individuelle")
         sync_result = st.session_state.pop(f"lineup_sync_{fixture_id}", None)
         if sync_result:
@@ -1919,6 +1928,7 @@ def _render_upcoming_match_analysis(fixture: pd.Series):
         h2h_df, home_team, away_team, home_name, away_name
     )
     with h2h_tab:
+        statistics_guide.render("h2h")
         st.subheader("Confrontations directes")
         summary = st.columns(4)
         summary[0].metric("Matchs", len(h2h_table))
@@ -1935,7 +1945,49 @@ def _render_upcoming_match_analysis(fixture: pd.Series):
             match_analysis._render_h2h_list(h2h_table)
 
     with stats_tab:
+        statistics_guide.render("statistics")
         st.subheader("Profil comparé")
+        home_xg_summary = xg_service.summarize_team(context_df, home_team)
+        away_xg_summary = xg_service.summarize_team(context_df, away_team)
+        if home_xg_summary["matches"] or away_xg_summary["matches"]:
+            st.markdown("#### xG observés — forme récente")
+            xg_columns = st.columns(6)
+            for offset, name, summary in (
+                (0, home_name, home_xg_summary),
+                (3, away_name, away_xg_summary),
+            ):
+                xg_columns[offset].metric(
+                    f"xG / match · {name}",
+                    summary["xg_for"] if summary["xg_for"] is not None else "—",
+                    help="Qualité moyenne des occasions créées sur les huit derniers matchs couverts.",
+                )
+                xg_columns[offset + 1].metric(
+                    "xGA / match",
+                    summary["xg_against"] if summary["xg_against"] is not None else "—",
+                    help="Qualité moyenne des occasions concédées à l’adversaire.",
+                )
+                difference = summary["difference"]
+                xg_columns[offset + 2].metric(
+                    "Différentiel",
+                    f"{difference:+.2f}" if difference is not None else "—",
+                    help="xG par match moins xGA par match. Une valeur positive est favorable.",
+                )
+            retrievals = [
+                value
+                for value in (
+                    home_xg_summary.get("latest_retrieved_at"),
+                    away_xg_summary.get("latest_retrieved_at"),
+                )
+                if value
+            ]
+            provenance = f" Dernière récupération : {max(retrievals)} UTC." if retrievals else ""
+            st.caption(
+                "Source : API-Football `/fixtures/statistics`. Calcul limité aux huit "
+                "matchs connus avant le coup d’envoi. La couverture dépend de la "
+                f"compétition.{provenance}"
+            )
+        else:
+            st.info("Aucun xG historique disponible pour cette affiche.")
         home_attack = home_stats["goals_for"] / max(1, home_stats["played"])
         away_attack = away_stats["goals_for"] / max(1, away_stats["played"])
         home_defense = home_stats["goals_against"] / max(
@@ -1970,6 +2022,7 @@ def _render_upcoming_match_analysis(fixture: pd.Series):
         )
 
     with prediction_tab:
+        statistics_guide.render("prediction")
         adjustment = details.get("player_adjustment")
         if adjustment:
             st.subheader("Impact de la forme des joueurs")
@@ -2003,12 +2056,14 @@ def _render_upcoming_match_analysis(fixture: pd.Series):
         st.subheader("Scores probables")
         expected = st.columns(2)
         expected[0].metric(
-            f"Buts attendus {home_name}",
+            f"Buts projetés {home_name}",
             score_prediction["expected_home_goals"],
+            help="Moyenne de buts estimée avant le match par le modèle Poisson ; ce n’est pas un xG observé.",
         )
         expected[1].metric(
-            f"Buts attendus {away_name}",
+            f"Buts projetés {away_name}",
             score_prediction["expected_away_goals"],
+            help="Moyenne de buts estimée avant le match par le modèle Poisson ; ce n’est pas un xG observé.",
         )
         score_columns = st.columns(
             min(3, max(1, len(score_prediction["scores"])))
@@ -2248,7 +2303,7 @@ def show():
     with st.expander("Rapport PDF visuel — saisons et journées", expanded=False):
         st.markdown("### Télécharger les prédictions d’une journée")
         st.caption(
-            "Le PDF inclut les probabilités 1/N/2, le score probable, les buts attendus, "
+            "Le PDF inclut les probabilités 1/N/2, le score probable, les buts projetés, "
             "la solidité, le risque et le marché recommandé. Les saisons passées sont "
             "recalculées chronologiquement, avant chaque coup d’envoi."
         )

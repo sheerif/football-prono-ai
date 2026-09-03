@@ -99,7 +99,28 @@ def load_matches(league_id: int, seasons):
     params.update({f"s{i}": season for i, season in enumerate(seasons)})
     try:
         return pd.read_sql(
-            text(f"SELECT * FROM matches WHERE league_id = :lid AND season IN ({placeholders}) ORDER BY date DESC"),
+            text(
+                f"""
+                SELECT m.*,
+                       home_stats.expected_goals AS home_xg,
+                       away_stats.expected_goals AS away_xg,
+                       home_stats.goals_prevented AS home_goals_prevented,
+                       away_stats.goals_prevented AS away_goals_prevented,
+                       home_stats.retrieved_at AS home_xg_retrieved_at,
+                       away_stats.retrieved_at AS away_xg_retrieved_at,
+                       home_stats.payload_sha256 AS home_xg_payload_sha256,
+                       away_stats.payload_sha256 AS away_xg_payload_sha256
+                FROM matches m
+                LEFT JOIN fixture_team_statistics home_stats
+                  ON home_stats.fixture_id = m.fixture_id
+                 AND home_stats.team_id = m.home_team_id
+                LEFT JOIN fixture_team_statistics away_stats
+                  ON away_stats.fixture_id = m.fixture_id
+                 AND away_stats.team_id = m.away_team_id
+                WHERE m.league_id = :lid AND m.season IN ({placeholders})
+                ORDER BY m.date DESC
+                """
+            ),
             engine,
             params=params,
         )
@@ -113,13 +134,27 @@ def load_historical_context(league_id: int, kickoff) -> pd.DataFrame:
         return pd.read_sql(
             text(
                 """
-                SELECT *
-                FROM matches
-                WHERE league_id = :league_id
-                  AND date < :kickoff
-                  AND home_goals IS NOT NULL
-                  AND away_goals IS NOT NULL
-                ORDER BY date DESC, fixture_id DESC
+                SELECT m.*,
+                       home_stats.expected_goals AS home_xg,
+                       away_stats.expected_goals AS away_xg,
+                       home_stats.goals_prevented AS home_goals_prevented,
+                       away_stats.goals_prevented AS away_goals_prevented,
+                       home_stats.retrieved_at AS home_xg_retrieved_at,
+                       away_stats.retrieved_at AS away_xg_retrieved_at,
+                       home_stats.payload_sha256 AS home_xg_payload_sha256,
+                       away_stats.payload_sha256 AS away_xg_payload_sha256
+                FROM matches m
+                LEFT JOIN fixture_team_statistics home_stats
+                  ON home_stats.fixture_id = m.fixture_id
+                 AND home_stats.team_id = m.home_team_id
+                LEFT JOIN fixture_team_statistics away_stats
+                  ON away_stats.fixture_id = m.fixture_id
+                 AND away_stats.team_id = m.away_team_id
+                WHERE m.league_id = :league_id
+                  AND m.date < :kickoff
+                  AND m.home_goals IS NOT NULL
+                  AND m.away_goals IS NOT NULL
+                ORDER BY m.date DESC, m.fixture_id DESC
                 """
             ),
             engine,

@@ -128,6 +128,7 @@ def _load_data_health() -> dict:
         "lineups": "SELECT COUNT(*) FROM fixture_lineups",
         "player_performances": "SELECT COUNT(*) FROM fixture_player_statistics",
         "analysis_snapshots": "SELECT COUNT(*) FROM match_analysis_snapshots",
+        "xg_matches": "SELECT COUNT(DISTINCT fixture_id) FROM fixture_team_statistics WHERE expected_goals IS NOT NULL",
     }
     health = {}
     with engine.begin() as conn:
@@ -375,6 +376,12 @@ def show():
                 "value": _format_int(health["analysis_snapshots"]),
                 "caption": "Dernier état des analyses conservé",
                 "accent": "#7a5c96",
+            },
+            {
+                "label": "Matchs avec xG",
+                "value": _format_int(health["xg_matches"]),
+                "caption": "Occasions observées via API-Football",
+                "accent": "#d8a528",
             },
         ]
     )

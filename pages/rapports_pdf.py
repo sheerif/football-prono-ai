@@ -19,7 +19,7 @@ def _round_key(value: object) -> int:
 
 def show() -> None:
     ui.page_hero("Rapports PDF", "Exportez une journée, un mois ou votre propre sélection de matchs.")
-    st.info("Le PDF comprend 1/N/2, score probable, buts attendus, solidité, risque et recommandation.")
+    st.info("Le PDF comprend 1/N/2, score probable, buts projetés, solidité, risque et recommandation.")
     leagues = pdf_report_service.available_leagues()
     if leagues.empty:
         st.warning("Aucune donnée de match disponible.")

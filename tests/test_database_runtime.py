@@ -38,6 +38,9 @@ class DatabaseRuntimeTests(unittest.TestCase):
                 "ix_matches_away_team_date",
                 "ix_matches_date_scores",
                 "ix_player_statistics_league_season_team",
+                "ix_fixture_team_statistics_team",
+                "ix_xg_ingestion_audit_fixture",
+                "ix_xg_ingestion_audit_run",
             }.issubset(declared)
         )
 

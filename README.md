@@ -75,6 +75,35 @@ accuracy, multiclass Brier score, log loss, draw-specific measures and a SHA-256
 fingerprint of the database rows used. Historical context and API data are
 accepted only when timestamped strictly before kickoff.
 
+## xG historiques
+
+La page « Mise à jour » peut télécharger les statistiques de matchs terminés
+depuis l'endpoint API-Football `/fixtures/statistics`. Les valeurs
+`expected_goals` et `goals_prevented` sont conservées par match et par équipe
+dans `fixture_team_statistics`. La synchronisation est incrémentale, reprend
+après une limite de quota et distingue les réponses téléchargées des matchs où
+le fournisseur publie effectivement des xG.
+
+Les écrans d'analyse présentent les moyennes récentes xG, xGA et leur
+différentiel. Pour une rencontre à venir, seules les lignes dont la date est
+strictement antérieure au coup d'envoi sont chargées. Les sorties du modèle
+Poisson sont libellées « buts projetés » afin de ne pas les confondre avec les
+xG observés fournis par l'API.
+
+Le glossaire complet des indicateurs, de leurs calculs et de leurs limites est
+disponible dans [`docs/statistics-glossary.md`](docs/statistics-glossary.md).
+La même documentation est présentée sous forme de légende contextuelle dans
+chacun des six onglets d’une prédiction.
+
+Chaque tentative xG génère également une ligne immuable dans
+`xg_ingestion_audit` avec un identifiant de lot, la fixture, l'endpoint et les
+paramètres sans secret, les heures de début et de fin, le statut, la réponse
+brute et son empreinte SHA-256. Les lignes courantes de
+`fixture_team_statistics` référencent l'audit qui les a produites. Des triggers
+SQLite interdisent la modification ou la suppression du journal et valident
+les liens d'ingestion. Le journal récent est consultable depuis la page
+« Mise à jour ».
+
 ## Analyse complète du projet
 
 ### 1) État actuel du dépôt

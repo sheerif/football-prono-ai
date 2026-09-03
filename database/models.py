@@ -53,6 +53,55 @@ class Match(Base):
     winner = Column(String, nullable=True)
     status = Column(String, nullable=True)
 
+
+class FixtureTeamStatistic(Base):
+    """Statistiques API agrégées d'une équipe pour un match terminé."""
+
+    __tablename__ = "fixture_team_statistics"
+    __table_args__ = (
+        Index("ix_fixture_team_statistics_team", "team_id"),
+    )
+
+    fixture_id = Column(Integer, ForeignKey("matches.fixture_id"), primary_key=True)
+    team_id = Column(Integer, ForeignKey("teams.id"), primary_key=True)
+    team_name = Column(String, nullable=True)
+    is_home = Column(Boolean, nullable=True)
+    expected_goals = Column(Float, nullable=True)
+    goals_prevented = Column(Float, nullable=True)
+    source = Column(String, nullable=False, default="API-Football")
+    source_endpoint = Column(String, nullable=False, default="/fixtures/statistics")
+    source_field = Column(String, nullable=False, default="expected_goals")
+    retrieved_at = Column(DateTime, nullable=True)
+    payload_sha256 = Column(String(64), nullable=True)
+    ingestion_id = Column(Integer, ForeignKey("xg_ingestion_audit.id"), nullable=True)
+    raw_json = Column(Text, nullable=True)
+    updated_at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False)
+
+
+class XgIngestionAudit(Base):
+    """Journal append-only de chaque tentative de récupération des xG."""
+
+    __tablename__ = "xg_ingestion_audit"
+    __table_args__ = (
+        Index("ix_xg_ingestion_audit_fixture", "fixture_id", "completed_at"),
+        Index("ix_xg_ingestion_audit_run", "sync_run_id"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    sync_run_id = Column(String, nullable=False)
+    fixture_id = Column(Integer, ForeignKey("matches.fixture_id"), nullable=False)
+    source = Column(String, nullable=False)
+    endpoint = Column(String, nullable=False)
+    request_json = Column(Text, nullable=False)
+    status = Column(String, nullable=False)
+    requested_at = Column(DateTime, nullable=False)
+    completed_at = Column(DateTime, nullable=False)
+    item_count = Column(Integer, nullable=False, default=0)
+    has_xg = Column(Boolean, nullable=False, default=False)
+    payload_sha256 = Column(String(64), nullable=True)
+    response_json = Column(Text, nullable=True)
+    error = Column(Text, nullable=True)
+
 class Standing(Base):
     __tablename__ = "standings"
     __table_args__ = (
