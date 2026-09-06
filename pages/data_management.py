@@ -100,7 +100,9 @@ def _recent_logs(limit: int = 6) -> pd.DataFrame:
 @st.fragment(run_every="1s")
 def _render_jobs():
     """Rafraîchit la progression des tâches de fond en temps réel."""
-    background_jobs.resume_pending_full_sync()
+    resume_pending = getattr(background_jobs, "resume_pending_full_sync", None)
+    if callable(resume_pending):
+        resume_pending()
     jobs = background_jobs.list_jobs()
     active_statuses = {"running", "waiting_quota"}
     active = [job for job in jobs if job.get("status") in active_statuses]
@@ -211,7 +213,8 @@ def show():
                 "Synchronisation exhaustive lancée. Chaque donnée reçue est "
                 "enregistrée immédiatement dans la base."
             )
-        full_state = background_jobs.full_sync_state()
+        state_loader = getattr(background_jobs, "full_sync_state", None)
+        full_state = state_loader() if callable(state_loader) else None
         if full_state and full_state.get("status") == "waiting_quota":
             st.warning(full_state.get("message") or "Synchronisation en attente du quota API.")
         registry_counts = sync_registry.counts()

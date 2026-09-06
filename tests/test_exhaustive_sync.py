@@ -1,4 +1,5 @@
 import datetime
+from pathlib import Path
 import unittest
 from unittest.mock import Mock, patch
 
@@ -16,6 +17,23 @@ class _ImmediateThread:
 
 
 class ExhaustiveSyncTests(unittest.TestCase):
+    def test_pages_tolerate_the_previous_background_service_during_deploy(self):
+        root = Path(__file__).resolve().parents[1]
+        update_page = (root / "pages" / "data_management.py").read_text(
+            encoding="utf-8"
+        )
+        shared_ui = (root / "components" / "ui.py").read_text(encoding="utf-8")
+
+        self.assertIn(
+            'getattr(background_jobs, "resume_pending_full_sync", None)',
+            update_page,
+        )
+        self.assertIn(
+            'getattr(background_jobs, "resume_pending_full_sync", None)',
+            shared_ui,
+        )
+        self.assertIn('getattr(background_jobs, "full_sync_state", None)', update_page)
+
     def test_sync_registry_metadata_survives_database_roundtrip(self):
         test_engine = create_engine("sqlite://")
         with patch.object(sync_registry, "engine", test_engine):

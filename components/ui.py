@@ -1054,7 +1054,9 @@ def render_background_jobs():
     """Actualise le suivi sans attendre une interaction sur la page."""
     from services import background_jobs
 
-    background_jobs.resume_pending_full_sync()
+    resume_pending = getattr(background_jobs, "resume_pending_full_sync", None)
+    if callable(resume_pending):
+        resume_pending()
     jobs = background_jobs.active_jobs()
     if not jobs:
         return
