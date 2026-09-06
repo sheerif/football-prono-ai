@@ -1075,6 +1075,7 @@ def import_leagues_cautious(
                 _progress(f"Ligue {lid} - {season}: téléchargement des équipes")
                 tries = 0
                 teams_ok = False
+                last_error = None
                 while tries < max_retries:
                     try:
                         resp = client.get_teams(lid, season)
@@ -1088,17 +1089,23 @@ def import_leagues_cautious(
                         teams_ok = bool(team_items)
                         break
                     except HTTPError as e:
+                        last_error = e
                         tries += 1
                         session.rollback()
                         logging.warning(f"HTTP error fetching teams {lid}/{season}: {e} — retry {tries}")
                         time.sleep(pause * tries)
                     except Exception as e:
+                        last_error = e
                         tries += 1
                         session.rollback()
                         logging.warning(f"Error fetching teams {lid}/{season}: {e} — retry {tries}")
                         time.sleep(pause * tries)
                 if not teams_ok:
-                    raise RuntimeError(f"Échec du téléchargement des équipes ({lid}/{season}) après {max_retries} tentatives.")
+                    detail = f" Dernière erreur : {last_error}" if last_error else ""
+                    raise RuntimeError(
+                        f"Échec du téléchargement des équipes ({lid}/{season}) "
+                        f"après {max_retries} tentatives.{detail}"
+                    )
                 _progress(f"Ligue {lid} - {season}: équipes traitées", increment=1)
 
                 time.sleep(pause)
@@ -1107,6 +1114,7 @@ def import_leagues_cautious(
                 _progress(f"Ligue {lid} - {season}: téléchargement des matchs")
                 tries = 0
                 fixtures_ok = False
+                last_error = None
                 while tries < max_retries:
                     try:
                         resp = client.get_fixtures(lid, season)
@@ -1140,17 +1148,23 @@ def import_leagues_cautious(
                         fixtures_ok = bool(items) or bool(session.query(models.Match).filter_by(league_id=lid, season=season).count())
                         break
                     except HTTPError as e:
+                        last_error = e
                         tries += 1
                         session.rollback()
                         logging.warning(f"HTTP error fetching fixtures {lid}/{season}: {e} — retry {tries}")
                         time.sleep(pause * tries)
                     except Exception as e:
+                        last_error = e
                         tries += 1
                         session.rollback()
                         logging.warning(f"Error fetching fixtures {lid}/{season}: {e} — retry {tries}")
                         time.sleep(pause * tries)
                 if not fixtures_ok:
-                    raise RuntimeError(f"Échec du téléchargement des matchs ({lid}/{season}) après {max_retries} tentatives.")
+                    detail = f" Dernière erreur : {last_error}" if last_error else ""
+                    raise RuntimeError(
+                        f"Échec du téléchargement des matchs ({lid}/{season}) "
+                        f"après {max_retries} tentatives.{detail}"
+                    )
                 _progress(f"Ligue {lid} - {season}: matchs traités", increment=1)
 
                 time.sleep(pause)
@@ -1159,6 +1173,7 @@ def import_leagues_cautious(
                 _progress(f"Ligue {lid} - {season}: téléchargement du classement")
                 tries = 0
                 standings_ok = False
+                last_error = None
                 while tries < max_retries:
                     try:
                         resp = client.get_standings(lid, season)
@@ -1206,17 +1221,23 @@ def import_leagues_cautious(
                         standings_ok = bool(session.query(models.Standing).filter_by(league_id=lid, season=season).count())
                         break
                     except HTTPError as e:
+                        last_error = e
                         tries += 1
                         session.rollback()
                         logging.warning(f"HTTP error fetching standings {lid}/{season}: {e} — retry {tries}")
                         time.sleep(pause * tries)
                     except Exception as e:
+                        last_error = e
                         tries += 1
                         session.rollback()
                         logging.warning(f"Error fetching standings {lid}/{season}: {e} — retry {tries}")
                         time.sleep(pause * tries)
                 if not standings_ok:
-                    raise RuntimeError(f"Échec du téléchargement du classement ({lid}/{season}) après {max_retries} tentatives.")
+                    detail = f" Dernière erreur : {last_error}" if last_error else ""
+                    raise RuntimeError(
+                        f"Échec du téléchargement du classement ({lid}/{season}) "
+                        f"après {max_retries} tentatives.{detail}"
+                    )
                 _progress(f"Ligue {lid} - {season}: classement traité", increment=1)
 
                 # polite pause between seasons

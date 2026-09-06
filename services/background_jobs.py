@@ -1,14 +1,17 @@
 import datetime
+import os
 import threading
 import traceback
 import uuid
 
-from services import import_service
+from services import import_service, sync_registry
 
 
 _lock = threading.RLock()
 _jobs: dict[str, dict] = {}
 _startup_started = False
+FULL_SYNC_CONTROL_KEY = "full-sync:exhaustive"
+ACTIVE_JOB_STATUSES = {"running", "waiting_quota"}
 DATA_JOB_KINDS = {
     "manual_import",
     "full_sync",
@@ -60,7 +63,7 @@ def _create_unique_data_job(
                 job["id"]
                 for job in _jobs.values()
                 if job.get("kind") in DATA_JOB_KINDS
-                and job.get("status") == "running"
+                and job.get("status") in ACTIVE_JOB_STATUSES
             ),
             None,
         )
@@ -79,11 +82,29 @@ def list_jobs() -> list[dict]:
 
 
 def active_jobs() -> list[dict]:
-    return [job for job in list_jobs() if job.get("status") == "running"]
+    return [
+        job for job in list_jobs() if job.get("status") in ACTIVE_JOB_STATUSES
+    ]
 
 
 def data_job_running() -> bool:
     return any(job.get("kind") in DATA_JOB_KINDS for job in active_jobs())
+
+
+def _full_sync_retry_seconds() -> int:
+    try:
+        value = int(os.getenv("FULL_SYNC_QUOTA_RETRY_SECONDS", "3600"))
+    except (TypeError, ValueError):
+        value = 3600
+    return max(60, value)
+
+
+def full_sync_state() -> dict | None:
+    """Expose l'état durable de la synchronisation exhaustive."""
+    try:
+        return sync_registry.get(FULL_SYNC_CONTROL_KEY)
+    except Exception:
+        return None
 
 
 def _progress(job_id: str, current: int, total: int, label: str):
@@ -327,12 +348,12 @@ def start_xg_sync(
     return job_id
 
 
-def start_full_sync() -> str:
-    """Lance une seule synchronisation globale incrémentale à la fois."""
+def start_full_sync(*, resumed: bool = False) -> str:
+    """Lance la synchronisation exhaustive avec reprise automatique sur quota."""
     job_id, created = _create_unique_data_job(
         "full_sync",
-        "Tout mettre à jour",
-        {"incremental": True, "persistent": True},
+        "Synchronisation exhaustive",
+        {"incremental": True, "persistent": True, "resumed": resumed},
     )
     if not created:
         return job_id
@@ -341,35 +362,117 @@ def start_full_sync() -> str:
         from services import full_sync_service
 
         started_at = _now()
+        attempt = 0
         try:
-            result = full_sync_service.run_full_sync(
-                progress_callback=lambda current, total, label: _progress(
-                    job_id, current, total, label
+            while True:
+                attempt += 1
+                _set_job(
+                    job_id,
+                    status="running",
+                    message=f"Reprise exhaustive · passage {attempt}",
+                    error=None,
                 )
+                sync_registry.mark(
+                    FULL_SYNC_CONTROL_KEY,
+                    "full_sync_control",
+                    "running",
+                    message=f"Passage {attempt} en cours",
+                    metadata={
+                        "persistent": True,
+                        "attempt": attempt,
+                        "job_id": job_id,
+                        "started_at": started_at,
+                    },
+                )
+                result = full_sync_service.run_full_sync(
+                    progress_callback=lambda current, total, label: _progress(
+                        job_id, current, total, label
+                    )
+                )
+                quota_reached = bool(result.get("quota_reached"))
+                if not quota_reached:
+                    break
+
+                retry_seconds = _full_sync_retry_seconds()
+                retry_at = (
+                    datetime.datetime.now(datetime.UTC)
+                    + datetime.timedelta(seconds=retry_seconds)
+                ).replace(tzinfo=None)
+                waiting_message = (
+                    "Quota API atteint : données conservées. Reprise automatique "
+                    f"à {retry_at.strftime('%d/%m/%Y %H:%M:%S')} UTC."
+                )
+                metadata = {
+                    "persistent": True,
+                    "attempt": attempt,
+                    "job_id": job_id,
+                    "started_at": started_at,
+                    "next_retry_at": retry_at.isoformat(),
+                    "checkpoint": result.get("checkpoint"),
+                }
+                sync_registry.mark(
+                    FULL_SYNC_CONTROL_KEY,
+                    "full_sync_control",
+                    "waiting_quota",
+                    message=waiting_message,
+                    metadata=metadata,
+                )
+                _set_job(
+                    job_id,
+                    status="waiting_quota",
+                    message=waiting_message,
+                    details={**result, **metadata},
+                )
+                import_service.record_update_log(
+                    event_type="synchronisation_globale",
+                    status="en_attente_quota",
+                    started_at=started_at,
+                    reason=waiting_message,
+                    details={**result, **metadata, "background": True},
+                )
+                threading.Event().wait(retry_seconds)
+
+            has_partial_data = bool(result.get("partial")) or bool(
+                result.get("errors")
             )
-            quota_reached = bool(result.get("quota_reached"))
-            has_partial_data = bool(result.get("partial")) or bool(result.get("errors"))
             message = (
-                "Limite API atteinte : progression conservée, relancez plus tard."
-                if quota_reached
-                else "Synchronisation partielle : certains éléments restent à compléter."
+                "Synchronisation terminée avec des données indisponibles signalées."
                 if has_partial_data
-                else "Synchronisation globale terminée"
+                else "Synchronisation exhaustive terminée"
             )
             _set_job(
                 job_id,
-                status="partial" if quota_reached or has_partial_data else "done",
+                status="partial" if has_partial_data else "done",
                 progress=1.0,
                 message=message,
                 finished_at=_now(),
                 details=result,
             )
+            sync_registry.mark(
+                FULL_SYNC_CONTROL_KEY,
+                "full_sync_control",
+                "partial" if has_partial_data else "complete",
+                message=message,
+                metadata={
+                    "persistent": True,
+                    "attempt": attempt,
+                    "job_id": job_id,
+                    "started_at": started_at,
+                    "finished_at": _now(),
+                },
+            )
             import_service.record_update_log(
                 event_type="synchronisation_globale",
-                status="partielle" if quota_reached else "effectuée",
+                status="partielle" if has_partial_data else "effectuée",
                 started_at=started_at,
                 reason=message,
-                details={**result, "background": True, "incremental": True},
+                details={
+                    **result,
+                    "background": True,
+                    "incremental": True,
+                    "persistent": True,
+                    "attempt": attempt,
+                },
             )
         except Exception as exc:
             _set_job(
@@ -379,6 +482,19 @@ def start_full_sync() -> str:
                 message="Erreur pendant la synchronisation globale",
                 finished_at=_now(),
                 traceback=traceback.format_exc(),
+            )
+            sync_registry.mark(
+                FULL_SYNC_CONTROL_KEY,
+                "full_sync_control",
+                "error",
+                message=str(exc),
+                metadata={
+                    "persistent": True,
+                    "attempt": attempt,
+                    "job_id": job_id,
+                    "started_at": started_at,
+                    "finished_at": _now(),
+                },
             )
             import_service.record_update_log(
                 event_type="synchronisation_globale",
@@ -395,6 +511,26 @@ def start_full_sync() -> str:
         daemon=True,
     ).start()
     return job_id
+
+
+def resume_pending_full_sync() -> str | None:
+    """Relance après redémarrage un traitement interrompu ou un quota expiré."""
+    if data_job_running():
+        return None
+    state = full_sync_state()
+    if not state or state.get("status") not in {"running", "waiting_quota"}:
+        return None
+    metadata = state.get("metadata") or {}
+    retry_at_raw = metadata.get("next_retry_at")
+    if state.get("status") == "waiting_quota" and retry_at_raw:
+        try:
+            if datetime.datetime.fromisoformat(retry_at_raw) > datetime.datetime.now(
+                datetime.UTC
+            ).replace(tzinfo=None):
+                return None
+        except (TypeError, ValueError):
+            pass
+    return start_full_sync(resumed=True)
 
 
 def start_startup_updates_once(connection_log_id: int | None = None) -> str | None:

@@ -100,9 +100,11 @@ def _recent_logs(limit: int = 6) -> pd.DataFrame:
 @st.fragment(run_every="1s")
 def _render_jobs():
     """Rafraîchit la progression des tâches de fond en temps réel."""
+    background_jobs.resume_pending_full_sync()
     jobs = background_jobs.list_jobs()
-    active = [job for job in jobs if job.get("status") == "running"]
-    finished = [job for job in jobs if job.get("status") != "running"][:5]
+    active_statuses = {"running", "waiting_quota"}
+    active = [job for job in jobs if job.get("status") in active_statuses]
+    finished = [job for job in jobs if job.get("status") not in active_statuses][:5]
 
     ui.section_label("Téléchargements")
     if not active:
@@ -112,7 +114,10 @@ def _render_jobs():
             st.markdown(f"### {job.get('label', 'Mise à jour')}")
             progress = float(job.get("progress") or 0)
             st.progress(progress, text=ui.friendly_progress_message(job.get("message"), progress * 100))
-            st.caption("La mise à jour continue automatiquement en arrière-plan.")
+            if job.get("status") == "waiting_quota":
+                st.warning(job.get("message"))
+            else:
+                st.caption("La mise à jour continue automatiquement en arrière-plan.")
 
     if finished:
         with st.expander("Dernières tâches terminées", expanded=False):
@@ -188,20 +193,27 @@ def show():
     with st.container(border=True):
         st.markdown("### Tout mettre à jour")
         st.write(
-            "L’application ajoute les informations manquantes et actualise les "
-            "données récentes déjà enregistrées."
+            "L’application parcourt toutes les saisons configurées et tous les "
+            "matchs connus pour conserver les données exploitées : équipes, matchs, "
+            "classements, détails, compositions, joueurs, prédictions et xG."
         )
         api_key_missing = not (os.getenv("API_FOOTBALL_KEY") or "").strip()
         if api_key_missing:
             st.error("Synchronisation indisponible : la clé API_FOOTBALL_KEY est absente. Ajoutez-la dans .env ou les secrets Streamlit.")
         if st.button(
-            "↻ Tout mettre à jour en arrière-plan",
+            "↻ Lancer la synchronisation exhaustive",
             type="primary",
             width="stretch",
             disabled=api_key_missing or data_job_active,
         ):
             job_id = background_jobs.start_full_sync()
-            st.success("Mise à jour lancée. Vous pouvez continuer à utiliser l’application.")
+            st.success(
+                "Synchronisation exhaustive lancée. Chaque donnée reçue est "
+                "enregistrée immédiatement dans la base."
+            )
+        full_state = background_jobs.full_sync_state()
+        if full_state and full_state.get("status") == "waiting_quota":
+            st.warning(full_state.get("message") or "Synchronisation en attente du quota API.")
         registry_counts = sync_registry.counts()
         if registry_counts:
             st.caption(
@@ -212,7 +224,8 @@ def show():
                 f"{registry_counts.get('error', 0)} en erreur."
             )
         st.caption(
-            "Les éléments non disponibles seront repris lors de la prochaine mise à jour."
+            "En cas de quota atteint, l’avancement reste en base et reprend "
+            "automatiquement. Les données déjà complètes ne sont pas retéléchargées."
         )
 
     ui.section_label("Actions simples")

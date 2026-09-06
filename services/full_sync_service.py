@@ -50,20 +50,41 @@ def _percent(value):
         return None
 
 
-def _upcoming_matches(days: int) -> list[dict]:
+def _upcoming_matches(days: int | None = None) -> list[dict]:
+    date_limit = ""
+    params = {}
+    if days is not None:
+        date_limit = "AND date <= datetime(CURRENT_TIMESTAMP, '+' || :days || ' days')"
+        params["days"] = max(1, int(days))
+    with engine.begin() as conn:
+        rows = conn.execute(
+            text(
+                f"""
+                SELECT fixture_id, league_id, season, date, home_team_id, away_team_id
+                FROM matches
+                WHERE date >= CURRENT_TIMESTAMP
+                  AND home_goals IS NULL AND away_goals IS NULL
+                  {date_limit}
+                ORDER BY date ASC
+                """
+            ),
+            params,
+        ).mappings().all()
+    return [dict(row) for row in rows]
+
+
+def _all_matches() -> list[dict]:
+    """Retourne tout le périmètre connu, nécessaire à une synchro exhaustive."""
     with engine.begin() as conn:
         rows = conn.execute(
             text(
                 """
-                SELECT fixture_id, league_id, season, date, home_team_id, away_team_id
+                SELECT fixture_id, league_id, season, date, home_team_id,
+                       away_team_id, home_goals, away_goals
                 FROM matches
-                WHERE date >= CURRENT_TIMESTAMP
-                  AND date <= datetime(CURRENT_TIMESTAMP, '+' || :days || ' days')
-                  AND home_goals IS NULL AND away_goals IS NULL
-                ORDER BY date ASC
+                ORDER BY date DESC, fixture_id DESC
                 """
-            ),
-            {"days": int(days)},
+            )
         ).mappings().all()
     return [dict(row) for row in rows]
 
@@ -589,14 +610,18 @@ def sync_historical_xg(
 
 
 def run_full_sync(progress_callback=None) -> dict:
-    """Complète les données manquantes et conserve un état de reprise en base."""
+    """Synchronise exhaustivement les données exploitées par l'application.
+
+    Chaque ressource est validée dans SQLite dès sa réception. Une relance
+    repart donc du registre persistant et ignore ce qui est déjà complet.
+    """
     import_service.init_db()
     sync_registry.ensure_table()
     config = import_service.get_auto_refresh_config()
-    days = int(os.getenv("FULL_SYNC_UPCOMING_DAYS", "30"))
-    pause = float(os.getenv("FULL_SYNC_PAUSE_SECONDS", str(config["pause"])))
+    pause = _nonnegative_float_env("FULL_SYNC_PAUSE_SECONDS", config["pause"])
     summary = {
         "sync_run_id": xg_service.new_sync_run_id(),
+        "mode": "exhaustive",
         "core": "pending",
         "downloaded": 0,
         "skipped": 0,
@@ -610,34 +635,78 @@ def run_full_sync(progress_callback=None) -> dict:
         if progress_callback:
             progress_callback(current, max(1, total), label)
 
+    def add_result(result: str) -> None:
+        if result in summary:
+            summary[result] += 1
+
+    def stop_for_quota(key: str, exc: Exception) -> dict:
+        summary["errors"].append(f"{key}: {exc}")
+        summary["quota_reached"] = True
+        summary["checkpoint"] = key
+        return summary
+
     progress(0, 100, "Vérification des championnats, équipes, matchs et classements...")
     seasons = list(range(config["start_season"], config["end_season"] + 1))
-    missing_core = _missing_core_scopes(config["league_ids"], seasons)
-    for index, (league_id, season) in enumerate(missing_core, start=1):
-        import_service.import_leagues_cautious(
-            [league_id],
-            seasons=[season],
-            pause=pause,
-            max_retries=config["max_retries"],
-        )
+    missing_core = set(_missing_core_scopes(config["league_ids"], seasons))
+    recent_count = max(1, int(config.get("recent_seasons") or 1))
+    recent_seasons = set(seasons[-recent_count:])
+    core_scopes = sorted(
+        missing_core
+        | {
+            (int(league_id), int(season))
+            for league_id in config["league_ids"]
+            for season in recent_seasons
+        }
+    )
+    for index, (league_id, season) in enumerate(core_scopes, start=1):
+        key = f"core:{league_id}:{season}"
+        sync_registry.mark(key, "core_season", "running")
+        try:
+            import_service.import_leagues_cautious(
+                [league_id],
+                seasons=[season],
+                pause=pause,
+                max_retries=config["max_retries"],
+                force_refresh_seasons=[season] if season in recent_seasons else None,
+            )
+            sync_registry.mark(key, "core_season", "complete", item_count=1)
+            summary["downloaded"] += 1
+        except Exception as exc:
+            sync_registry.mark(key, "core_season", "error", message=str(exc))
+            if _is_quota_error(exc):
+                return stop_for_quota(key, exc)
+            summary["errors"].append(f"{key}: {exc}")
         progress(
-            int((index / max(1, len(missing_core))) * 15),
+            int((index / max(1, len(core_scopes))) * 15),
             100,
             f"Données principales : ligue {league_id}, saison {season}",
         )
     remaining_core = _missing_core_scopes(config["league_ids"], seasons)
     summary["core"] = "complete" if not remaining_core else "partial"
-    summary["core_downloaded"] = len(missing_core)
-    summary["core_skipped"] = len(config["league_ids"]) * len(seasons) - len(missing_core)
+    summary["core_downloaded"] = len(core_scopes)
+    summary["core_skipped"] = max(
+        0, len(config["league_ids"]) * len(seasons) - len(core_scopes)
+    )
     if remaining_core:
         summary["errors"].append(
             f"{len(remaining_core)} périmètre(s) principal(aux) restent indisponibles."
         )
 
-    upcoming = _upcoming_matches(days)
-    recent_ids = _recent_fixture_ids(upcoming)
+    matches = _all_matches()
+    upcoming = _upcoming_matches()
+    completed_matches = [
+        match
+        for match in matches
+        if match.get("home_goals") is not None and match.get("away_goals") is not None
+    ]
     scopes = _player_scopes()
-    total_items = max(1, len(upcoming) * 3 + len(recent_ids) * 2 + len(scopes))
+    total_items = max(
+        1,
+        len(matches) * 2
+        + len(upcoming)
+        + len(completed_matches) * 2
+        + len(scopes),
+    )
     completed = 0
 
     def advance(label):
@@ -645,41 +714,35 @@ def run_full_sync(progress_callback=None) -> dict:
         completed += 1
         progress(15 + int((completed / total_items) * 85), 100, label)
 
-    for match in upcoming:
+    for match in matches:
         fixture_id = int(match["fixture_id"])
-        tasks = [
-            (
-                f"fixture-detail:{fixture_id}",
+        detail_key = f"fixture-detail:{fixture_id}"
+        if _fixture_details_present(fixture_id):
+            sync_registry.mark(
+                detail_key,
                 "fixture_detail",
-                lambda fid=fixture_id: client.get_fixture(fid),
-                lambda item, fid=fixture_id: _save_fixture_details(fid, item),
-                _fixture_details_present(fixture_id),
-            ),
-            (
-                f"fixture-prediction:{fixture_id}",
-                "fixture_prediction",
-                lambda fid=fixture_id: client.get_predictions(fid),
-                lambda item, fid=fixture_id: _save_prediction(fid, item),
-                _prediction_present(fixture_id),
-            ),
-        ]
-        for key, resource_type, fetch, save, already_present in tasks:
-            if already_present:
-                sync_registry.mark(key, resource_type, "complete", item_count=1, message="Déjà en base")
-                result = "skipped"
-            else:
-                try:
-                    result = _fetch_one(key, resource_type, fetch, save)
-                except Exception as exc:
-                    summary["errors"].append(f"{key}: {exc}")
-                    if _is_quota_error(exc):
-                        summary["quota_reached"] = True
-                        return summary
-                    result = "error"
+                "complete",
+                item_count=1,
+                message="Déjà en base",
+            )
+            result = "skipped"
+        else:
+            try:
+                result = _fetch_one(
+                    detail_key,
+                    "fixture_detail",
+                    lambda fid=fixture_id: client.get_fixture(fid),
+                    lambda item, fid=fixture_id: _save_fixture_details(fid, item),
+                )
+            except Exception as exc:
+                if _is_quota_error(exc):
+                    return stop_for_quota(detail_key, exc)
+                summary["errors"].append(f"{detail_key}: {exc}")
+                result = "error"
+            if result != "skipped":
                 time.sleep(pause)
-            if result in summary:
-                summary[result] += 1
-            advance(f"Match {fixture_id}: détails et prédiction")
+        add_result(result)
+        advance(f"Match {fixture_id}: détails")
 
         lineup_key = f"fixture-lineup:{fixture_id}"
         if _lineup_present(fixture_id):
@@ -701,17 +764,46 @@ def run_full_sync(progress_callback=None) -> dict:
                 result = "downloaded" if count >= 2 else ("partial" if count else "unavailable")
             except Exception as exc:
                 sync_registry.mark(lineup_key, "fixture_lineup", "error", message=str(exc))
-                summary["errors"].append(f"{lineup_key}: {exc}")
                 if _is_quota_error(exc):
-                    summary["quota_reached"] = True
-                    return summary
+                    return stop_for_quota(lineup_key, exc)
+                summary["errors"].append(f"{lineup_key}: {exc}")
                 result = "error"
             time.sleep(pause)
-        if result in summary:
-            summary[result] += 1
+        add_result(result)
         advance(f"Match {fixture_id}: composition")
 
-    for fixture_id in recent_ids:
+    for match in upcoming:
+        fixture_id = int(match["fixture_id"])
+        key = f"fixture-prediction:{fixture_id}"
+        if _prediction_present(fixture_id):
+            sync_registry.mark(
+                key,
+                "fixture_prediction",
+                "complete",
+                item_count=1,
+                message="Déjà en base",
+            )
+            result = "skipped"
+        else:
+            try:
+                result = _fetch_one(
+                    key,
+                    "fixture_prediction",
+                    lambda fid=fixture_id: client.get_predictions(fid),
+                    lambda item, fid=fixture_id: _save_prediction(fid, item),
+                )
+            except Exception as exc:
+                if _is_quota_error(exc):
+                    return stop_for_quota(key, exc)
+                summary["errors"].append(f"{key}: {exc}")
+                result = "error"
+            if result != "skipped":
+                time.sleep(pause)
+        add_result(result)
+        advance(f"Match {fixture_id}: prédiction API")
+
+    for match in completed_matches:
+        fixture_id = int(match["fixture_id"])
         key = f"fixture-players:{fixture_id}"
         try:
             if not sync_registry.should_download(key, 24):
@@ -726,13 +818,11 @@ def run_full_sync(progress_callback=None) -> dict:
                 time.sleep(pause)
         except Exception as exc:
             sync_registry.mark(key, "fixture_players", "error", message=str(exc))
-            summary["errors"].append(f"{key}: {exc}")
             if _is_quota_error(exc):
-                summary["quota_reached"] = True
-                return summary
+                return stop_for_quota(key, exc)
+            summary["errors"].append(f"{key}: {exc}")
             result = "error"
-        if result in summary:
-            summary[result] += 1
+        add_result(result)
         advance(f"Forme des joueurs: match {fixture_id}")
 
         xg_result = _sync_xg_rows(
@@ -746,6 +836,7 @@ def run_full_sync(progress_callback=None) -> dict:
         summary["errors"].extend(xg_result.get("errors") or [])
         if xg_result.get("quota_reached"):
             summary["quota_reached"] = True
+            summary["checkpoint"] = f"fixture-statistics:{fixture_id}"
             return summary
         advance(f"xG historiques: match {fixture_id}")
 
@@ -754,11 +845,12 @@ def run_full_sync(progress_callback=None) -> dict:
         season = int(scope["season"])
         key = f"season-players:{league_id}:{season}"
         existing = int(scope["player_count"] or 0)
-        if existing:
+        player_state = sync_registry.get(key)
+        if existing and player_state and player_state.get("status") == "complete":
             sync_registry.mark(key, "season_players", "complete", item_count=existing, message="Déjà en base")
             result = "skipped"
         elif (
-            (player_state := sync_registry.get(key))
+            player_state
             and player_state.get("status") != "complete"
             and not sync_registry.should_download(key, 24)
         ):
@@ -800,14 +892,17 @@ def run_full_sync(progress_callback=None) -> dict:
                 time.sleep(pause)
             except Exception as exc:
                 sync_registry.mark(key, "season_players", "error", message=str(exc))
-                summary["errors"].append(f"{key}: {exc}")
                 if _is_quota_error(exc):
-                    summary["quota_reached"] = True
-                    return summary
+                    return stop_for_quota(key, exc)
+                summary["errors"].append(f"{key}: {exc}")
                 result = "error"
-        if result in summary:
-            summary[result] += 1
+        add_result(result)
         advance(f"Joueurs: ligue {league_id}, saison {season}")
 
+    summary["prediction_coverage"] = prediction_coverage()
+    summary["xg_coverage"] = xg_service.coverage(
+        config["league_ids"],
+        seasons,
+    )
     progress(100, 100, "Toutes les informations disponibles ont été vérifiées")
     return summary

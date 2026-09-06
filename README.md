@@ -48,6 +48,25 @@ streamlit run app.py
 
 The app creates SQLite tables on first run.
 
+### Synchronisation exhaustive et quotas
+
+L’action **Synchronisation exhaustive** parcourt toutes les ligues et saisons
+configurées ainsi que tous les matchs connus. Elle conserve dans SQLite les
+données utilisées par l’application : championnats, équipes, matchs,
+classements, détails de rencontre, compositions, joueurs, performances,
+prédictions API et statistiques de match, dont les xG.
+
+Chaque ressource reçue est validée immédiatement et son état est enregistré
+dans `resource_sync_state`. Si API-Football refuse une requête à cause du
+quota, le traitement mémorise son point de reprise, attend le renouvellement
+du quota puis continue en ignorant les ressources déjà complètes. Cet état
+survit à un redémarrage tant que le fichier `football.db` est conservé.
+
+`FULL_SYNC_QUOTA_RETRY_SECONDS` règle le délai entre deux tentatives après un
+quota atteint (3600 secondes par défaut, minimum 60). Le mécanisme ne contourne
+pas les limites du fournisseur : il étale automatiquement le téléchargement
+sur plusieurs fenêtres de quota.
+
 ### Supported database
 
 SQLite is the only officially supported database engine. Some synchronization

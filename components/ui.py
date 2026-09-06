@@ -91,7 +91,9 @@ def friendly_progress_message(message: str | None, percent: float | None = None)
     """Return a short status sentence for users (hide technical API wording)."""
     raw = str(message or "").strip()
     lower = raw.lower()
-    if "termin" in lower or "complete" in lower:
+    if "quota" in lower or "attente" in lower:
+        label = "En attente du renouvellement du quota API…"
+    elif "termin" in lower or "complete" in lower:
         label = "Mise à jour terminée"
     elif "prépar" in lower or "initial" in lower or not raw:
         label = "Préparation…"
@@ -1052,6 +1054,7 @@ def render_background_jobs():
     """Actualise le suivi sans attendre une interaction sur la page."""
     from services import background_jobs
 
+    background_jobs.resume_pending_full_sync()
     jobs = background_jobs.active_jobs()
     if not jobs:
         return
@@ -1061,3 +1064,5 @@ def render_background_jobs():
         st.caption(job.get("label", "Tâche en arrière-plan"))
         progress = float(job.get("progress") or 0)
         st.progress(progress, text=friendly_progress_message(job.get("message"), progress * 100))
+        if job.get("status") == "waiting_quota":
+            st.caption(job.get("message"))

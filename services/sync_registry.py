@@ -38,7 +38,14 @@ def get(resource_key: str) -> dict | None:
             text("SELECT * FROM resource_sync_state WHERE resource_key = :key"),
             {"key": str(resource_key)},
         ).mappings().first()
-    return dict(row) if row else None
+    if not row:
+        return None
+    result = dict(row)
+    try:
+        result["metadata"] = json.loads(result.get("metadata_json") or "{}")
+    except (TypeError, ValueError):
+        result["metadata"] = {}
+    return result
 
 
 def should_download(resource_key: str, unavailable_retry_hours: int = 12) -> bool:
@@ -112,6 +119,9 @@ def counts() -> dict[str, int]:
     ensure_table()
     with engine.begin() as conn:
         rows = conn.execute(
-            text("SELECT status, COUNT(*) AS count FROM resource_sync_state GROUP BY status")
+            text(
+                "SELECT status, COUNT(*) AS count FROM resource_sync_state "
+                "WHERE resource_type <> 'full_sync_control' GROUP BY status"
+            )
         ).fetchall()
     return {str(status): int(count) for status, count in rows}
