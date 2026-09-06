@@ -21,6 +21,7 @@ PREVIEW_CACHE_VERSION = "api-refinement-v4"
 
 
 def _load_upcoming_matches(days_ahead: int, league_ids: list[int] | None = None) -> pd.DataFrame:
+    """Charge la saison active complète jusqu'à l'horizon futur demandé."""
     params = {"days_ahead": int(days_ahead)}
     league_filter = ""
     if league_ids:
@@ -41,15 +42,19 @@ def _load_upcoming_matches(days_ahead: int, league_ids: list[int] | None = None)
             COALESCE(home.name, 'Equipe ' || m.home_team_id) AS home_name,
             m.away_team_id,
             COALESCE(away.name, 'Equipe ' || m.away_team_id) AS away_name,
+            m.home_goals,
+            m.away_goals,
             COALESCE(m.status, 'Programmé') AS status
         FROM matches m
         LEFT JOIN leagues l ON l.id = m.league_id
         LEFT JOIN teams home ON home.id = m.home_team_id
         LEFT JOIN teams away ON away.id = m.away_team_id
-        WHERE m.date >= CURRENT_TIMESTAMP
+        WHERE m.season = (
+              SELECT MAX(current_season.season)
+              FROM matches current_season
+              WHERE current_season.league_id = m.league_id
+          )
           AND m.date <= datetime(CURRENT_TIMESTAMP, '+' || :days_ahead || ' days')
-          AND m.home_goals IS NULL
-          AND m.away_goals IS NULL
           {league_filter}
         ORDER BY l.name, m.date, home.name, away.name
         """
@@ -241,6 +246,120 @@ def _status_label(value) -> str:
     }
     raw = str(value or "").strip()
     return labels.get(raw, raw or "A venir")
+
+
+def _match_has_result(match) -> bool:
+    """Un score officiel prime sur les libellés de statut parfois obsolètes."""
+    getter = match.get if hasattr(match, "get") else lambda key: getattr(match, key, None)
+    return pd.notna(getter("home_goals")) and pd.notna(getter("away_goals"))
+
+
+def _future_fixture_ids(rows: pd.DataFrame, now=None) -> list[int]:
+    """Empêche tout appel de prédiction API après le coup d'envoi."""
+    if rows.empty:
+        return []
+    reference = pd.Timestamp.now(tz="UTC") if now is None else pd.to_datetime(now, utc=True)
+    dates = pd.to_datetime(rows["scheduled_at"], errors="coerce", utc=True)
+    selected = rows.loc[
+        dates.ge(reference)
+        & rows["home_goals"].isna()
+        & rows["away_goals"].isna(),
+        "fixture_id",
+    ]
+    return selected.astype(int).tolist()
+
+
+def _prediction_player_intelligence(match) -> dict:
+    """Évite d'injecter la composition réelle dans une prédiction historique."""
+    if _match_has_result(match):
+        return lineup_service.get_projected_match_intelligence(
+            home_team_id=int(match.home_team_id),
+            away_team_id=int(match.away_team_id),
+            league_id=int(match.league_id),
+            season=int(match.season),
+            before_date=match.date,
+        )
+    return lineup_service.get_match_intelligence(
+        fixture_id=int(match.fixture_id),
+        home_team_id=int(match.home_team_id),
+        away_team_id=int(match.away_team_id),
+        season=int(match.season),
+        match_date=match.date,
+    )
+
+
+def _observed_fixture_statistics(fixture_id: int) -> pd.DataFrame:
+    """Construit un tableau lisible à partir des statistiques brutes persistées."""
+    try:
+        rows = pd.read_sql(
+            text(
+                """
+                SELECT team_name, is_home, expected_goals, goals_prevented, raw_json
+                FROM fixture_team_statistics
+                WHERE fixture_id = :fixture_id
+                ORDER BY is_home DESC
+                """
+            ),
+            engine,
+            params={"fixture_id": int(fixture_id)},
+        )
+    except Exception:
+        return pd.DataFrame()
+    if rows.empty:
+        return pd.DataFrame()
+
+    values = {}
+    team_names = {True: "Domicile", False: "Extérieur"}
+    for row in rows.itertuples(index=False):
+        side = bool(row.is_home)
+        team_names[side] = row.team_name or team_names[side]
+        try:
+            payload = json.loads(row.raw_json or "{}")
+        except (TypeError, ValueError):
+            payload = {}
+        team_values = {
+            str(item.get("type") or "").strip().casefold(): item.get("value")
+            for item in payload.get("statistics") or []
+            if isinstance(item, dict)
+        }
+        if row.expected_goals is not None:
+            team_values["expected_goals"] = row.expected_goals
+        if row.goals_prevented is not None:
+            team_values["goals_prevented"] = row.goals_prevented
+        values[side] = team_values
+
+    indicators = (
+        ("expected_goals", "xG"),
+        ("shots on goal", "Tirs cadrés"),
+        ("shots off goal", "Tirs non cadrés"),
+        ("total shots", "Tirs totaux"),
+        ("blocked shots", "Tirs bloqués"),
+        ("ball possession", "Possession"),
+        ("corner kicks", "Corners"),
+        ("offsides", "Hors-jeu"),
+        ("fouls", "Fautes"),
+        ("yellow cards", "Cartons jaunes"),
+        ("red cards", "Cartons rouges"),
+        ("goalkeeper saves", "Arrêts du gardien"),
+        ("total passes", "Passes tentées"),
+        ("passes accurate", "Passes réussies"),
+        ("passes %", "Précision des passes"),
+        ("goals_prevented", "Buts évités"),
+    )
+    output = []
+    for key, label in indicators:
+        home_value = values.get(True, {}).get(key)
+        away_value = values.get(False, {}).get(key)
+        if home_value is None and away_value is None:
+            continue
+        output.append(
+            {
+                "Statistique": label,
+                team_names[True]: "—" if home_value is None else home_value,
+                team_names[False]: "—" if away_value is None else away_value,
+            }
+        )
+    return pd.DataFrame(output)
 
 
 def _load_cached_fixture_details(league_id: int, season: int, fixture_ids: tuple[int, ...]) -> dict[int, dict]:
@@ -817,6 +936,8 @@ def _preview_source_hash(match, context_df: pd.DataFrame) -> str:
         "date": _clean_hash_value(match.date),
         "home_team_id": int(match.home_team_id),
         "away_team_id": int(match.away_team_id),
+        "home_goals": _clean_hash_value(getattr(match, "home_goals", None)),
+        "away_goals": _clean_hash_value(getattr(match, "away_goals", None)),
         "home_name": _clean_hash_value(match.home_name),
         "away_name": _clean_hash_value(match.away_name),
         "league_name": _clean_hash_value(match.league_name),
@@ -992,15 +1113,13 @@ def _build_match_preview(match, context_df: pd.DataFrame) -> dict:
         home_team_id: home_name,
         away_team_id: away_name,
     }
-    player_intelligence = lineup_service.get_match_intelligence(
-        fixture_id=int(match.fixture_id),
-        home_team_id=home_team_id,
-        away_team_id=away_team_id,
-        season=int(match.season),
-        match_date=match.date,
-    )
-    api_signal = cross_insight_service.load_fixture_api_signal(
-        int(match.fixture_id)
+    player_intelligence = _prediction_player_intelligence(match)
+    api_signal = (
+        cross_insight_service.load_fixture_api_signal_before(
+            int(match.fixture_id), match.date
+        )
+        if _match_has_result(match)
+        else cross_insight_service.load_fixture_api_signal(int(match.fixture_id))
     )
     final = _calculate_final_prediction(
         context_df,
@@ -1176,12 +1295,24 @@ def _render_match_detail(row: pd.Series, force_api_refresh: bool = False):
     if row.get("Logo extérieur"):
         logo_cols[2].image(row["Logo extérieur"], width=52)
 
-    signal_cols = st.columns(3)
-    signal_cols[0].metric("Pronostic", row.get("Pronostic") or "-")
-    signal_cols[1].metric(
+    played = _match_has_result(row)
+    if played:
+        st.success(
+            f"Match déjà joué · Résultat : {int(row['home_goals'])}–{int(row['away_goals'])}"
+        )
+    signal_cols = st.columns(4 if played else 3)
+    offset = 0
+    if played:
+        signal_cols[0].metric(
+            "Résultat officiel",
+            f"{int(row['home_goals'])}–{int(row['away_goals'])}",
+        )
+        offset = 1
+    signal_cols[offset].metric("Pronostic pré-match", row.get("Pronostic") or "-")
+    signal_cols[offset + 1].metric(
         "Probabilité scénario principal", row.get("Confiance") or "-"
     )
-    signal_cols[2].metric("Score", row.get("Score probable") or "-")
+    signal_cols[offset + 2].metric("Score prédit", row.get("Score probable") or "-")
 
     st.info(row.get("Résumé") or "Résumé non disponible.")
 
@@ -1228,19 +1359,32 @@ def _render_match_card(row: pd.Series, force_api_refresh: bool = False):
         )
         st.write(f"**{venue}**{', ' + city if city else ''}")
 
-        signal_cols = st.columns(3)
-        signal_cols[0].caption("Pronostic")
-        signal_cols[0].write(f"**{row.get('Pronostic') or '-'}**")
-        signal_cols[1].caption("Probabilité scénario principal")
-        signal_cols[1].write(f"**{row.get('Confiance') or '-'}**")
-        signal_cols[2].caption("Score")
-        signal_cols[2].write(f"**{row.get('Score probable') or '-'}**")
+        played = _match_has_result(row)
+        if played:
+            st.success(
+                "Match déjà joué · Résultat officiel : "
+                f"{int(row['home_goals'])}–{int(row['away_goals'])}"
+            )
+        signal_cols = st.columns(4 if played else 3)
+        offset = 0
+        if played:
+            signal_cols[0].caption("Résultat")
+            signal_cols[0].write(
+                f"**{int(row['home_goals'])}–{int(row['away_goals'])}**"
+            )
+            offset = 1
+        signal_cols[offset].caption("Pronostic pré-match")
+        signal_cols[offset].write(f"**{row.get('Pronostic') or '-'}**")
+        signal_cols[offset + 1].caption("Probabilité scénario principal")
+        signal_cols[offset + 1].write(f"**{row.get('Confiance') or '-'}**")
+        signal_cols[offset + 2].caption("Score prédit")
+        signal_cols[offset + 2].write(f"**{row.get('Score probable') or '-'}**")
 
         st.info(row.get("Résumé") or "Résumé non disponible.")
 
         prediction = _load_cached_prediction(fixture_id)
         if prediction:
-            st.markdown("**Conseil API**")
+            st.markdown("**Conseil API pré-match**")
             st.write(f"**{_translate_api_advice(prediction.get('api_advice'), prediction.get('api_winner'))}**")
             st.caption(f"Probabilités API 1/N/2: {_api_probability_line(prediction)}")
         else:
@@ -1633,14 +1777,14 @@ def _render_upcoming_match_analysis(fixture: pd.Series):
     team_options = prediction_helpers.fetch_teams(context_df)
     team_options[home_team] = home_name
     team_options[away_team] = away_name
-    player_intelligence = lineup_service.get_match_intelligence(
-        fixture_id=fixture_id,
-        home_team_id=home_team,
-        away_team_id=away_team,
-        season=int(fixture["season"]),
-        match_date=fixture["date"],
+    player_intelligence = _prediction_player_intelligence(fixture)
+    api_signal = (
+        cross_insight_service.load_fixture_api_signal_before(
+            fixture_id, fixture["date"]
+        )
+        if _match_has_result(fixture)
+        else cross_insight_service.load_fixture_api_signal(fixture_id)
     )
-    api_signal = cross_insight_service.load_fixture_api_signal(fixture_id)
     api_prediction = _api_prediction_for_display(api_signal)
     final = _calculate_final_prediction(
         context_df,
@@ -1699,6 +1843,17 @@ def _render_upcoming_match_analysis(fixture: pd.Series):
             "historical_match_count": int(len(context_df)),
         },
     )
+
+    if _match_has_result(fixture):
+        st.success(
+            "Match déjà joué · Résultat officiel : "
+            f"{home_name} {int(fixture['home_goals'])}–"
+            f"{int(fixture['away_goals'])} {away_name}"
+        )
+        st.caption(
+            "La prédiction et les statistiques de forme ci-dessous sont "
+            "reconstruites uniquement avec les informations antérieures au coup d’envoi."
+        )
 
     match_analysis._render_match_header(
         str(fixture["league_name"]),
@@ -1946,6 +2101,21 @@ def _render_upcoming_match_analysis(fixture: pd.Series):
 
     with stats_tab:
         statistics_guide.render("statistics")
+        if _match_has_result(fixture):
+            st.subheader("Statistiques observées du match")
+            observed = _observed_fixture_statistics(fixture_id)
+            if observed.empty:
+                st.info(
+                    "Le résultat est enregistré, mais les statistiques détaillées "
+                    "de ce match ne sont pas encore disponibles dans la base."
+                )
+            else:
+                st.dataframe(observed, hide_index=True, width="stretch")
+                st.caption(
+                    "Données constatées après le match · Source : API-Football "
+                    "`/fixtures/statistics`. Elles sont affichées séparément et "
+                    "ne modifient jamais la prédiction pré-match."
+                )
         st.subheader("Profil comparé")
         home_xg_summary = xg_service.summarize_team(context_df, home_team)
         away_xg_summary = xg_service.summarize_team(context_df, away_team)
@@ -2132,7 +2302,7 @@ def show():
     schema_guard.ensure_fixture_api_cache_tables()
     ui.page_hero(
         "Matchs à venir",
-        "Consultez les prochaines affiches importées dans la base, avec dates, heures et résumé prévisionnel pour chaque ligue.",
+        "Consultez la saison active par journée : matchs à venir, rencontres déjà jouées, résultats et statistiques.",
     )
 
     selected_fixture_id = st.session_state.get("selected_upcoming_fixture")
@@ -2176,7 +2346,14 @@ def show():
             format_func=lambda league_id: league_labels[league_id],
             help="La Ligue 1 est sélectionnée par défaut. Ajoutez les autres ligues que vous souhaitez afficher.",
         )
-        days_ahead = cols[1].number_input("Jours à venir", min_value=1, max_value=365, value=365, step=7)
+        days_ahead = cols[1].number_input(
+            "Horizon futur (jours)",
+            min_value=1,
+            max_value=365,
+            value=365,
+            step=7,
+            help="Les matchs déjà joués de la saison active restent affichés.",
+        )
         compare_api = st.checkbox("Comparer avec l'API et mettre à jour", value=False)
 
     if not selected_leagues:
@@ -2208,7 +2385,7 @@ def show():
     first_match = _format_datetime(upcoming["date"].min())
     last_match = _format_datetime(upcoming["date"].max())
     cols = st.columns(4)
-    cols[0].metric("Matchs trouvés", total_matches)
+    cols[0].metric("Matchs de la saison", total_matches)
     cols[1].metric("Ligues", league_count)
     cols[2].metric("Premier match", first_match)
     cols[3].metric("Dernier match", last_match)
@@ -2218,13 +2395,28 @@ def show():
         int(len(upcoming)),
         progress_callback=lambda current, total, label: _update_progress(progress_bar, status_slot, current, total, label),
     )
+    result_columns = upcoming[
+        ["fixture_id", "date", "home_goals", "away_goals", "status"]
+    ].copy()
+    previews = previews.drop(
+        columns=["home_goals", "away_goals", "database_status"],
+        errors="ignore",
+    ).merge(
+        result_columns.rename(
+            columns={"date": "scheduled_at", "status": "database_status"}
+        ),
+        on="fixture_id",
+        how="left",
+    )
+    played_mask = previews["home_goals"].notna() & previews["away_goals"].notna()
+    previews.loc[played_mask, "Statut"] = "Terminé"
     progress_bar.progress(1.0, text="Chargement terminé")
     status_slot.caption("Toutes les données demandées sont prêtes.")
 
     with st.container(border=True):
         st.markdown("### Disponibilité complète")
         st.caption(
-            "Ce bouton synchronise SQLite avec l’API pour tous les matchs à venir du filtre courant: "
+            "Ce bouton synchronise SQLite avec l’API pour toute la saison active du filtre courant : "
             "les données identiques restent inchangées, les différences sont mises à jour."
         )
         if st.button("Synchroniser toutes les journées", type="primary", width="stretch"):
@@ -2237,8 +2429,9 @@ def show():
                 upcoming,
                 progress_callback=lambda current, total, label: _update_progress(bulk_progress, bulk_status, current, total, label),
             )
+            future_preview_ids = _future_fixture_ids(previews)
             prediction_stats = _prefetch_api_predictions(
-                previews["fixture_id"].tolist(),
+                future_preview_ids,
                 force_refresh=bool(compare_api),
                 progress_callback=lambda current, total, label: _update_progress(bulk_progress, bulk_status, current, total, label),
             )
@@ -2280,13 +2473,25 @@ def show():
         league_rows["Journée"].dropna().drop_duplicates().tolist(),
         key=_round_sort_key,
     )
-    selected_round = st.selectbox("Journée", options=round_options, key="upcoming_round")
+    scheduled_dates = pd.to_datetime(
+        league_rows["scheduled_at"], errors="coerce", utc=True
+    )
+    future_rounds = league_rows.loc[
+        scheduled_dates.ge(pd.Timestamp.now(tz="UTC")), "Journée"
+    ].tolist()
+    default_round = future_rounds[0] if future_rounds else round_options[-1]
+    selected_round = st.selectbox(
+        "Journée",
+        options=round_options,
+        index=round_options.index(default_round),
+        key="upcoming_round",
+    )
     round_rows = league_rows[league_rows["Journée"] == selected_round].copy().sort_values(["Date", "Heure", "Match"])
 
     api_progress = st.progress(0, text="0 % — Vérification des conseils API")
     api_status = st.empty()
     api_stats = _prefetch_api_predictions(
-        round_rows["fixture_id"].tolist(),
+        _future_fixture_ids(round_rows),
         force_refresh=bool(compare_api),
         progress_callback=lambda current, total, label: _update_progress(api_progress, api_status, current, total, label),
     )
@@ -2297,7 +2502,13 @@ def show():
         f"{api_stats['unchanged']} déjà en base, {api_stats['unavailable']} indisponible(s)."
     )
 
-    st.caption(f"{selected_league} - {selected_round} - {len(round_rows)} match(s)")
+    played_count = int(
+        (round_rows["home_goals"].notna() & round_rows["away_goals"].notna()).sum()
+    )
+    st.caption(
+        f"{selected_league} - {selected_round} - {len(round_rows)} match(s) · "
+        f"{played_count} déjà joué(s)"
+    )
     _render_match_cards(round_rows, force_api_refresh=False)
 
     with st.expander("Rapport PDF visuel — saisons et journées", expanded=False):
