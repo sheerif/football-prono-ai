@@ -45,9 +45,9 @@ def _is_quota_error(error: Exception | str) -> bool:
 
 def _daily_reserve() -> int:
     try:
-        return max(0, int(os.getenv("FULL_SYNC_DAILY_RESERVE", "500")))
+        return max(0, int(os.getenv("FULL_SYNC_DAILY_RESERVE", "0")))
     except (TypeError, ValueError):
-        return 500
+        return 0
 
 
 def _request_count(api_client) -> int:
@@ -59,13 +59,16 @@ def _request_count(api_client) -> int:
 
 def _daily_reserve_reached(api_client, initial_request_count: int) -> bool:
     """Protège une réserve seulement après une réponse reçue dans ce passage."""
+    reserve = _daily_reserve()
+    if reserve <= 0:
+        return False
     if _request_count(api_client) <= initial_request_count:
         return False
     raw_remaining = (getattr(api_client, "last_rate_limit", {}) or {}).get(
         "daily_remaining"
     )
     try:
-        return int(raw_remaining) <= _daily_reserve()
+        return int(raw_remaining) <= reserve
     except (TypeError, ValueError):
         return False
 

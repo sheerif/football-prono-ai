@@ -18,6 +18,16 @@ class _ImmediateThread:
 
 
 class ExhaustiveSyncTests(unittest.TestCase):
+    def test_daily_reserve_is_disabled_by_default(self):
+        api_client = Mock()
+        api_client.request_count = 11
+        api_client.last_rate_limit = {"daily_remaining": "0"}
+        with patch.dict("os.environ", {}, clear=False):
+            with patch("services.full_sync_service.os.getenv", return_value=None):
+                self.assertFalse(
+                    full_sync_service._daily_reserve_reached(api_client, 10)
+                )
+
     def test_daily_reserve_uses_a_current_pass_rate_limit_header(self):
         api_client = Mock()
         api_client.request_count = 11

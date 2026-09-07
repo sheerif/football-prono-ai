@@ -563,10 +563,11 @@ def start_full_sync(*, resumed: bool = False) -> str:
                     tzinfo=None
                 )
                 budget_reserved = bool(result.get("budget_reserved"))
+                daily_reserve = int(result.get("daily_reserve") or 0)
                 quota_kind = "minute" if _is_minute_quota(result) else "journalier"
                 if budget_reserved:
                     waiting_message = (
-                        f"Réserve quotidienne protégée : {int(result.get('daily_reserve') or 500)} "
+                        f"Réserve quotidienne protégée : {daily_reserve} "
                         "requêtes conservées pour les prédictions et mises à jour courantes. "
                         "La synchronisation exhaustive reprendra après le renouvellement."
                     )
@@ -589,7 +590,7 @@ def start_full_sync(*, resumed: bool = False) -> str:
                     "next_retry_at": retry_at.isoformat(),
                     "checkpoint": result.get("checkpoint"),
                     "budget_reserved": budget_reserved,
-                    "daily_reserve": int(result.get("daily_reserve") or 500),
+                    "daily_reserve": daily_reserve,
                     **_best_progress_snapshot(job_id),
                     **_result_metrics(result),
                 }
@@ -719,7 +720,7 @@ def resume_pending_full_sync() -> str | None:
         quota = api_quota_status()
         if quota.get("verified"):
             if metadata.get("budget_reserved"):
-                reserve = int(metadata.get("daily_reserve") or 500)
+                reserve = int(metadata.get("daily_reserve") or 0)
                 if int(quota.get("remaining") or 0) > reserve:
                     return start_full_sync(resumed=True)
                 return None

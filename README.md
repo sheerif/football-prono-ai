@@ -89,12 +89,11 @@ forcer un autre délai de secours (minimum 60 secondes). Le
 mécanisme ne contourne pas les limites du fournisseur : il étale automatiquement
 le téléchargement sur plusieurs fenêtres de quota.
 
-La synchronisation exhaustive conserve par défaut une réserve quotidienne de
-500 requêtes pour les prédictions et les mises à jour courantes. La variable
-`FULL_SYNC_DAILY_RESERVE` permet d'ajuster cette valeur. Les traitements
-historiques s'arrêtent à cette réserve sans perdre leur progression et ne
-reprennent que lorsque `/status` signale un nouveau budget supérieur à la
-réserve.
+La synchronisation exhaustive n'applique aucune réserve interne par défaut :
+elle peut utiliser la totalité des 7 500 requêtes du forfait. La limite du
+fournisseur reste toutefois incontournable ; lorsqu'elle est atteinte, la
+progression est conservée jusqu'à minuit. Une réserve facultative peut être
+activée avec `FULL_SYNC_DAILY_RESERVE` (valeur par défaut : `0`).
 
 ### Supported database
 
