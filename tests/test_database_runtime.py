@@ -9,6 +9,56 @@ from services import background_jobs, import_service
 
 
 class DatabaseRuntimeTests(unittest.TestCase):
+    def test_complete_historical_season_sends_no_api_request(self):
+        session = Mock()
+        session.query.return_value.filter_by.return_value.count.return_value = 10
+        with (
+            patch.object(import_service, "SessionLocal", return_value=session),
+            patch.object(import_service, "register_league_seasons"),
+            patch.object(import_service, "_sync_league_metadata") as metadata,
+            patch.object(import_service.client, "get_teams") as teams,
+            patch.object(import_service.client, "get_fixtures") as fixtures,
+            patch.object(import_service.client, "get_standings") as standings,
+        ):
+            import_service.import_leagues_cautious(
+                [61], seasons=[2025], pause=0, max_retries=1
+            )
+
+        metadata.assert_not_called()
+        teams.assert_not_called()
+        fixtures.assert_not_called()
+        standings.assert_not_called()
+
+    def test_missing_standings_do_not_redownload_teams_or_fixtures(self):
+        session = Mock()
+        counts = iter([10, 20, 0, 10])
+        session.query.return_value.filter_by.return_value.count.side_effect = (
+            lambda: next(counts)
+        )
+        league = Mock(name="Ligue 1", logo="logo.png")
+        session.get.return_value = league
+        with (
+            patch.object(import_service, "SessionLocal", return_value=session),
+            patch.object(import_service, "register_league_seasons"),
+            patch.object(import_service, "_sync_league_metadata") as metadata,
+            patch.object(import_service.client, "get_teams") as teams,
+            patch.object(import_service.client, "get_fixtures") as fixtures,
+            patch.object(
+                import_service.client,
+                "get_standings",
+                return_value={"response": []},
+            ) as standings,
+            patch.object(import_service.time, "sleep"),
+        ):
+            import_service.import_leagues_cautious(
+                [61], seasons=[2025], pause=0, max_retries=1
+            )
+
+        metadata.assert_not_called()
+        teams.assert_not_called()
+        fixtures.assert_not_called()
+        standings.assert_called_once_with(61, 2025)
+
     def test_season_access_audit_reuses_same_persistent_scope(self):
         config = {
             "league_ids": [61],

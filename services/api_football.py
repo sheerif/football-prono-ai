@@ -1,6 +1,8 @@
+import copy
 import datetime
 import os
 import threading
+import time
 
 import requests
 from dotenv import load_dotenv
@@ -16,6 +18,7 @@ DEFAULT_TIMEOUT = (5, 30)
 RETRY_STATUS_CODES = (500, 502, 503, 504)
 _request_lock = threading.RLock()
 _daily_blocked_until: datetime.datetime | None = None
+_response_cache: dict[tuple, tuple[float, dict]] = {}
 
 
 def _next_midnight_utc() -> datetime.datetime:
@@ -52,6 +55,43 @@ def _is_daily_quota_error(detail: str) -> bool:
             "quota journalier",
         )
     )
+
+
+def _cache_ttl_seconds() -> int:
+    try:
+        return max(0, int(os.getenv("API_FOOTBALL_REQUEST_CACHE_SECONDS", "60")))
+    except (TypeError, ValueError):
+        return 60
+
+
+def _cache_key(api_key: str, path: str, params) -> tuple:
+    normalized = tuple(sorted((str(key), str(value)) for key, value in (params or {}).items()))
+    return hash(api_key), str(path), normalized
+
+
+def _cached_response(key: tuple):
+    cached = _response_cache.get(key)
+    if not cached:
+        return None
+    expires_at, payload = cached
+    if time.monotonic() >= expires_at:
+        _response_cache.pop(key, None)
+        return None
+    return copy.deepcopy(payload)
+
+
+def _remember_response(key: tuple, payload: dict) -> None:
+    ttl = _cache_ttl_seconds()
+    if ttl <= 0:
+        return
+    now = time.monotonic()
+    expired = [item for item, value in _response_cache.items() if value[0] <= now]
+    for item in expired:
+        _response_cache.pop(item, None)
+    if len(_response_cache) >= 2048:
+        oldest = min(_response_cache, key=lambda item: _response_cache[item][0])
+        _response_cache.pop(oldest, None)
+    _response_cache[key] = (now + ttl, copy.deepcopy(payload))
 
 
 def _retry_count() -> int:
@@ -117,7 +157,13 @@ class ApiFootballClient:
                     "Quota API journalier déjà atteint : appel bloqué localement "
                     "jusqu'à minuit UTC pour éviter une requête refusée supplémentaire."
                 )
-            return self._get_unlocked(path, params)
+            key = _cache_key(self.api_key, path, params)
+            cached = _cached_response(key)
+            if cached is not None:
+                return cached
+            payload = self._get_unlocked(path, params)
+            _remember_response(key, payload)
+            return payload
 
     def _get_unlocked(self, path, params=None):
         url = f"{self.base}{path}"

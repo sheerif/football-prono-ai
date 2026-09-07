@@ -891,16 +891,22 @@ def _refresh_league_season(
     max_retries: int,
     progress_callback=None,
 ):
-    _sync_league_metadata(session, league_id, season)
+    league = session.get(models.League, league_id)
+    if not league or not league.name or not league.logo:
+        _sync_league_metadata(session, league_id, season)
 
     tries = 0
-    while tries < max_retries:
+    existing_teams = session.query(models.Team).filter_by(
+        league_id=league_id
+    ).count()
+    while existing_teams <= 0 and tries < max_retries:
         try:
             resp = client.get_teams(league_id, season)
             for item in resp.get("response", []):
                 team_info = item.get("team") if "team" in item else item
                 _get_or_create_team(session, team_info, league_id=league_id)
             session.commit()
+            existing_teams = 1
             break
         except HTTPError as exc:
             tries += 1
@@ -1122,7 +1128,6 @@ def import_leagues_cautious(
             for season in seasons:
                 logging.info(f"Importing {lid} season {season}")
                 _progress(f"Ligue {lid} - {season}: préparation")
-                _sync_league_metadata(session, lid, season)
                 # Check existing
                 existing_count = session.query(models.Match).filter_by(league_id=lid, season=season).count()
                 team_count = session.query(models.Team).filter_by(league_id=lid).count()
@@ -1133,12 +1138,16 @@ def import_leagues_cautious(
                     _progress(f"Ligue {lid} - {season}: déjà en base ({existing_count} matchs)", increment=3)
                     continue
 
+                league = session.get(models.League, lid)
+                if not league or not league.name or not league.logo:
+                    _sync_league_metadata(session, lid, season)
+
                 # Teams
                 _progress(f"Ligue {lid} - {season}: téléchargement des équipes")
                 tries = 0
-                teams_ok = False
+                teams_ok = team_count > 0
                 last_error = None
-                while tries < max_retries:
+                while not teams_ok and tries < max_retries:
                     try:
                         resp = client.get_teams(lid, season)
                         if (api_error := _api_error(resp)):
@@ -1177,9 +1186,11 @@ def import_leagues_cautious(
                 # Fixtures
                 _progress(f"Ligue {lid} - {season}: téléchargement des matchs")
                 tries = 0
-                fixtures_ok = False
+                fixtures_ok = (
+                    existing_count > 0 and season not in force_refresh_seasons
+                )
                 last_error = None
-                while tries < max_retries:
+                while not fixtures_ok and tries < max_retries:
                     try:
                         resp = client.get_fixtures(lid, season)
                         if (api_error := _api_error(resp)):
@@ -1238,9 +1249,11 @@ def import_leagues_cautious(
                 # Standings
                 _progress(f"Ligue {lid} - {season}: téléchargement du classement")
                 tries = 0
-                standings_ok = False
+                standings_ok = (
+                    standing_count > 0 and season not in force_refresh_seasons
+                )
                 last_error = None
-                while tries < max_retries:
+                while not standings_ok and tries < max_retries:
                     try:
                         resp = client.get_standings(lid, season)
                         if (api_error := _api_error(resp)):

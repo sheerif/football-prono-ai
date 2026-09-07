@@ -98,6 +98,9 @@ Tous les clients API partagent aussi un coupe-circuit en mémoire : dès qu'une
 réponse indique zéro requête restante ou une limite journalière atteinte, les
 appels suivants sont bloqués localement jusqu'à minuit UTC. Un verrou commun
 évite que plusieurs tâches concurrentes dépassent la limite en même temps.
+Les réponses identiques demandées simultanément ou dans les 60 secondes sont
+également partagées entre tous les clients sans nouvel appel réseau. Ce délai
+peut être réglé avec `API_FOOTBALL_REQUEST_CACHE_SECONDS`.
 
 ### Supported database
 

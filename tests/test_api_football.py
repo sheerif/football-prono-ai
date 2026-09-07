@@ -14,9 +14,11 @@ from services import api_football
 class ApiFootballClientTests(unittest.TestCase):
     def setUp(self):
         api_football._daily_blocked_until = None
+        api_football._response_cache.clear()
 
     def tearDown(self):
         api_football._daily_blocked_until = None
+        api_football._response_cache.clear()
 
     def test_missing_key_fails_before_network_access(self):
         session = Mock()
@@ -118,6 +120,23 @@ class ApiFootballClientTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "bloqué localement"):
             client.get_teams(1, 2026)
         self.assertEqual(session.get.call_count, 1)
+
+    def test_identical_requests_share_one_network_response(self):
+        response = Mock()
+        response.headers = {"x-ratelimit-requests-remaining": "100"}
+        response.json.return_value = {"response": [{"id": 1}]}
+        first_session = Mock()
+        first_session.get.return_value = response
+        second_session = Mock()
+        first_client = ApiFootballClient(api_key="same-key", session=first_session)
+        second_client = ApiFootballClient(api_key="same-key", session=second_session)
+
+        first = first_client.get_teams(61, 2026)
+        second = second_client.get_teams(61, 2026)
+
+        self.assertEqual(first, second)
+        first_session.get.assert_called_once()
+        second_session.get.assert_not_called()
 
     def test_invalid_json_has_a_clear_error(self):
         response = Mock()
