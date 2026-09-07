@@ -2,6 +2,7 @@ import os
 
 import requests
 from dotenv import load_dotenv
+from requests.exceptions import HTTPError
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
@@ -51,6 +52,16 @@ class ApiFootballClient:
         ).strip()
         self.headers = {"x-apisports-key": self.api_key}
         self.session = session or _build_session(_retry_count())
+        self.last_rate_limit = {}
+
+    @staticmethod
+    def _error_detail(payload) -> str:
+        errors = payload.get("errors") if isinstance(payload, dict) else None
+        if not errors:
+            return ""
+        if isinstance(errors, dict):
+            return "; ".join(f"{key}: {value}" for key, value in errors.items())
+        return str(errors)
 
     def _get(self, path, params=None):
         if not self.api_key:
@@ -64,19 +75,34 @@ class ApiFootballClient:
             params=params,
             timeout=DEFAULT_TIMEOUT,
         )
-        resp.raise_for_status()
+        response_headers = getattr(resp, "headers", {})
+        if hasattr(response_headers, "get"):
+            self.last_rate_limit = {
+                "daily_limit": response_headers.get("x-ratelimit-requests-limit"),
+                "daily_remaining": response_headers.get("x-ratelimit-requests-remaining"),
+                "minute_limit": response_headers.get("X-RateLimit-Limit"),
+                "minute_remaining": response_headers.get("X-RateLimit-Remaining"),
+                "retry_after": response_headers.get("Retry-After"),
+            }
+        try:
+            resp.raise_for_status()
+        except HTTPError as exc:
+            if getattr(resp, "status_code", None) != 429:
+                raise
+            try:
+                rejected_payload = resp.json()
+            except ValueError:
+                rejected_payload = {}
+            detail = self._error_detail(rejected_payload) or str(exc)
+            raise RuntimeError(f"API-Football quota 429 : {detail}") from exc
         try:
             payload = resp.json()
         except ValueError as exc:
             raise RuntimeError(
                 "API-Football a renvoyé une réponse JSON invalide."
             ) from exc
-        errors = payload.get("errors") if isinstance(payload, dict) else None
-        if errors:
-            if isinstance(errors, dict):
-                detail = "; ".join(f"{k}: {v}" for k, v in errors.items())
-            else:
-                detail = str(errors)
+        detail = self._error_detail(payload)
+        if detail:
             raise RuntimeError(f"API-Football a refusé la requête : {detail}")
         return payload
 

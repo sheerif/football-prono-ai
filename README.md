@@ -62,10 +62,12 @@ quota, le traitement mémorise son point de reprise, attend le renouvellement
 du quota puis continue en ignorant les ressources déjà complètes. Cet état
 survit à un redémarrage tant que le fichier `football.db` est conservé.
 
-`FULL_SYNC_QUOTA_RETRY_SECONDS` règle le délai entre deux tentatives après un
-quota atteint (3600 secondes par défaut, minimum 60). Le mécanisme ne contourne
-pas les limites du fournisseur : il étale automatiquement le téléchargement
-sur plusieurs fenêtres de quota.
+Par défaut, une limite par minute est retentée après 90 secondes et un quota
+journalier après le prochain renouvellement quotidien (00:05 UTC). La tâche
+libère l’interface pendant l’attente. `FULL_SYNC_QUOTA_RETRY_SECONDS` permet de
+remplacer ce calcul par un délai explicite (minimum 60 secondes). Le mécanisme
+ne contourne pas les limites du fournisseur : il étale automatiquement le
+téléchargement sur plusieurs fenêtres de quota.
 
 ### Supported database
 

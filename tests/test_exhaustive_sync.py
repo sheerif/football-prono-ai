@@ -5,6 +5,7 @@ from unittest.mock import Mock, patch
 
 from sqlalchemy import create_engine
 
+from pages import data_management
 from services import background_jobs, full_sync_service, sync_registry
 
 
@@ -17,6 +18,23 @@ class _ImmediateThread:
 
 
 class ExhaustiveSyncTests(unittest.TestCase):
+    def test_manual_retry_supports_the_previous_service_signature(self):
+        calls = []
+
+        def legacy_start_full_sync():
+            calls.append("started")
+            return "legacy-job"
+
+        with patch.object(
+            data_management.background_jobs,
+            "start_full_sync",
+            legacy_start_full_sync,
+        ):
+            result = data_management._start_full_sync(resumed=True)
+
+        self.assertEqual(result, "legacy-job")
+        self.assertEqual(calls, ["started"])
+
     def test_pages_tolerate_the_previous_background_service_during_deploy(self):
         root = Path(__file__).resolve().parents[1]
         update_page = (root / "pages" / "data_management.py").read_text(
@@ -50,38 +68,53 @@ class ExhaustiveSyncTests(unittest.TestCase):
         self.assertEqual(state["metadata"]["checkpoint"], "fixture-detail:42")
         self.assertEqual(state["metadata"]["attempt"], 3)
 
-    def test_quota_waits_then_resumes_without_losing_the_job(self):
-        wait = Mock()
-        first = {
+    def test_quota_releases_the_job_and_persists_the_resume_point(self):
+        result = {
             "quota_reached": True,
             "checkpoint": "fixture-statistics:9",
             "errors": ["429 quota reached"],
             "partial": 0,
         }
-        second = {"quota_reached": False, "errors": [], "partial": 0}
         with (
             patch.object(background_jobs, "_jobs", {}),
             patch.object(background_jobs.threading, "Thread", _ImmediateThread),
-            patch.object(background_jobs.threading, "Event") as event,
+            patch.object(background_jobs, "full_sync_state", return_value=None),
             patch.object(background_jobs, "_full_sync_retry_seconds", return_value=60),
             patch.object(background_jobs.sync_registry, "mark") as mark,
             patch.object(background_jobs.import_service, "record_update_log"),
             patch.object(
                 full_sync_service,
                 "run_full_sync",
-                side_effect=[first, second],
+                return_value=result,
             ) as run_full_sync,
         ):
-            event.return_value.wait = wait
             job_id = background_jobs.start_full_sync()
             job = next(job for job in background_jobs.list_jobs() if job["id"] == job_id)
 
-        self.assertEqual(run_full_sync.call_count, 2)
-        wait.assert_called_once_with(60)
-        self.assertEqual(job["status"], "done")
+        run_full_sync.assert_called_once()
+        self.assertEqual(job["status"], "partial")
+        self.assertIsNotNone(job["finished_at"])
         statuses = [item.args[2] for item in mark.call_args_list]
-        self.assertIn("waiting_quota", statuses)
-        self.assertEqual(statuses[-1], "complete")
+        self.assertEqual(statuses[-1], "waiting_quota")
+        self.assertEqual(
+            mark.call_args.kwargs["metadata"]["checkpoint"],
+            "fixture-statistics:9",
+        )
+
+    def test_retry_delay_distinguishes_minute_and_daily_quotas(self):
+        now = datetime.datetime(2026, 9, 7, 20, 30, tzinfo=datetime.UTC)
+        with patch.dict("os.environ", {}, clear=False):
+            with patch.dict("os.environ", {"FULL_SYNC_QUOTA_RETRY_SECONDS": ""}):
+                minute = background_jobs._full_sync_retry_seconds(
+                    {"errors": ["You have reached the request limit for the minute"]},
+                    now=now,
+                )
+                daily = background_jobs._full_sync_retry_seconds(
+                    {"errors": ["Daily request quota reached"]}, now=now
+                )
+
+        self.assertEqual(minute, 90)
+        self.assertEqual(daily, 12_900)
 
     def test_interrupted_persistent_sync_is_resumed_after_restart(self):
         starter = Mock(return_value="new-job")

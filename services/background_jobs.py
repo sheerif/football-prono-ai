@@ -91,12 +91,36 @@ def data_job_running() -> bool:
     return any(job.get("kind") in DATA_JOB_KINDS for job in active_jobs())
 
 
-def _full_sync_retry_seconds() -> int:
-    try:
-        value = int(os.getenv("FULL_SYNC_QUOTA_RETRY_SECONDS", "3600"))
-    except (TypeError, ValueError):
-        value = 3600
-    return max(60, value)
+def _is_minute_quota(result: dict | None = None) -> bool:
+    error_text = " ".join((result or {}).get("errors") or []).casefold()
+    return any(
+        token in error_text
+        for token in ("minute", "rate limit", "limite de requêtes")
+    )
+
+
+def _full_sync_retry_seconds(result: dict | None = None, now=None) -> int:
+    """Calcule une reprise adaptée au quota minute ou au quota journalier."""
+    configured = os.getenv("FULL_SYNC_QUOTA_RETRY_SECONDS")
+    if configured is not None:
+        try:
+            return max(60, int(configured))
+        except (TypeError, ValueError):
+            pass
+
+    if _is_minute_quota(result):
+        return 90
+
+    reference = now or datetime.datetime.now(datetime.UTC)
+    if reference.tzinfo is None:
+        reference = reference.replace(tzinfo=datetime.UTC)
+    next_reset = (reference + datetime.timedelta(days=1)).replace(
+        hour=0,
+        minute=5,
+        second=0,
+        microsecond=0,
+    )
+    return max(60, int((next_reset - reference).total_seconds()))
 
 
 def full_sync_state() -> dict | None:
@@ -362,44 +386,43 @@ def start_full_sync(*, resumed: bool = False) -> str:
         from services import full_sync_service
 
         started_at = _now()
-        attempt = 0
+        previous_state = full_sync_state() or {}
+        attempt = int((previous_state.get("metadata") or {}).get("attempt") or 0) + 1
         try:
-            while True:
-                attempt += 1
-                _set_job(
-                    job_id,
-                    status="running",
-                    message=f"Reprise exhaustive · passage {attempt}",
-                    error=None,
+            _set_job(
+                job_id,
+                status="running",
+                message=f"Synchronisation exhaustive · passage {attempt}",
+                error=None,
+            )
+            sync_registry.mark(
+                FULL_SYNC_CONTROL_KEY,
+                "full_sync_control",
+                "running",
+                message=f"Passage {attempt} en cours",
+                metadata={
+                    "persistent": True,
+                    "attempt": attempt,
+                    "job_id": job_id,
+                    "started_at": started_at,
+                },
+            )
+            result = full_sync_service.run_full_sync(
+                progress_callback=lambda current, total, label: _progress(
+                    job_id, current, total, label
                 )
-                sync_registry.mark(
-                    FULL_SYNC_CONTROL_KEY,
-                    "full_sync_control",
-                    "running",
-                    message=f"Passage {attempt} en cours",
-                    metadata={
-                        "persistent": True,
-                        "attempt": attempt,
-                        "job_id": job_id,
-                        "started_at": started_at,
-                    },
+            )
+            quota_reached = bool(result.get("quota_reached"))
+            if quota_reached:
+                now = datetime.datetime.now(datetime.UTC)
+                retry_seconds = _full_sync_retry_seconds(result, now=now)
+                retry_at = (now + datetime.timedelta(seconds=retry_seconds)).replace(
+                    tzinfo=None
                 )
-                result = full_sync_service.run_full_sync(
-                    progress_callback=lambda current, total, label: _progress(
-                        job_id, current, total, label
-                    )
-                )
-                quota_reached = bool(result.get("quota_reached"))
-                if not quota_reached:
-                    break
-
-                retry_seconds = _full_sync_retry_seconds()
-                retry_at = (
-                    datetime.datetime.now(datetime.UTC)
-                    + datetime.timedelta(seconds=retry_seconds)
-                ).replace(tzinfo=None)
+                quota_kind = "minute" if _is_minute_quota(result) else "journalier"
                 waiting_message = (
-                    "Quota API atteint : données conservées. Reprise automatique "
+                    f"Quota API {quota_kind} atteint : données conservées. "
+                    "La tâche est libérée et reprendra automatiquement "
                     f"à {retry_at.strftime('%d/%m/%Y %H:%M:%S')} UTC."
                 )
                 metadata = {
@@ -419,8 +442,9 @@ def start_full_sync(*, resumed: bool = False) -> str:
                 )
                 _set_job(
                     job_id,
-                    status="waiting_quota",
+                    status="partial",
                     message=waiting_message,
+                    finished_at=_now(),
                     details={**result, **metadata},
                 )
                 import_service.record_update_log(
@@ -430,7 +454,7 @@ def start_full_sync(*, resumed: bool = False) -> str:
                     reason=waiting_message,
                     details={**result, **metadata, "background": True},
                 )
-                threading.Event().wait(retry_seconds)
+                return
 
             has_partial_data = bool(result.get("partial")) or bool(
                 result.get("errors")

@@ -125,10 +125,15 @@ def _render_jobs():
         with st.expander("Dernières tâches terminées", expanded=False):
             rows = []
             for job in finished:
+                status_label = {
+                    "error": "Erreur",
+                    "partial": "À reprendre",
+                    "done": "Terminée",
+                }.get(job.get("status"), "Terminée")
                 rows.append(
                     {
                         "Tâche": job.get("label"),
-                        "Statut": "Erreur" if job.get("status") == "error" else "Terminée",
+                        "Statut": status_label,
                         "Fin": _format_datetime(job.get("finished_at")),
                         "Message": job.get("error") or job.get("message"),
                     }
@@ -164,6 +169,17 @@ def _start_prediction_sync() -> str:
             "Redémarrez l’application puis réessayez."
         )
     return starter()
+
+
+def _start_full_sync(*, resumed: bool = False) -> str:
+    """Reste compatible avec le service chargé avant un déploiement à chaud."""
+    starter = getattr(background_jobs, "start_full_sync", None)
+    if not callable(starter):
+        raise RuntimeError("Le service de synchronisation globale est indisponible.")
+    try:
+        return starter(resumed=resumed)
+    except TypeError:
+        return starter()
 
 
 def show():
@@ -208,7 +224,7 @@ def show():
             width="stretch",
             disabled=api_key_missing or data_job_active,
         ):
-            job_id = background_jobs.start_full_sync()
+            _start_full_sync()
             st.success(
                 "Synchronisation exhaustive lancée. Chaque donnée reçue est "
                 "enregistrée immédiatement dans la base."
@@ -217,6 +233,18 @@ def show():
         full_state = state_loader() if callable(state_loader) else None
         if full_state and full_state.get("status") == "waiting_quota":
             st.warning(full_state.get("message") or "Synchronisation en attente du quota API.")
+            st.caption(
+                "Cette attente ne bloque plus les autres actions. Une tentative "
+                "manuelle avant le renouvellement peut toutefois être refusée à nouveau."
+            )
+            if st.button(
+                "Réessayer maintenant",
+                key="retry_full_sync_now",
+                width="stretch",
+                disabled=api_key_missing or data_job_active,
+            ):
+                _start_full_sync(resumed=True)
+                st.success("Nouvelle tentative lancée à partir des données déjà conservées.")
         registry_counts = sync_registry.counts()
         if registry_counts:
             st.caption(

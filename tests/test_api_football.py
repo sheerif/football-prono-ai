@@ -1,5 +1,6 @@
 import unittest
 from unittest.mock import Mock
+from requests.exceptions import HTTPError
 
 from services.api_football import (
     DEFAULT_TIMEOUT,
@@ -44,6 +45,30 @@ class ApiFootballClientTests(unittest.TestCase):
 
         with self.assertRaisesRegex(RuntimeError, "quota reached"):
             client.get_leagues()
+
+    def test_http_429_preserves_minute_quota_detail_and_headers(self):
+        response = Mock()
+        response.status_code = 429
+        response.headers = {
+            "x-ratelimit-requests-remaining": "98",
+            "X-RateLimit-Remaining": "0",
+            "Retry-After": "60",
+        }
+        response.json.return_value = {
+            "errors": {"rateLimit": "Too many requests per minute"}
+        }
+        response.raise_for_status.side_effect = HTTPError(
+            "429 Client Error", response=response
+        )
+        session = Mock()
+        session.get.return_value = response
+        client = ApiFootballClient(api_key="test-key", session=session)
+
+        with self.assertRaisesRegex(RuntimeError, "per minute"):
+            client.get_leagues()
+
+        self.assertEqual(client.last_rate_limit["daily_remaining"], "98")
+        self.assertEqual(client.last_rate_limit["minute_remaining"], "0")
 
     def test_invalid_json_has_a_clear_error(self):
         response = Mock()

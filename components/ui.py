@@ -1058,7 +1058,12 @@ def render_background_jobs():
     if callable(resume_pending):
         resume_pending()
     jobs = background_jobs.active_jobs()
-    if not jobs:
+    state_loader = getattr(background_jobs, "full_sync_state", None)
+    full_state = state_loader() if callable(state_loader) else None
+    waiting_quota = bool(
+        full_state and full_state.get("status") == "waiting_quota"
+    )
+    if not jobs and not waiting_quota:
         return
     st.markdown("---")
     st.markdown("### Téléchargements")
@@ -1068,3 +1073,7 @@ def render_background_jobs():
         st.progress(progress, text=friendly_progress_message(job.get("message"), progress * 100))
         if job.get("status") == "waiting_quota":
             st.caption(job.get("message"))
+    if waiting_quota and not any(
+        job.get("kind") == "full_sync" for job in jobs
+    ):
+        st.caption("Synchronisation exhaustive en attente du renouvellement du quota.")
