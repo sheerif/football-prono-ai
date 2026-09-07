@@ -86,6 +86,7 @@ class ApiFootballClientTests(unittest.TestCase):
         self.assertEqual(retry.total, 4)
         self.assertEqual(retry.allowed_methods, frozenset({"GET"}))
         self.assertEqual(set(retry.status_forcelist), set(RETRY_STATUS_CODES))
+        self.assertNotIn(429, retry.status_forcelist)
         self.assertTrue(retry.respect_retry_after_header)
 
 

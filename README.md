@@ -105,6 +105,15 @@ dans `fixture_team_statistics`. La synchronisation est incrémentale, reprend
 après une limite de quota et distingue les réponses téléchargées des matchs où
 le fournisseur publie effectivement des xG.
 
+Avant chaque appel, la synchronisation effectue une différence avec la base :
+un match n'est complet que si les xG des deux équipes sont présents. Les matchs
+complets sont ignorés sans appel API. Une réponse sans xG est mémorisée ; elle
+peut être contrôlée pendant les 72 heures suivant le match, puis n'est plus
+redemandée automatiquement afin de préserver le quota. La synchronisation
+exhaustive traite les xG manquants en priorité avant les autres endpoints.
+`XG_PUBLICATION_GRACE_HOURS` permet d'ajuster cette fenêtre (72 heures par
+défaut, minimum 24 heures).
+
 Les écrans d'analyse présentent les moyennes récentes xG, xGA et leur
 différentiel. Pour une rencontre à venir, seules les lignes dont la date est
 strictement antérieure au coup d'envoi sont chargées. Les sorties du modèle

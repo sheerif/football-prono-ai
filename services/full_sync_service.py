@@ -43,6 +43,43 @@ def _is_quota_error(error: Exception | str) -> bool:
     return any(token in value for token in ("quota", "rate limit", "request limit", "too many requests", "429"))
 
 
+def _xg_should_download(row: dict, state: dict | None, retry_hours: int) -> bool:
+    """Évite de sonder indéfiniment les anciens matchs sans xG publié."""
+    if not state:
+        return True
+    if state.get("status") == "complete":
+        # Une ancienne version pouvait marquer complet avec un seul xG. On
+        # autorise une tentative de réparation puisque le contrôle strict a
+        # déjà constaté que les deux équipes ne sont pas présentes.
+        return True
+    if state.get("status") != "unavailable":
+        return sync_registry.should_download(
+            f"fixture-statistics:{int(row['fixture_id'])}", retry_hours
+        )
+
+    try:
+        grace_hours = max(
+            24,
+            int(os.getenv("XG_PUBLICATION_GRACE_HOURS", "72")),
+        )
+    except (TypeError, ValueError):
+        grace_hours = 72
+    try:
+        match_date = datetime.datetime.fromisoformat(
+            str(row.get("date") or "").replace("Z", "+00:00")
+        )
+        if match_date.tzinfo is None:
+            match_date = match_date.replace(tzinfo=datetime.UTC)
+        age = datetime.datetime.now(datetime.UTC) - match_date.astimezone(datetime.UTC)
+        if age.total_seconds() >= grace_hours * 3600:
+            return False
+    except (TypeError, ValueError):
+        pass
+    return sync_registry.should_download(
+        f"fixture-statistics:{int(row['fixture_id'])}", retry_hours
+    )
+
+
 def _percent(value):
     try:
         return float(str(value).replace("%", "").strip())
@@ -451,6 +488,9 @@ def _sync_xg_rows(
         "unavailable": 0,
         "errors": [],
         "quota_reached": False,
+        "api_calls": 0,
+        "duplicates_avoided": 0,
+        "unavailable_deferred": 0,
     }
     for index, row in enumerate(rows, start=1):
         fixture_id = int(row["fixture_id"])
@@ -464,17 +504,20 @@ def _sync_xg_rows(
                 message="Déjà en base",
             )
             result = "skipped"
-        elif (
-            (state := sync_registry.get(key))
-            and state.get("status") != "complete"
-            and not sync_registry.should_download(key, retry_hours)
+            summary["duplicates_avoided"] += 1
+        elif not _xg_should_download(
+            row,
+            sync_registry.get(key),
+            retry_hours,
         ):
             result = "skipped"
+            summary["unavailable_deferred"] += 1
         else:
             requested_at = _now_iso()
             response = None
             try:
                 sync_registry.mark(key, "fixture_statistics", "running")
+                summary["api_calls"] += 1
                 response = client.get_fixture_statistics(fixture_id)
                 error = _api_error(response)
                 if error:
@@ -503,10 +546,7 @@ def _sync_xg_rows(
                         requested_at=requested_at,
                         audit_payload=response,
                     )
-                    has_xg = any(
-                        row.get("expected_goals") is not None
-                        for row in xg_service.parse_fixture_statistics(items)
-                    )
+                    has_xg = xg_service.fixture_statistics_present(fixture_id)
                     sync_registry.mark(
                         key,
                         "fixture_statistics",
@@ -535,6 +575,7 @@ def _sync_xg_rows(
                 summary["errors"].append(f"{key}: {exc}")
                 if _is_quota_error(exc):
                     summary["quota_reached"] = True
+                    summary["checkpoint"] = key
                     break
                 result = "error"
             if result != "skipped":
@@ -545,7 +586,8 @@ def _sync_xg_rows(
             progress_callback(
                 index,
                 max(1, len(rows)),
-                f"xG historiques : match {index}/{len(rows)}",
+                f"xG différentiels : match {index}/{len(rows)} · "
+                f"{summary['api_calls']} appel(s) API",
             )
     return summary
 
@@ -591,7 +633,10 @@ def sync_historical_xg(
                   ON s.fixture_id = m.fixture_id
                 WHERE {' AND '.join(filters)}
                 GROUP BY m.fixture_id, m.date, m.league_id, m.season
-                HAVING COUNT(CASE WHEN s.expected_goals IS NOT NULL THEN 1 END) = 0
+                HAVING COUNT(DISTINCT CASE
+                    WHEN s.expected_goals IS NOT NULL
+                     AND s.team_id IN (m.home_team_id, m.away_team_id)
+                    THEN s.team_id END) < 2
                 ORDER BY m.date DESC, m.fixture_id DESC
                 {limit_sql}
                 """
@@ -700,11 +745,47 @@ def run_full_sync(progress_callback=None) -> dict:
         if match.get("home_goals") is not None and match.get("away_goals") is not None
     ]
     scopes = _player_scopes()
+
+    # Les xG sont la donnée historique prioritaire. Ils sont traités avant les
+    # autres endpoints afin que le quota quotidien serve d'abord à compléter
+    # cette couverture. Le registre et la table de statistiques font office de
+    # différence persistante entre deux passages.
+    xg_result = sync_historical_xg(
+        league_ids=config["league_ids"],
+        seasons=seasons,
+        max_matches=None,
+        pause=pause,
+        retry_hours=24,
+        progress_callback=lambda current, total, label: progress(
+            15 + int((current / max(1, total)) * 40),
+            100,
+            label,
+        ),
+    )
+    summary["xg"] = xg_result
+    summary["xg_api_calls"] = int(xg_result.get("api_calls") or 0)
+    summary["xg_duplicates_avoided"] = int(
+        xg_result.get("duplicates_avoided") or 0
+    )
+    summary["xg_unavailable_deferred"] = int(
+        xg_result.get("unavailable_deferred") or 0
+    )
+    for result_key in ("downloaded", "skipped", "unavailable"):
+        summary[result_key] += int(xg_result.get(result_key) or 0)
+    summary["errors"].extend(xg_result.get("errors") or [])
+    if xg_result.get("quota_reached"):
+        summary["quota_reached"] = True
+        summary["checkpoint"] = xg_result.get("checkpoint") or "fixture-statistics"
+        summary["xg_coverage"] = xg_service.coverage(
+            config["league_ids"], seasons
+        )
+        return summary
+
     total_items = max(
         1,
         len(matches) * 2
         + len(upcoming)
-        + len(completed_matches) * 2
+        + len(completed_matches)
         + len(scopes),
     )
     completed = 0
@@ -712,7 +793,7 @@ def run_full_sync(progress_callback=None) -> dict:
     def advance(label):
         nonlocal completed
         completed += 1
-        progress(15 + int((completed / total_items) * 85), 100, label)
+        progress(55 + int((completed / total_items) * 45), 100, label)
 
     for match in matches:
         fixture_id = int(match["fixture_id"])
@@ -824,21 +905,6 @@ def run_full_sync(progress_callback=None) -> dict:
             result = "error"
         add_result(result)
         advance(f"Forme des joueurs: match {fixture_id}")
-
-        xg_result = _sync_xg_rows(
-            [{"fixture_id": fixture_id}],
-            pause=pause,
-            retry_hours=24,
-            sync_run_id=summary["sync_run_id"],
-        )
-        for result_key in ("downloaded", "skipped", "unavailable"):
-            summary[result_key] += int(xg_result.get(result_key) or 0)
-        summary["errors"].extend(xg_result.get("errors") or [])
-        if xg_result.get("quota_reached"):
-            summary["quota_reached"] = True
-            summary["checkpoint"] = f"fixture-statistics:{fixture_id}"
-            return summary
-        advance(f"xG historiques: match {fixture_id}")
 
     for scope in scopes:
         league_id = int(scope["league_id"])

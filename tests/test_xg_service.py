@@ -156,6 +156,68 @@ class XgServiceTests(unittest.TestCase):
                 row[3], hashlib.sha256(row[4].encode("utf-8")).hexdigest()
             )
 
+    def test_fixture_is_complete_only_with_xg_for_both_teams(self):
+        test_engine = self._engine()
+        with test_engine.begin() as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO matches VALUES "
+                    "(1, 61, 2026, '2026-01-01', 10, 20, 2, 1, 'Home', 'Match Finished')"
+                )
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO fixture_team_statistics "
+                    "(fixture_id, team_id, expected_goals, updated_at) "
+                    "VALUES (1, 10, 1.4, '2026-01-02')"
+                )
+            )
+        with patch.object(xg_service, "engine", test_engine):
+            self.assertFalse(xg_service.fixture_statistics_present(1))
+            with test_engine.begin() as conn:
+                conn.execute(
+                    text(
+                        "INSERT INTO fixture_team_statistics "
+                        "(fixture_id, team_id, expected_goals, updated_at) "
+                        "VALUES (1, 20, 0.8, '2026-01-02')"
+                    )
+                )
+            self.assertTrue(xg_service.fixture_statistics_present(1))
+
+    def test_xg_diff_skips_complete_fixture_without_api_call(self):
+        client = Mock()
+        with (
+            patch.object(full_sync_service, "client", client),
+            patch.object(xg_service, "fixture_statistics_present", return_value=True),
+            patch.object(full_sync_service.sync_registry, "mark"),
+        ):
+            result = full_sync_service._sync_xg_rows(
+                [{"fixture_id": 1, "date": "2026-01-01"}],
+                pause=0,
+                retry_hours=24,
+            )
+
+        client.get_fixture_statistics.assert_not_called()
+        self.assertEqual(result["api_calls"], 0)
+        self.assertEqual(result["duplicates_avoided"], 1)
+
+    def test_old_unavailable_xg_is_not_requested_again(self):
+        client = Mock()
+        state = {"status": "unavailable", "updated_at": "2020-01-02T00:00:00"}
+        with (
+            patch.object(full_sync_service, "client", client),
+            patch.object(xg_service, "fixture_statistics_present", return_value=False),
+            patch.object(full_sync_service.sync_registry, "get", return_value=state),
+        ):
+            result = full_sync_service._sync_xg_rows(
+                [{"fixture_id": 1, "date": "2020-01-01T12:00:00"}],
+                pause=0,
+                retry_hours=24,
+            )
+
+        client.get_fixture_statistics.assert_not_called()
+        self.assertEqual(result["unavailable_deferred"], 1)
+
     def test_unavailable_and_error_attempts_are_append_only(self):
         test_engine = self._engine()
         with test_engine.begin() as conn:
@@ -273,7 +335,11 @@ class XgServiceTests(unittest.TestCase):
         ]
         with (
             patch.object(full_sync_service, "client", client),
-            patch.object(xg_service, "fixture_statistics_present", return_value=False),
+            patch.object(
+                xg_service,
+                "fixture_statistics_present",
+                side_effect=[False, True, False],
+            ),
             patch.object(xg_service, "save_fixture_statistics", return_value=1),
             patch.object(xg_service, "record_ingestion"),
             patch.object(full_sync_service.sync_registry, "get", return_value=None),

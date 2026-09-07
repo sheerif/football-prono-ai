@@ -184,7 +184,7 @@ class ExhaustiveSyncTests(unittest.TestCase):
             patch.object(full_sync_service, "_prediction_present", return_value=True),
             patch.object(
                 full_sync_service,
-                "_sync_xg_rows",
+                "sync_historical_xg",
                 return_value={
                     "downloaded": 0,
                     "skipped": 1,
@@ -205,8 +205,60 @@ class ExhaustiveSyncTests(unittest.TestCase):
         self.assertIn("fixture-lineup:2", marked_keys)
         self.assertIn("fixture-prediction:2", marked_keys)
         sync_xg.assert_called_once()
-        self.assertEqual(sync_xg.call_args.args[0][0]["fixture_id"], 1)
+        self.assertEqual(sync_xg.call_args.kwargs["league_ids"], [61])
+        self.assertEqual(sync_xg.call_args.kwargs["seasons"], [2025])
+        self.assertIsNone(sync_xg.call_args.kwargs["max_matches"])
         self.assertEqual(result["mode"], "exhaustive")
+
+    def test_xg_quota_stops_before_less_important_match_endpoints(self):
+        played = {
+            "fixture_id": 1,
+            "league_id": 61,
+            "season": 2025,
+            "date": "2026-01-01",
+            "home_team_id": 10,
+            "away_team_id": 20,
+            "home_goals": 2,
+            "away_goals": 1,
+        }
+        config = {
+            "league_ids": [61],
+            "start_season": 2025,
+            "end_season": 2025,
+            "recent_seasons": 1,
+            "pause": 0,
+            "max_retries": 1,
+        }
+        with (
+            patch.object(full_sync_service.import_service, "init_db"),
+            patch.object(full_sync_service.sync_registry, "ensure_table"),
+            patch.object(full_sync_service.sync_registry, "mark"),
+            patch.object(full_sync_service.import_service, "get_auto_refresh_config", return_value=config),
+            patch.object(full_sync_service.import_service, "import_leagues_cautious"),
+            patch.object(full_sync_service, "_missing_core_scopes", return_value=[]),
+            patch.object(full_sync_service, "_all_matches", return_value=[played]),
+            patch.object(full_sync_service, "_upcoming_matches", return_value=[]),
+            patch.object(full_sync_service, "_player_scopes", return_value=[]),
+            patch.object(
+                full_sync_service,
+                "sync_historical_xg",
+                return_value={
+                    "downloaded": 7,
+                    "skipped": 3,
+                    "unavailable": 1,
+                    "errors": ["fixture-statistics:99: daily quota"],
+                    "quota_reached": True,
+                    "checkpoint": "fixture-statistics:99",
+                },
+            ),
+            patch.object(full_sync_service, "_fixture_details_present") as details,
+            patch.object(full_sync_service.xg_service, "coverage", return_value={}),
+        ):
+            result = full_sync_service.run_full_sync()
+
+        details.assert_not_called()
+        self.assertTrue(result["quota_reached"])
+        self.assertEqual(result["checkpoint"], "fixture-statistics:99")
 
 
 if __name__ == "__main__":

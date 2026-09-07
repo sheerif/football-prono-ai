@@ -261,8 +261,9 @@ def show():
 
     ui.section_label("Actions simples")
     config = import_service.get_auto_refresh_config()
+    start_season = int(config["start_season"])
     end_season = int(config["end_season"])
-    recent_start = max(config["start_season"], end_season - 1)
+    recent_start = max(start_season, end_season - 1)
 
     with st.container(border=True):
         st.markdown("### Conseils API des matchs à venir")
@@ -294,21 +295,26 @@ def show():
 
     with st.container(border=True):
         st.markdown("### xG historiques")
-        xg_seasons = list(range(recent_start, end_season + 1))
+        xg_seasons = list(range(start_season, end_season + 1))
         xg_coverage = xg_service.coverage(
             list(LEAGUE_PRESETS.values()), xg_seasons
         )
         st.write(
             f"{xg_coverage['available']} match(s) avec xG sur "
-            f"{xg_coverage['total']} match(s) terminé(s) des saisons récentes "
+            f"{xg_coverage['total']} match(s) terminé(s) de toutes les saisons configurées "
             f"({xg_coverage['percentage']} %)."
         )
+        if xg_coverage.get("partial"):
+            st.caption(
+                f"{xg_coverage['partial']} match(s) incomplet(s) : le xG d’une "
+                "des deux équipes manque encore."
+            )
         st.caption(
-            "Chaque lancement traite au maximum 100 matchs, du plus récent au "
-            "plus ancien. Les matchs déjà enregistrés ne consomment aucune requête."
+            "La différence est calculée avec la base avant chaque appel : un match "
+            "possédant déjà les xG des deux équipes ne consomme aucune requête."
         )
         if st.button(
-            "Télécharger le prochain lot de xG",
+            "Télécharger tous les xG manquants",
             type="primary",
             width="stretch",
             disabled=api_key_missing or data_job_active,
@@ -316,7 +322,7 @@ def show():
             background_jobs.start_xg_sync(
                 list(LEAGUE_PRESETS.values()),
                 xg_seasons,
-                max_matches=100,
+                max_matches=None,
             )
             st.success(
                 "Téléchargement xG lancé en arrière-plan. La progression est conservée."

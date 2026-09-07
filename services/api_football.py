@@ -9,7 +9,9 @@ from urllib3.util.retry import Retry
 load_dotenv()
 BASE_URL = "https://v3.football.api-sports.io"
 DEFAULT_TIMEOUT = (5, 30)
-RETRY_STATUS_CODES = (429, 500, 502, 503, 504)
+# Les 429 sont repris par les tâches persistantes au bon renouvellement de
+# quota. Les retenter immédiatement gaspillerait plusieurs appels identiques.
+RETRY_STATUS_CODES = (500, 502, 503, 504)
 
 
 def _retry_count() -> int:

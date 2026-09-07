@@ -269,16 +269,23 @@ def recent_audit(limit: int = 25) -> pd.DataFrame:
 
 
 def fixture_statistics_present(fixture_id: int) -> bool:
+    """Vrai uniquement si les deux équipes du match possèdent un xG."""
     try:
         with engine.connect() as conn:
             count = conn.execute(
                 text(
-                    "SELECT COUNT(*) FROM fixture_team_statistics "
-                    "WHERE fixture_id = :fixture_id AND expected_goals IS NOT NULL"
+                    """
+                    SELECT COUNT(DISTINCT s.team_id)
+                    FROM fixture_team_statistics s
+                    JOIN matches m ON m.fixture_id = s.fixture_id
+                    WHERE s.fixture_id = :fixture_id
+                      AND s.expected_goals IS NOT NULL
+                      AND s.team_id IN (m.home_team_id, m.away_team_id)
+                    """
                 ),
                 {"fixture_id": int(fixture_id)},
             ).scalar()
-        return int(count or 0) > 0
+        return int(count or 0) >= 2
     except Exception:
         return False
 
@@ -302,11 +309,18 @@ def coverage(league_ids=None, seasons=None) -> dict:
                     f"""
                     SELECT COUNT(DISTINCT m.fixture_id) AS total,
                            COUNT(DISTINCT s.fixture_id) AS downloaded,
-                           COUNT(DISTINCT CASE WHEN s.expected_goals IS NOT NULL
-                                              THEN s.fixture_id END) AS available
+                           COUNT(DISTINCT CASE WHEN home_xg.expected_goals IS NOT NULL
+                                                    AND away_xg.expected_goals IS NOT NULL
+                                              THEN m.fixture_id END) AS available
                     FROM matches m
                     LEFT JOIN fixture_team_statistics s
                       ON s.fixture_id = m.fixture_id
+                    LEFT JOIN fixture_team_statistics home_xg
+                      ON home_xg.fixture_id = m.fixture_id
+                     AND home_xg.team_id = m.home_team_id
+                    LEFT JOIN fixture_team_statistics away_xg
+                      ON away_xg.fixture_id = m.fixture_id
+                     AND away_xg.team_id = m.away_team_id
                     WHERE {' AND '.join(filters)}
                     """
                 ),
@@ -321,7 +335,8 @@ def coverage(league_ids=None, seasons=None) -> dict:
         "total": total,
         "downloaded": downloaded,
         "available": available,
-        "missing": max(0, total - downloaded),
+        "partial": max(0, downloaded - available),
+        "missing": max(0, total - available),
         "percentage": round(available / total * 100, 1) if total else 0.0,
     }
 
