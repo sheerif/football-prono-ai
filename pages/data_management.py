@@ -257,45 +257,21 @@ def show():
         )
         if full_state and full_state.get("status") == "waiting_quota":
             st.warning(full_state.get("message") or "Synchronisation en attente du quota API.")
-            quota_checker = getattr(background_jobs, "api_quota_status", None)
             st.caption(
                 "Cette attente ne bloque plus les autres actions. Aucun appel de "
                 "contrôle n’est consommé avant minuit."
             )
             if st.button(
-                "Vérifier le quota et reprendre maintenant",
+                "Tenter une reprise maintenant",
                 key="retry_full_sync_now",
                 width="stretch",
                 disabled=api_key_missing or data_job_active,
             ):
-                refreshed_quota = (
-                    quota_checker(force=True) if callable(quota_checker) else {}
+                _start_full_sync(resumed=True)
+                st.success(
+                    "Tentative lancée à partir des données conservées, sans attendre "
+                    "une confirmation de l’API."
                 )
-                reserve = int(
-                    ((full_state or {}).get("metadata") or {}).get("daily_reserve")
-                    or 0
-                )
-                budget_reserved = bool(
-                    ((full_state or {}).get("metadata") or {}).get("budget_reserved")
-                )
-                enough_for_full_sync = (
-                    refreshed_quota.get("available")
-                    and (
-                        not budget_reserved
-                        or int(refreshed_quota.get("remaining") or 0) > reserve
-                    )
-                )
-                if not refreshed_quota.get("verified") or enough_for_full_sync:
-                    _start_full_sync(resumed=True)
-                    st.success(
-                        "Quota disponible : reprise lancée à partir des données conservées."
-                    )
-                else:
-                    st.warning(
-                        "Reprise exhaustive impossible : "
-                        f"{refreshed_quota['remaining']} requête(s) disponible(s) "
-                        f"sur {refreshed_quota['limit']}."
-                    )
         registry_counts = sync_registry.counts()
         if registry_counts:
             st.caption(

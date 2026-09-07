@@ -81,11 +81,11 @@ dans l'historique des mises à jour.
 
 Par défaut, une limite par minute est contrôlée après 90 secondes. Pour le quota
 journalier de ce forfait, la reprise est programmée à minuit UTC. L'application
-n'interroge `/status` qu'au moment de la reprise ou sur demande manuelle, afin
-de ne pas consommer d'appels de contrôle inutiles. Elle reprend lorsque le
-compteur `requests.current` redevient inférieur à `requests.limit_day`. La tâche
-libère l’interface pendant l’attente. `FULL_SYNC_QUOTA_RETRY_SECONDS` permet de
-forcer un autre délai de secours (minimum 60 secondes). Le
+n'attend aucune confirmation de `/status`. À l'échéance, elle relance directement
+la synchronisation et laisse la première requête métier confirmer la disponibilité
+réelle. Le bouton manuel suit la même règle. La tâche libère l’interface pendant
+l’attente. `FULL_SYNC_QUOTA_RETRY_SECONDS` permet de forcer un autre délai de
+secours (minimum 60 secondes). Le
 mécanisme ne contourne pas les limites du fournisseur : il étale automatiquement
 le téléchargement sur plusieurs fenêtres de quota.
 

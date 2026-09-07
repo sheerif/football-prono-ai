@@ -129,8 +129,7 @@ def _full_sync_retry_seconds(result: dict | None = None, now=None) -> int:
         return 90
 
     # Le forfait utilisé par l'application est renouvelé chaque jour à minuit
-    # UTC. /status peut autoriser une reprise plus tôt si le fournisseur expose
-    # déjà un nouveau compteur.
+    # UTC. La reprise ne dépend d'aucun signal envoyé par le fournisseur.
     current = now or datetime.datetime.now(datetime.UTC)
     if current.tzinfo is None:
         current = current.replace(tzinfo=datetime.UTC)
@@ -168,8 +167,7 @@ def full_sync_state() -> dict | None:
                 **state,
                 "message": (
                     "Quota API journalier atteint : données conservées. "
-                    "Reprise automatique à minuit UTC, ou dès que l’API "
-                    "confirme le renouvellement."
+                    "Reprise automatique à minuit UTC."
                 ),
                 "metadata": metadata,
             }
@@ -569,18 +567,17 @@ def start_full_sync(*, resumed: bool = False) -> str:
                     waiting_message = (
                         f"Réserve quotidienne protégée : {daily_reserve} "
                         "requêtes conservées pour les prédictions et mises à jour courantes. "
-                        "La synchronisation exhaustive reprendra après le renouvellement."
+                        "La synchronisation exhaustive reprendra à minuit UTC."
                     )
                 elif quota_kind == "minute":
                     waiting_message = (
                         "Quota API minute atteint : données conservées. "
-                        "Reprise automatique dès que /status confirme la disponibilité."
+                        "Nouvelle tentative automatique dans 90 secondes."
                     )
                 else:
                     waiting_message = (
                         "Quota API journalier atteint : données conservées. "
-                        "Reprise automatique à minuit UTC, ou dès que l’API "
-                        "confirme le renouvellement."
+                        "Reprise automatique à minuit UTC."
                     )
                 metadata = {
                     "persistent": True,
@@ -717,16 +714,9 @@ def resume_pending_full_sync() -> str | None:
                 return None
         except (TypeError, ValueError):
             pass
-        quota = api_quota_status()
-        if quota.get("verified"):
-            if metadata.get("budget_reserved"):
-                reserve = int(metadata.get("daily_reserve") or 0)
-                if int(quota.get("remaining") or 0) > reserve:
-                    return start_full_sync(resumed=True)
-                return None
-            if quota.get("available"):
-                return start_full_sync(resumed=True)
-            return None
+        # Ne pas dépendre de /status : certains forfaits ne publient aucun
+        # signal de renouvellement exploitable. La première requête métier
+        # confirme directement la disponibilité réelle.
     return start_full_sync(resumed=True)
 
 

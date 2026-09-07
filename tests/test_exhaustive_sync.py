@@ -194,7 +194,7 @@ class ExhaustiveSyncTests(unittest.TestCase):
         self.assertEqual(result, "new-job")
         starter.assert_called_once_with(resumed=True)
 
-    def test_available_quota_resumes_after_the_scheduled_time(self):
+    def test_sync_resumes_after_due_time_without_status_confirmation(self):
         starter = Mock(return_value="resumed-job")
         past = (
             datetime.datetime.now(datetime.UTC).replace(tzinfo=None)
@@ -210,17 +210,14 @@ class ExhaustiveSyncTests(unittest.TestCase):
                     "metadata": {"next_retry_at": past},
                 },
             ),
-            patch.object(
-                background_jobs,
-                "api_quota_status",
-                return_value={"verified": True, "available": True, "remaining": 7500},
-            ),
+            patch.object(background_jobs, "api_quota_status") as quota_status,
             patch.object(background_jobs, "start_full_sync", starter),
         ):
             result = background_jobs.resume_pending_full_sync()
 
         self.assertEqual(result, "resumed-job")
         starter.assert_called_once_with(resumed=True)
+        quota_status.assert_not_called()
 
     def test_reserved_budget_does_not_restart_the_exhaustive_sync(self):
         starter = Mock()
@@ -242,23 +239,16 @@ class ExhaustiveSyncTests(unittest.TestCase):
                     },
                 },
             ),
-            patch.object(
-                background_jobs,
-                "api_quota_status",
-                return_value={
-                    "verified": True,
-                    "available": True,
-                    "remaining": 500,
-                },
-            ),
+            patch.object(background_jobs, "api_quota_status") as quota_status,
             patch.object(background_jobs, "start_full_sync", starter),
         ):
             result = background_jobs.resume_pending_full_sync()
 
         self.assertIsNone(result)
         starter.assert_not_called()
+        quota_status.assert_not_called()
 
-    def test_reserved_budget_restarts_after_daily_renewal(self):
+    def test_reserved_budget_restarts_at_due_time_without_status(self):
         starter = Mock(return_value="renewed-job")
         past = (
             datetime.datetime.now(datetime.UTC).replace(tzinfo=None)
@@ -278,24 +268,17 @@ class ExhaustiveSyncTests(unittest.TestCase):
                     },
                 },
             ),
-            patch.object(
-                background_jobs,
-                "api_quota_status",
-                return_value={
-                    "verified": True,
-                    "available": True,
-                    "remaining": 7500,
-                },
-            ),
+            patch.object(background_jobs, "api_quota_status") as quota_status,
             patch.object(background_jobs, "start_full_sync", starter),
         ):
             result = background_jobs.resume_pending_full_sync()
 
         self.assertEqual(result, "renewed-job")
         starter.assert_called_once_with(resumed=True)
+        quota_status.assert_not_called()
 
-    def test_exhausted_verified_quota_never_launches_a_fallback_request(self):
-        starter = Mock()
+    def test_due_sync_does_not_wait_for_an_exhausted_status_response(self):
+        starter = Mock(return_value="attempted-job")
         past = (
             datetime.datetime.now(datetime.UTC).replace(tzinfo=None)
             - datetime.timedelta(hours=1)
@@ -310,17 +293,14 @@ class ExhaustiveSyncTests(unittest.TestCase):
                     "metadata": {"next_retry_at": past},
                 },
             ),
-            patch.object(
-                background_jobs,
-                "api_quota_status",
-                return_value={"verified": True, "available": False, "remaining": 0},
-            ),
+            patch.object(background_jobs, "api_quota_status") as quota_status,
             patch.object(background_jobs, "start_full_sync", starter),
         ):
             result = background_jobs.resume_pending_full_sync()
 
-        self.assertIsNone(result)
-        starter.assert_not_called()
+        self.assertEqual(result, "attempted-job")
+        starter.assert_called_once_with(resumed=True)
+        quota_status.assert_not_called()
 
     def test_full_sync_covers_past_and_future_matches(self):
         past = {
