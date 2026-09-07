@@ -753,7 +753,13 @@ def start_startup_updates_once(connection_log_id: int | None = None) -> str | No
 
             _progress(job_id, 50, 100, "Synchronisation historique si nécessaire...")
             auto_started_at = _now()
+            refreshed_current_seasons = {
+                int(item["season"])
+                for item in (current_result.get("refreshed") or [])
+                if item.get("season") is not None
+            }
             auto_result = import_service.auto_refresh_if_due(
+                skip_force_refresh_seasons=refreshed_current_seasons,
                 progress_callback=lambda current, total, label: _phase_progress(
                     job_id,
                     current,

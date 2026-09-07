@@ -762,6 +762,60 @@ def _save_match(session, fixture: dict, league_id: int, season: int):
         session.add(match)
 
 
+def _save_fixture_api_detail(session, item: dict, league_id: int, season: int) -> None:
+    """Réutilise la réponse /fixtures déjà payée pour le cache de détails."""
+    fixture = item.get("fixture") or {}
+    fixture_id = fixture.get("id") or item.get("id")
+    if not fixture_id:
+        return
+    league = item.get("league") or {}
+    venue = fixture.get("venue") or {}
+    status = fixture.get("status") or {}
+    teams = item.get("teams") or {}
+    home = teams.get("home") or {}
+    away = teams.get("away") or {}
+    session.execute(
+        text(
+            """
+            INSERT INTO fixture_api_details (
+                fixture_id, league_id, season, round, venue, city, status_short,
+                home_logo, away_logo, league_logo, raw_json, updated_at
+            ) VALUES (
+                :fixture_id, :league_id, :season, :round, :venue, :city,
+                :status_short, :home_logo, :away_logo, :league_logo, :raw_json,
+                :updated_at
+            )
+            ON CONFLICT(fixture_id) DO UPDATE SET
+                league_id = excluded.league_id,
+                season = excluded.season,
+                round = COALESCE(excluded.round, fixture_api_details.round),
+                venue = COALESCE(excluded.venue, fixture_api_details.venue),
+                city = COALESCE(excluded.city, fixture_api_details.city),
+                status_short = COALESCE(excluded.status_short, fixture_api_details.status_short),
+                home_logo = COALESCE(excluded.home_logo, fixture_api_details.home_logo),
+                away_logo = COALESCE(excluded.away_logo, fixture_api_details.away_logo),
+                league_logo = COALESCE(excluded.league_logo, fixture_api_details.league_logo),
+                raw_json = excluded.raw_json,
+                updated_at = excluded.updated_at
+            """
+        ),
+        {
+            "fixture_id": int(fixture_id),
+            "league_id": int(league.get("id") or league_id),
+            "season": int(league.get("season") or season),
+            "round": league.get("round"),
+            "venue": venue.get("name"),
+            "city": venue.get("city"),
+            "status_short": status.get("short"),
+            "home_logo": home.get("logo"),
+            "away_logo": away.get("logo"),
+            "league_logo": league.get("logo"),
+            "raw_json": json.dumps(item, ensure_ascii=False, default=str),
+            "updated_at": utc_now().isoformat(),
+        },
+    )
+
+
 def _configured_season_range() -> list[int]:
     config = get_auto_refresh_config()
     return list(range(config["start_season"], config["end_season"] + 1))
@@ -807,6 +861,7 @@ def import_league_seasons_by_id(league_id: int, seasons: List[int] | None = None
                         if away:
                             _get_or_create_team(session, away, league_id=league_id)
                     _save_match(session, item, league_id, season)
+                    _save_fixture_api_detail(session, item, league_id, season)
                 session.commit()
             except Exception as e:
                 session.rollback()
@@ -943,6 +998,7 @@ def _refresh_league_season(
                         if teams.get("away"):
                             _get_or_create_team(session, teams["away"], league_id=league_id)
                     _save_match(session, item, league_id, season)
+                    _save_fixture_api_detail(session, item, league_id, season)
                 session.commit()
                 if page >= total_pages:
                     break
@@ -1209,6 +1265,7 @@ def import_leagues_cautious(
                                     if teams.get('away'):
                                         _get_or_create_team(session, teams.get('away'), league_id=lid)
                                 _save_match(session, item, lid, season)
+                                _save_fixture_api_detail(session, item, lid, season)
                             session.commit()
                             if page >= total_pages:
                                 break
@@ -1328,7 +1385,11 @@ def import_leagues_cautious(
         session.close()
 
 
-def auto_refresh_if_due(force: bool = False, progress_callback=None) -> dict:
+def auto_refresh_if_due(
+    force: bool = False,
+    progress_callback=None,
+    skip_force_refresh_seasons=None,
+) -> dict:
     """Refresh imported football data when the configured interval has elapsed.
 
     The refresh checks every configured season from the start year to the current
@@ -1372,7 +1433,14 @@ def auto_refresh_if_due(force: bool = False, progress_callback=None) -> dict:
             "audit": audit,
         }
 
-    force_refresh_seasons = seasons[-config["recent_seasons"] :]
+    skipped_force_seasons = {
+        int(value) for value in (skip_force_refresh_seasons or [])
+    }
+    force_refresh_seasons = [
+        season
+        for season in seasons[-config["recent_seasons"] :]
+        if int(season) not in skipped_force_seasons
+    ]
 
     import_leagues_cautious(
         config["league_ids"],

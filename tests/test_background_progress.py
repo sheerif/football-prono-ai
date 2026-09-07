@@ -110,7 +110,8 @@ class BackgroundProgressTests(unittest.TestCase):
             progress_callback(2, 2, "Championnat 2 vérifié")
             return {"ran": False, "reason": "Test"}
 
-        def refresh_history(*, progress_callback):
+        def refresh_history(*, progress_callback, skip_force_refresh_seasons=None):
+            self.assertEqual(skip_force_refresh_seasons, set())
             progress_callback(1, 4, "Saison 1 vérifiée")
             progress_callback(4, 4, "Historique vérifié")
             return {"ran": False, "reason": "Test"}
@@ -138,6 +139,40 @@ class BackgroundProgressTests(unittest.TestCase):
         self.assertEqual(job["status"], "done")
         self.assertEqual(job["progress"], 1.0)
         self.assertEqual(job["message"], "Mises à jour de démarrage terminées")
+
+    def test_startup_history_does_not_force_current_season_twice(self):
+        captured = {}
+
+        def refresh_history(*, progress_callback, skip_force_refresh_seasons=None):
+            captured["skipped"] = skip_force_refresh_seasons
+            return {"ran": False, "reason": "Test"}
+
+        with (
+            patch.object(background_jobs, "_jobs", {}),
+            patch.object(background_jobs, "_startup_started", False),
+            patch.object(background_jobs.threading, "Thread", _ImmediateThread),
+            patch.object(background_jobs.import_service, "init_db"),
+            patch.object(
+                background_jobs.import_service,
+                "refresh_current_competitions_on_connection",
+                return_value={
+                    "ran": True,
+                    "refreshed": [
+                        {"league_id": 61, "season": 2026},
+                        {"league_id": 39, "season": 2026},
+                    ],
+                },
+            ),
+            patch.object(
+                background_jobs.import_service,
+                "auto_refresh_if_due",
+                side_effect=refresh_history,
+            ),
+            patch.object(background_jobs.import_service, "record_update_result"),
+        ):
+            background_jobs.start_startup_updates_once()
+
+        self.assertEqual(captured["skipped"], {2026})
 
     def test_historical_subphases_never_move_progress_backwards(self):
         updates = []

@@ -12,7 +12,7 @@ from components import charts, ranking_summary, statistics_guide, tactical, ui
 from database.database import engine
 from services.api_football import ApiFootballClient
 from services import analysis_store, cross_insight_service, final_prediction_service, lineup_service, pdf_report_service, prediction_helpers, ranking_service, xg_service
-from services import schema_guard
+from services import schema_guard, sync_registry
 from services.season_format import season_period
 
 
@@ -533,23 +533,53 @@ def _sync_missing_fixture_details(upcoming: pd.DataFrame, progress_callback=None
             for fixture_id in fixture_ids
             if not _fixture_detail_complete(cached_details.get(fixture_id))
         ]
-        if not missing_or_incomplete:
-            totals["skipped"] += len(fixture_ids)
+        due = [
+            fixture_id
+            for fixture_id in missing_or_incomplete
+            if sync_registry.should_download(
+                f"fixture-detail:{fixture_id}", unavailable_retry_hours=24
+            )
+        ]
+        totals["skipped"] += len(fixture_ids) - len(due)
+        if not due:
             continue
 
         if progress_callback:
             progress_callback(
                 group_index - 1,
                 total_groups,
-                f"Complément API: {len(missing_or_incomplete)} détail(s) manquant(s)",
+                f"Complément API: {len(due)} détail(s) manquant(s)",
+            )
+        for fixture_id in due:
+            sync_registry.mark(
+                f"fixture-detail:{fixture_id}", "fixture_detail", "running"
             )
         try:
             response = api_client.get_fixtures(int(league_id), int(season))
-        except Exception:
+        except Exception as exc:
+            for fixture_id in due:
+                sync_registry.mark(
+                    f"fixture-detail:{fixture_id}",
+                    "fixture_detail",
+                    "error",
+                    message=str(exc),
+                )
             continue
         stats = _save_fixture_details(int(league_id), int(season), response.get("response") or [])
         for key in ["inserted", "updated", "unchanged"]:
             totals[key] += stats.get(key, 0)
+        refreshed = _load_cached_fixture_details(
+            int(league_id), int(season), tuple(due)
+        )
+        for fixture_id in due:
+            complete = _fixture_detail_complete(refreshed.get(fixture_id))
+            sync_registry.mark(
+                f"fixture-detail:{fixture_id}",
+                "fixture_detail",
+                "complete" if complete else "unavailable",
+                item_count=1 if complete else 0,
+                message=None if complete else "Détail incomplet dans la réponse saison",
+            )
 
     if progress_callback:
         progress_callback(total_groups, total_groups, "Détails, journées et logos vérifiés")
@@ -642,15 +672,32 @@ def _api_prediction(fixture_id: int, force_refresh: bool = False) -> dict:
     if cached and not force_refresh:
         return cached
 
+    key = f"fixture-prediction:{int(fixture_id)}"
+    if not force_refresh and not sync_registry.should_download(
+        key, unavailable_retry_hours=12
+    ):
+        return cached
+
     try:
+        sync_registry.mark(key, "fixture_prediction", "running")
         response = api_client.get_predictions(int(fixture_id))
-    except Exception:
+    except Exception as exc:
+        sync_registry.mark(
+            key, "fixture_prediction", "error", message=str(exc)
+        )
         return cached
     items = response.get("response") or []
     if not items:
+        sync_registry.mark(
+            key,
+            "fixture_prediction",
+            "unavailable",
+            message="Conseil non publié par l’API",
+        )
         return cached
 
     _save_prediction(int(fixture_id), items[0])
+    sync_registry.mark(key, "fixture_prediction", "complete", item_count=1)
     return _load_cached_prediction(fixture_id)
 
 
@@ -755,7 +802,7 @@ def _prefetch_api_predictions(fixture_ids: list[int], force_refresh: bool = Fals
         if progress_callback:
             progress_callback(index - 1, total, f"Comparaison prédiction API: match {fixture_id}")
         before = _load_cached_prediction(fixture_id)
-        prediction = _api_prediction(fixture_id, force_refresh=True)
+        prediction = _api_prediction(fixture_id, force_refresh=force_refresh)
         after = _load_cached_prediction(fixture_id)
         if not after:
             stats["unavailable"] += 1
@@ -2425,9 +2472,14 @@ def show():
                 text="0 % — Synchronisation des détails des matchs",
             )
             bulk_status = st.empty()
-            fixture_stats = _sync_fixture_details(
+            fixture_sync = (
+                _sync_fixture_details if compare_api else _sync_missing_fixture_details
+            )
+            fixture_stats = fixture_sync(
                 upcoming,
-                progress_callback=lambda current, total, label: _update_progress(bulk_progress, bulk_status, current, total, label),
+                progress_callback=lambda current, total, label: _update_progress(
+                    bulk_progress, bulk_status, current, total, label
+                ),
             )
             future_preview_ids = _future_fixture_ids(previews)
             prediction_stats = _prefetch_api_predictions(

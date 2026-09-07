@@ -3,6 +3,8 @@ import datetime
 import json
 from unittest.mock import Mock, patch
 
+from sqlalchemy import create_engine, text
+
 from database import models
 from database.database import engine
 from services import background_jobs, import_service
@@ -58,6 +60,51 @@ class DatabaseRuntimeTests(unittest.TestCase):
         teams.assert_not_called()
         fixtures.assert_not_called()
         standings.assert_called_once_with(61, 2025)
+
+    def test_fixture_response_is_reused_for_detail_storage(self):
+        test_engine = create_engine("sqlite://")
+        item = {
+            "fixture": {
+                "id": 42,
+                "venue": {"name": "Stade Test", "city": "Paris"},
+                "status": {"short": "NS"},
+            },
+            "league": {
+                "id": 61,
+                "season": 2026,
+                "round": "Regular Season - 1",
+                "logo": "league.png",
+            },
+            "teams": {
+                "home": {"logo": "home.png"},
+                "away": {"logo": "away.png"},
+            },
+        }
+        with test_engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE fixture_api_details (
+                        fixture_id INTEGER PRIMARY KEY, league_id INTEGER,
+                        season INTEGER, round TEXT, venue TEXT, city TEXT,
+                        status_short TEXT, home_logo TEXT, away_logo TEXT,
+                        league_logo TEXT, raw_json TEXT, updated_at TEXT
+                    )
+                    """
+                )
+            )
+            import_service._save_fixture_api_detail(conn, item, 61, 2026)
+            row = conn.execute(
+                text(
+                    "SELECT round, venue, home_logo, away_logo "
+                    "FROM fixture_api_details WHERE fixture_id = 42"
+                )
+            ).one()
+
+        self.assertEqual(
+            tuple(row),
+            ("Regular Season - 1", "Stade Test", "home.png", "away.png"),
+        )
 
     def test_season_access_audit_reuses_same_persistent_scope(self):
         config = {

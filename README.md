@@ -102,6 +102,9 @@ Les réponses identiques demandées simultanément ou dans les 60 secondes sont
 également partagées entre tous les clients sans nouvel appel réseau. Ce délai
 peut être réglé avec `API_FOOTBALL_REQUEST_CACHE_SECONDS`.
 
+L'audit endpoint par endpoint et les exceptions autorisées sont documentés dans
+[`docs/api-request-audit.md`](docs/api-request-audit.md).
+
 ### Supported database
 
 SQLite is the only officially supported database engine. Some synchronization

@@ -2,11 +2,26 @@ import os
 import unittest
 from unittest.mock import Mock, patch
 
-from pages import data_management
+from pages import data_management, matchs_a_venir
 from services import background_jobs, full_sync_service
 
 
 class PredictionSyncTests(unittest.TestCase):
+    def test_upcoming_page_defers_recently_unavailable_prediction(self):
+        with (
+            patch.object(matchs_a_venir, "_load_cached_prediction", return_value={}),
+            patch.object(
+                matchs_a_venir.sync_registry,
+                "should_download",
+                return_value=False,
+            ),
+            patch.object(matchs_a_venir.api_client, "get_predictions") as request,
+        ):
+            result = matchs_a_venir._api_prediction(123)
+
+        self.assertEqual(result, {})
+        request.assert_not_called()
+
     def test_invalid_pause_environment_uses_safe_default(self):
         with patch.dict(os.environ, {"PREDICTION_SYNC_PAUSE_SECONDS": "invalide"}):
             self.assertEqual(
