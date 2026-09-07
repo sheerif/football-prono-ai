@@ -8,9 +8,16 @@ from services.api_football import (
     ApiFootballClient,
     _build_session,
 )
+from services import api_football
 
 
 class ApiFootballClientTests(unittest.TestCase):
+    def setUp(self):
+        api_football._daily_blocked_until = None
+
+    def tearDown(self):
+        api_football._daily_blocked_until = None
+
     def test_missing_key_fails_before_network_access(self):
         session = Mock()
         client = ApiFootballClient(api_key="", session=session)
@@ -76,6 +83,41 @@ class ApiFootballClientTests(unittest.TestCase):
 
         self.assertEqual(client.last_rate_limit["daily_remaining"], "98")
         self.assertEqual(client.last_rate_limit["minute_remaining"], "0")
+
+    def test_zero_remaining_blocks_other_clients_until_midnight(self):
+        first_response = Mock()
+        first_response.headers = {
+            "x-ratelimit-requests-remaining": "0",
+            "X-RateLimit-Remaining": "9",
+        }
+        first_response.json.return_value = {"response": []}
+        first_session = Mock()
+        first_session.get.return_value = first_response
+        first_client = ApiFootballClient(api_key="test-key", session=first_session)
+
+        second_session = Mock()
+        second_client = ApiFootballClient(api_key="test-key", session=second_session)
+
+        self.assertEqual(first_client.get_leagues(), {"response": []})
+        with self.assertRaisesRegex(RuntimeError, "bloqué localement"):
+            second_client.get_leagues()
+        second_session.get.assert_not_called()
+
+    def test_daily_limit_payload_activates_the_global_circuit_breaker(self):
+        response = Mock()
+        response.headers = {}
+        response.json.return_value = {
+            "errors": {"requests": "You have reached the request limit for the day"}
+        }
+        session = Mock()
+        session.get.return_value = response
+        client = ApiFootballClient(api_key="test-key", session=session)
+
+        with self.assertRaisesRegex(RuntimeError, "request limit for the day"):
+            client.get_leagues()
+        with self.assertRaisesRegex(RuntimeError, "bloqué localement"):
+            client.get_teams(1, 2026)
+        self.assertEqual(session.get.call_count, 1)
 
     def test_invalid_json_has_a_clear_error(self):
         response = Mock()

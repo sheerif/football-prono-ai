@@ -94,6 +94,10 @@ elle peut utiliser la totalité des 7 500 requêtes du forfait. La limite du
 fournisseur reste toutefois incontournable ; lorsqu'elle est atteinte, la
 progression est conservée jusqu'à minuit. Une réserve facultative peut être
 activée avec `FULL_SYNC_DAILY_RESERVE` (valeur par défaut : `0`).
+Tous les clients API partagent aussi un coupe-circuit en mémoire : dès qu'une
+réponse indique zéro requête restante ou une limite journalière atteinte, les
+appels suivants sont bloqués localement jusqu'à minuit UTC. Un verrou commun
+évite que plusieurs tâches concurrentes dépassent la limite en même temps.
 
 ### Supported database
 

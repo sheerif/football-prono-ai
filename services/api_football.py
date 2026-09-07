@@ -1,4 +1,6 @@
+import datetime
 import os
+import threading
 
 import requests
 from dotenv import load_dotenv
@@ -12,6 +14,44 @@ DEFAULT_TIMEOUT = (5, 30)
 # Les 429 sont repris par les tâches persistantes au bon renouvellement de
 # quota. Les retenter immédiatement gaspillerait plusieurs appels identiques.
 RETRY_STATUS_CODES = (500, 502, 503, 504)
+_request_lock = threading.RLock()
+_daily_blocked_until: datetime.datetime | None = None
+
+
+def _next_midnight_utc() -> datetime.datetime:
+    now = datetime.datetime.now(datetime.UTC)
+    return (now + datetime.timedelta(days=1)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+
+
+def _block_daily_requests() -> None:
+    global _daily_blocked_until
+    _daily_blocked_until = _next_midnight_utc()
+
+
+def _daily_requests_blocked() -> bool:
+    global _daily_blocked_until
+    if _daily_blocked_until is None:
+        return False
+    if datetime.datetime.now(datetime.UTC) >= _daily_blocked_until:
+        _daily_blocked_until = None
+        return False
+    return True
+
+
+def _is_daily_quota_error(detail: str) -> bool:
+    value = str(detail).casefold()
+    return any(
+        token in value
+        for token in (
+            "request limit for the day",
+            "request limit for day",
+            "daily request",
+            "daily quota",
+            "quota journalier",
+        )
+    )
 
 
 def _retry_count() -> int:
@@ -71,6 +111,15 @@ class ApiFootballClient:
             raise RuntimeError(
                 "Clé API_FOOTBALL_KEY manquante. Ajoutez-la dans .env ou dans les secrets Streamlit avant de lancer une synchronisation."
             )
+        with _request_lock:
+            if _daily_requests_blocked():
+                raise RuntimeError(
+                    "Quota API journalier déjà atteint : appel bloqué localement "
+                    "jusqu'à minuit UTC pour éviter une requête refusée supplémentaire."
+                )
+            return self._get_unlocked(path, params)
+
+    def _get_unlocked(self, path, params=None):
         url = f"{self.base}{path}"
         self.request_count += 1
         resp = self.session.get(
@@ -88,6 +137,12 @@ class ApiFootballClient:
                 "minute_remaining": response_headers.get("X-RateLimit-Remaining"),
                 "retry_after": response_headers.get("Retry-After"),
             }
+            try:
+                daily_remaining = int(self.last_rate_limit["daily_remaining"])
+            except (TypeError, ValueError):
+                daily_remaining = None
+            if daily_remaining is not None and daily_remaining <= 0:
+                _block_daily_requests()
         try:
             resp.raise_for_status()
         except HTTPError as exc:
@@ -98,6 +153,8 @@ class ApiFootballClient:
             except ValueError:
                 rejected_payload = {}
             detail = self._error_detail(rejected_payload) or str(exc)
+            if _is_daily_quota_error(detail):
+                _block_daily_requests()
             raise RuntimeError(f"API-Football quota 429 : {detail}") from exc
         try:
             payload = resp.json()
@@ -107,6 +164,8 @@ class ApiFootballClient:
             ) from exc
         detail = self._error_detail(payload)
         if detail:
+            if _is_daily_quota_error(detail):
+                _block_daily_requests()
             raise RuntimeError(f"API-Football a refusé la requête : {detail}")
         return payload
 
