@@ -42,9 +42,19 @@ class BackgroundProgressTests(unittest.TestCase):
                 label="xG : 25/100 traités · 18 téléchargés · 7 évités",
             )
             job = background_jobs.list_jobs()[0]
+            snapshot = background_jobs._job_progress_snapshot(job_id)
 
         self.assertEqual(job["progress"], 0.25)
         self.assertIn("18 téléchargés", job["progress_label"])
+        self.assertEqual(
+            snapshot,
+            {
+                "progress": 0.25,
+                "progress_current": 25,
+                "progress_total": 100,
+                "progress_label": "xG : 25/100 traités · 18 téléchargés · 7 évités",
+            },
+        )
 
     def test_startup_job_forwards_detailed_progress_and_finishes(self):
         def refresh_current(*, progress_callback):

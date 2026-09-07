@@ -57,6 +57,8 @@ class ResponsiveUiContractTests(unittest.TestCase):
         self.assertIn("ui.progress_download_caption(job)", updates_source)
         self.assertIn("text=progress_bar_text(job)", sidebar_source)
         self.assertIn("text=ui.progress_bar_text(job)", updates_source)
+        self.assertIn('job.get("status") == "partial"', sidebar_source)
+        self.assertIn("st.warning(job.get(\"message\")", updates_source)
 
 
 if __name__ == "__main__":

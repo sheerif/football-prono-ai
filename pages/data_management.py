@@ -107,6 +107,12 @@ def _render_jobs():
     active_statuses = {"running", "waiting_quota"}
     active = [job for job in jobs if job.get("status") in active_statuses]
     finished = [job for job in jobs if job.get("status") not in active_statuses][:5]
+    paused = [
+        job
+        for job in finished
+        if job.get("status") == "partial"
+        and (job.get("details") or {}).get("quota_reached")
+    ][:1]
 
     ui.section_label("Téléchargements")
     if not active:
@@ -121,6 +127,14 @@ def _render_jobs():
                 st.warning(job.get("message"))
             else:
                 st.caption("La mise à jour continue automatiquement en arrière-plan.")
+
+    for job in paused:
+        with st.container(border=True):
+            st.markdown(f"### {job.get('label', 'Mise à jour')} — suspendue")
+            progress = float(job.get("progress") or 0)
+            st.progress(progress, text=ui.progress_bar_text(job))
+            st.caption(ui.progress_download_caption(job))
+            st.warning(job.get("message") or "Quota API atteint.")
 
     if finished:
         with st.expander("Dernières tâches terminées", expanded=False):
@@ -225,19 +239,22 @@ def show():
         api_key_missing = not (os.getenv("API_FOOTBALL_KEY") or "").strip()
         if api_key_missing:
             st.error("Synchronisation indisponible : la clé API_FOOTBALL_KEY est absente. Ajoutez-la dans .env ou les secrets Streamlit.")
+        state_loader = getattr(background_jobs, "full_sync_state", None)
+        full_state = state_loader() if callable(state_loader) else None
+        quota_waiting = bool(
+            full_state and full_state.get("status") == "waiting_quota"
+        )
         if st.button(
             "↻ Lancer la synchronisation exhaustive",
             type="primary",
             width="stretch",
-            disabled=api_key_missing or data_job_active,
+            disabled=api_key_missing or data_job_active or quota_waiting,
         ):
             _start_full_sync()
             st.success(
                 "Synchronisation exhaustive lancée. Chaque donnée reçue est "
                 "enregistrée immédiatement dans la base."
             )
-        state_loader = getattr(background_jobs, "full_sync_state", None)
-        full_state = state_loader() if callable(state_loader) else None
         if full_state and full_state.get("status") == "waiting_quota":
             st.warning(full_state.get("message") or "Synchronisation en attente du quota API.")
             st.caption(
@@ -288,7 +305,7 @@ def show():
             "Télécharger tous les conseils API",
             type="primary",
             width="stretch",
-            disabled=api_key_missing or data_job_active,
+            disabled=api_key_missing or data_job_active or quota_waiting,
         ):
             try:
                 _start_prediction_sync()
@@ -324,7 +341,7 @@ def show():
             "Télécharger tous les xG manquants",
             type="primary",
             width="stretch",
-            disabled=api_key_missing or data_job_active,
+            disabled=api_key_missing or data_job_active or quota_waiting,
         ):
             background_jobs.start_xg_sync(
                 list(LEAGUE_PRESETS.values()),

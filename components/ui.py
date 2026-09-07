@@ -1088,23 +1088,50 @@ def render_background_jobs():
     if callable(resume_pending):
         resume_pending()
     jobs = background_jobs.active_jobs()
+    paused_jobs = [
+        job
+        for job in background_jobs.list_jobs()
+        if job.get("status") == "partial"
+        and (job.get("details") or {}).get("quota_reached")
+    ][:1]
     state_loader = getattr(background_jobs, "full_sync_state", None)
     full_state = state_loader() if callable(state_loader) else None
     waiting_quota = bool(
         full_state and full_state.get("status") == "waiting_quota"
     )
-    if not jobs and not waiting_quota:
+    if not jobs and not paused_jobs and not waiting_quota:
         return
     st.markdown("---")
     st.markdown("### Téléchargements")
-    for job in jobs:
+    displayed_ids = set()
+    for job in [*jobs, *paused_jobs]:
+        if job.get("id") in displayed_ids:
+            continue
+        displayed_ids.add(job.get("id"))
         st.caption(job.get("label", "Tâche en arrière-plan"))
         progress = float(job.get("progress") or 0)
         st.progress(progress, text=progress_bar_text(job))
         st.caption(progress_download_caption(job))
-        if job.get("status") == "waiting_quota":
+        if job.get("status") in {"waiting_quota", "partial"}:
             st.caption(job.get("message"))
     if waiting_quota and not any(
-        job.get("kind") == "full_sync" for job in jobs
+        job.get("kind") == "full_sync" for job in [*jobs, *paused_jobs]
     ):
-        st.caption("Synchronisation exhaustive en attente du renouvellement du quota.")
+        metadata = full_state.get("metadata") or {}
+        persistent_job = {
+            "progress": metadata.get("progress", 0),
+            "progress_current": metadata.get("progress_current", 0),
+            "progress_total": metadata.get("progress_total", 100),
+            "progress_label": metadata.get("progress_label")
+            or "En attente du renouvellement du quota",
+            "downloaded": metadata.get("downloaded"),
+            "api_calls": metadata.get("api_calls"),
+            "skipped": metadata.get("skipped"),
+        }
+        st.caption("Synchronisation exhaustive")
+        st.progress(
+            float(persistent_job["progress"] or 0),
+            text=progress_bar_text(persistent_job),
+        )
+        st.caption(progress_download_caption(persistent_job))
+        st.caption(full_state.get("message") or "En attente du quota API.")

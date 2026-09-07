@@ -84,6 +84,17 @@ def list_jobs() -> list[dict]:
         )
 
 
+def _job_progress_snapshot(job_id: str) -> dict:
+    with _lock:
+        job = (_jobs.get(job_id) or {}).copy()
+    return {
+        "progress": float(job.get("progress") or 0),
+        "progress_current": int(job.get("progress_current") or 0),
+        "progress_total": int(job.get("progress_total") or 0),
+        "progress_label": str(job.get("progress_label") or "").strip(),
+    }
+
+
 def active_jobs() -> list[dict]:
     return [
         job for job in list_jobs() if job.get("status") in ACTIVE_JOB_STATUSES
@@ -463,6 +474,8 @@ def start_full_sync(*, resumed: bool = False) -> str:
                     "started_at": started_at,
                     "next_retry_at": retry_at.isoformat(),
                     "checkpoint": result.get("checkpoint"),
+                    **_job_progress_snapshot(job_id),
+                    **_result_metrics(result),
                 }
                 sync_registry.mark(
                     FULL_SYNC_CONTROL_KEY,
