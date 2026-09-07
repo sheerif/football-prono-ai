@@ -42,6 +42,9 @@ def _create_job(kind: str, label: str, details: dict | None = None) -> str:
             "label": label,
             "status": "running",
             "progress": 0.0,
+            "progress_current": 0,
+            "progress_total": 0,
+            "progress_label": "Préparation...",
             "message": "0 % — Préparation...",
             "details": details or {},
             "started_at": _now(),
@@ -134,7 +137,14 @@ def full_sync_state() -> dict | None:
 def _progress(job_id: str, current: int, total: int, label: str):
     ratio = min(1.0, current / max(1, total))
     percent = int(round(ratio * 100))
-    _set_job(job_id, progress=ratio, message=f"{percent} % — {label}")
+    _set_job(
+        job_id,
+        progress=ratio,
+        progress_current=max(0, int(current)),
+        progress_total=max(1, int(total)),
+        progress_label=str(label),
+        message=f"{percent} % — {label}",
+    )
 
 
 def _phase_progress(
@@ -149,7 +159,26 @@ def _phase_progress(
     phase_ratio = min(1.0, max(0.0, current / max(1, total)))
     ratio = min(1.0, max(0.0, start + (end - start) * phase_ratio))
     percent = int(round(ratio * 100))
-    _set_job(job_id, progress=ratio, message=f"{percent} % — {label}")
+    _set_job(
+        job_id,
+        progress=ratio,
+        progress_current=max(0, int(current)),
+        progress_total=max(1, int(total)),
+        progress_label=str(label),
+        message=f"{percent} % — {label}",
+    )
+
+
+def _result_metrics(result: dict | None) -> dict:
+    result = result or {}
+    return {
+        "downloaded": int(result.get("downloaded") or 0),
+        "skipped": int(
+            result.get("requests_avoided_at_least", result.get("skipped") or 0)
+            or 0
+        ),
+        "api_calls": int(result.get("api_calls") or 0),
+    }
 
 
 def start_manual_import(
@@ -259,10 +288,11 @@ def start_prediction_sync(days: int | None = None) -> str:
             _set_job(
                 job_id,
                 status="partial" if quota_reached else "done",
-                progress=1.0,
                 message=message,
                 finished_at=_now(),
                 details=result,
+                **_result_metrics(result),
+                **({"progress": 1.0} if not quota_reached else {}),
             )
             import_service.record_update_log(
                 event_type="synchronisation_conseils_api",
@@ -330,10 +360,11 @@ def start_xg_sync(
             _set_job(
                 job_id,
                 status="partial" if quota_reached else "done",
-                progress=1.0,
                 message=message,
                 finished_at=_now(),
                 details=result,
+                **_result_metrics(result),
+                **({"progress": 1.0} if not quota_reached else {}),
             )
             import_service.record_update_log(
                 event_type="synchronisation_xg",
@@ -446,6 +477,7 @@ def start_full_sync(*, resumed: bool = False) -> str:
                     message=waiting_message,
                     finished_at=_now(),
                     details={**result, **metadata},
+                    **_result_metrics(result),
                 )
                 import_service.record_update_log(
                     event_type="synchronisation_globale",
@@ -471,6 +503,7 @@ def start_full_sync(*, resumed: bool = False) -> str:
                 message=message,
                 finished_at=_now(),
                 details=result,
+                **_result_metrics(result),
             )
             sync_registry.mark(
                 FULL_SYNC_CONTROL_KEY,

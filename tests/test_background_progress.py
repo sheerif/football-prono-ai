@@ -28,6 +28,23 @@ class BackgroundProgressTests(unittest.TestCase):
 
         self.assertAlmostEqual(job["progress"], 0.74)
         self.assertEqual(job["message"], "74 % — Saison vérifiée")
+        self.assertEqual(job["progress_current"], 1)
+        self.assertEqual(job["progress_total"], 2)
+        self.assertEqual(job["progress_label"], "Saison vérifiée")
+
+    def test_progress_exposes_percentage_and_download_counts(self):
+        with patch.object(background_jobs, "_jobs", {}):
+            job_id = background_jobs._create_job("xg_sync", "xG")
+            background_jobs._progress(
+                job_id,
+                current=25,
+                total=100,
+                label="xG : 25/100 traités · 18 téléchargés · 7 évités",
+            )
+            job = background_jobs.list_jobs()[0]
+
+        self.assertEqual(job["progress"], 0.25)
+        self.assertIn("18 téléchargés", job["progress_label"])
 
     def test_startup_job_forwards_detailed_progress_and_finishes(self):
         def refresh_current(*, progress_callback):

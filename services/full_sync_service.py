@@ -459,7 +459,9 @@ def _sync_prediction_rows(
             progress_callback(
                 index,
                 max(1, len(rows)),
-                f"Conseils API : match {index}/{len(rows)}",
+                f"Conseils API : {index}/{len(rows)} traités · "
+                f"{summary['downloaded']} téléchargé(s) · "
+                f"{summary['skipped']} évité(s)",
             )
     summary["api_calls"] = max(
         0,
@@ -635,6 +637,8 @@ def _sync_xg_rows(
                 index,
                 max(1, len(rows)),
                 f"xG différentiels : match {index}/{len(rows)} · "
+                f"{summary['downloaded']} téléchargé(s) · "
+                f"{summary['skipped']} évité(s) · "
                 f"{summary['api_calls']} appel(s) API",
             )
     return summary
@@ -812,7 +816,8 @@ def run_full_sync(progress_callback=None) -> dict:
         progress(
             int((index / max(1, len(core_scopes))) * 15),
             100,
-            f"Données principales : ligue {league_id}, saison {season}",
+            f"Données principales : ligue {league_id}, saison {season} · "
+            f"{summary['downloaded']} téléchargé(s)",
         )
     remaining_core = _missing_core_scopes(config["league_ids"], seasons)
     summary["core"] = "complete" if not remaining_core else "partial"
@@ -881,7 +886,12 @@ def run_full_sync(progress_callback=None) -> dict:
     def advance(label):
         nonlocal completed
         completed += 1
-        progress(55 + int((completed / total_items) * 45), 100, label)
+        progress(
+            55 + int((completed / total_items) * 45),
+            100,
+            f"{label} · {summary['downloaded']} téléchargé(s) · "
+            f"{summary['skipped']} évité(s)",
+        )
 
     for match in matches:
         fixture_id = int(match["fixture_id"])

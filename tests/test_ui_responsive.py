@@ -53,6 +53,10 @@ class ResponsiveUiContractTests(unittest.TestCase):
         decorator = '@st.fragment(run_every="1s")'
         self.assertIn(f"{decorator}\ndef render_background_jobs", sidebar_source)
         self.assertIn(f"{decorator}\ndef _render_jobs", updates_source)
+        self.assertIn("progress_download_caption(job)", sidebar_source)
+        self.assertIn("ui.progress_download_caption(job)", updates_source)
+        self.assertIn("text=progress_bar_text(job)", sidebar_source)
+        self.assertIn("text=ui.progress_bar_text(job)", updates_source)
 
 
 if __name__ == "__main__":

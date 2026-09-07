@@ -115,7 +115,8 @@ def _render_jobs():
         with st.container(border=True):
             st.markdown(f"### {job.get('label', 'Mise à jour')}")
             progress = float(job.get("progress") or 0)
-            st.progress(progress, text=ui.friendly_progress_message(job.get("message"), progress * 100))
+            st.progress(progress, text=ui.progress_bar_text(job))
+            st.caption(ui.progress_download_caption(job))
             if job.get("status") == "waiting_quota":
                 st.warning(job.get("message"))
             else:

@@ -70,6 +70,10 @@ réponses indisponibles sont temporisées et ne sont plus redemandées pour les
 anciens matchs après leur fenêtre de publication. Les saisons récentes ne sont
 rafraîchies qu'après `CORE_SYNC_REFRESH_HOURS` (6 heures par défaut). Le journal
 des tâches indique le nombre réel d'appels et le minimum de requêtes évitées.
+Pendant une tâche, la barre actualisée chaque seconde affiche le pourcentage,
+le nombre d'éléments traités sur le total, les téléchargements réussis, les
+ressources déjà présentes et les appels API lorsque ces compteurs sont
+disponibles pour la phase en cours.
 
 Par défaut, une limite par minute est retentée après 90 secondes et un quota
 journalier après le prochain renouvellement quotidien (00:05 UTC). La tâche

@@ -97,6 +97,10 @@ def friendly_progress_message(message: str | None, percent: float | None = None)
         label = "Mise à jour terminée"
     elif "prépar" in lower or "initial" in lower or not raw:
         label = "Préparation…"
+    elif "xg" in lower:
+        label = "Téléchargement des xG…"
+    elif "conseil" in lower or "prédiction" in lower:
+        label = "Téléchargement des prédictions…"
     elif "joueur" in lower or "profil" in lower:
         label = "Mise à jour des joueurs…"
     elif "équipe" in lower:
@@ -113,6 +117,32 @@ def friendly_progress_message(message: str | None, percent: float | None = None)
         match = re.search(r"(\d+(?:\.\d+)?)\s*%", raw)
         percent = float(match.group(1)) if match else None
     return f"{int(round(percent))} % — {label}" if percent is not None else label
+
+
+def progress_download_caption(job: dict) -> str:
+    """Décrit les volumes traités sous une barre de progression."""
+    parts = []
+    current = int(job.get("progress_current") or 0)
+    total = int(job.get("progress_total") or 0)
+    if total:
+        parts.append(f"Traitement : {current}/{total}")
+    label = str(job.get("progress_label") or "").strip()
+    if label:
+        parts.append(label)
+    if job.get("downloaded") is not None:
+        parts.append(f"Téléchargés : {int(job.get('downloaded') or 0)}")
+    if job.get("api_calls") is not None:
+        parts.append(f"Appels API : {int(job.get('api_calls') or 0)}")
+    if job.get("skipped") is not None:
+        parts.append(f"Déjà présents/évités : {int(job.get('skipped') or 0)}")
+    return " · ".join(parts)
+
+
+def progress_bar_text(job: dict) -> str:
+    """Affiche dans la barre le pourcentage et le téléchargement courant."""
+    percent = int(round(float(job.get("progress") or 0) * 100))
+    label = str(job.get("progress_label") or "Préparation...").strip()
+    return f"{percent} % — {label}"
 
 
 def inject_app_style():
@@ -1070,7 +1100,8 @@ def render_background_jobs():
     for job in jobs:
         st.caption(job.get("label", "Tâche en arrière-plan"))
         progress = float(job.get("progress") or 0)
-        st.progress(progress, text=friendly_progress_message(job.get("message"), progress * 100))
+        st.progress(progress, text=progress_bar_text(job))
+        st.caption(progress_download_caption(job))
         if job.get("status") == "waiting_quota":
             st.caption(job.get("message"))
     if waiting_quota and not any(
