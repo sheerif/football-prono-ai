@@ -78,6 +78,29 @@ class DatabaseRuntimeTests(unittest.TestCase):
 
         get_teams.assert_called_once()
 
+    def test_update_log_deduplicates_same_event_within_one_minute(self):
+        from sqlalchemy import create_engine, text
+
+        test_engine = create_engine("sqlite://")
+        with patch.object(import_service, "engine", test_engine):
+            first = import_service.record_update_log(
+                "synchronisation_globale",
+                "en_attente_quota",
+                finished_at="2026-09-07T20:47:00",
+                reason="Quota journalier atteint",
+            )
+            second = import_service.record_update_log(
+                "synchronisation_globale",
+                "en_attente_quota",
+                finished_at="2026-09-07T20:47:20",
+                reason="Quota journalier atteint",
+            )
+            with test_engine.connect() as conn:
+                count = conn.execute(text("SELECT COUNT(*) FROM update_log")).scalar()
+
+        self.assertEqual(first, second)
+        self.assertEqual(count, 1)
+
     def test_sqlite_connections_enable_integrity_and_lock_protection(self):
         if engine.dialect.name != "sqlite":
             self.skipTest("SQLite-specific runtime settings")

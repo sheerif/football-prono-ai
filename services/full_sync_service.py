@@ -169,6 +169,81 @@ def _player_scopes() -> list[dict]:
     return [dict(row) for row in rows]
 
 
+def overall_progress_snapshot() -> dict:
+    """Mesure l'avancement durable à partir des lignes réellement en base."""
+    import_service.init_db()
+    config = import_service.get_auto_refresh_config()
+    seasons = list(range(config["start_season"], config["end_season"] + 1))
+    core_total = len(config["league_ids"]) * len(seasons)
+    core_done = max(
+        0,
+        core_total - len(_missing_core_scopes(config["league_ids"], seasons)),
+    )
+    with engine.connect() as conn:
+        def scalar(sql: str) -> int:
+            return int(conn.execute(text(sql)).scalar() or 0)
+
+        matches = scalar("SELECT COUNT(*) FROM matches")
+        completed = scalar(
+            "SELECT COUNT(*) FROM matches "
+            "WHERE home_goals IS NOT NULL AND away_goals IS NOT NULL"
+        )
+        upcoming = scalar(
+            "SELECT COUNT(*) FROM matches "
+            "WHERE date >= CURRENT_TIMESTAMP "
+            "AND home_goals IS NULL AND away_goals IS NULL"
+        )
+        details_done = scalar("SELECT COUNT(DISTINCT fixture_id) FROM fixture_api_details")
+        lineups_done = scalar(
+            "SELECT COUNT(*) FROM (SELECT fixture_id FROM fixture_lineups "
+            "GROUP BY fixture_id HAVING COUNT(*) >= 2)"
+        )
+        predictions_done = scalar(
+            "SELECT COUNT(DISTINCT p.fixture_id) FROM fixture_api_predictions p "
+            "JOIN matches m ON m.fixture_id = p.fixture_id "
+            "WHERE m.date >= CURRENT_TIMESTAMP "
+            "AND m.home_goals IS NULL AND m.away_goals IS NULL"
+        )
+        fixture_players_done = scalar(
+            "SELECT COUNT(DISTINCT fixture_id) FROM fixture_player_statistics"
+        )
+        season_scopes = scalar(
+            "SELECT COUNT(*) FROM (SELECT league_id, season FROM matches "
+            "GROUP BY league_id, season)"
+        )
+        season_players_done = scalar(
+            "SELECT COUNT(*) FROM (SELECT m.league_id, m.season FROM matches m "
+            "WHERE EXISTS (SELECT 1 FROM player_statistics p "
+            "WHERE p.league_id = m.league_id AND p.season = m.season) "
+            "GROUP BY m.league_id, m.season)"
+        )
+    xg_done = int(
+        xg_service.coverage(config["league_ids"], seasons).get("available") or 0
+    )
+    total = max(
+        1,
+        core_total + matches * 2 + upcoming + completed * 2 + season_scopes,
+    )
+    current = min(
+        total,
+        core_done
+        + details_done
+        + lineups_done
+        + predictions_done
+        + fixture_players_done
+        + season_players_done
+        + xg_done,
+    )
+    return {
+        "progress": current / total,
+        "progress_current": current,
+        "progress_total": total,
+        "progress_label": (
+            f"Couverture persistante : {current}/{total} ressources complètes"
+        ),
+    }
+
+
 def _missing_core_scopes(league_ids: list[int], seasons: list[int]) -> list[tuple[int, int]]:
     missing = []
     with engine.begin() as conn:

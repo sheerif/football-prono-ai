@@ -10,6 +10,7 @@ from services import import_service, sync_registry
 _lock = threading.RLock()
 _jobs: dict[str, dict] = {}
 _startup_started = False
+_full_progress_cache: tuple[datetime.datetime, dict] | None = None
 FULL_SYNC_CONTROL_KEY = "full-sync:exhaustive"
 ACTIVE_JOB_STATUSES = {"running", "waiting_quota"}
 DATA_JOB_KINDS = {
@@ -140,9 +141,45 @@ def _full_sync_retry_seconds(result: dict | None = None, now=None) -> int:
 def full_sync_state() -> dict | None:
     """Expose l'état durable de la synchronisation exhaustive."""
     try:
-        return sync_registry.get(FULL_SYNC_CONTROL_KEY)
+        state = sync_registry.get(FULL_SYNC_CONTROL_KEY)
     except Exception:
         return None
+    if state and state.get("status") == "waiting_quota":
+        metadata = dict(state.get("metadata") or {})
+        durable = _durable_full_progress_snapshot()
+        if durable and float(durable.get("progress") or 0) > float(
+            metadata.get("progress") or 0
+        ):
+            metadata.update(durable)
+            state = {**state, "metadata": metadata}
+    return state
+
+
+def _durable_full_progress_snapshot(*, force: bool = False) -> dict:
+    global _full_progress_cache
+    now = datetime.datetime.now(datetime.UTC)
+    if (
+        not force
+        and _full_progress_cache
+        and (now - _full_progress_cache[0]).total_seconds() < 60
+    ):
+        return dict(_full_progress_cache[1])
+    try:
+        from services import full_sync_service
+
+        snapshot = full_sync_service.overall_progress_snapshot()
+    except Exception:
+        snapshot = {}
+    _full_progress_cache = (now, dict(snapshot))
+    return snapshot
+
+
+def _best_progress_snapshot(job_id: str) -> dict:
+    current = _job_progress_snapshot(job_id)
+    durable = _durable_full_progress_snapshot(force=True)
+    if float(durable.get("progress") or 0) > float(current.get("progress") or 0):
+        return durable
+    return current
 
 
 def _progress(job_id: str, current: int, total: int, label: str):
@@ -474,7 +511,7 @@ def start_full_sync(*, resumed: bool = False) -> str:
                     "started_at": started_at,
                     "next_retry_at": retry_at.isoformat(),
                     "checkpoint": result.get("checkpoint"),
-                    **_job_progress_snapshot(job_id),
+                    **_best_progress_snapshot(job_id),
                     **_result_metrics(result),
                 }
                 sync_registry.mark(

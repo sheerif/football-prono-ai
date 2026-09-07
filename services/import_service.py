@@ -421,6 +421,24 @@ def record_update_log(
     except Exception:
         pass
     with engine.begin() as conn:
+        previous = conn.execute(
+            text(
+                "SELECT id, finished_at FROM update_log "
+                "WHERE event_type = :event_type AND status = :status "
+                "AND COALESCE(reason, '') = COALESCE(:reason, '') "
+                "ORDER BY id DESC LIMIT 1"
+            ),
+            {"event_type": event_type, "status": status, "reason": reason},
+        ).mappings().first()
+        if previous:
+            try:
+                age = datetime.datetime.fromisoformat(
+                    finished_at
+                ) - datetime.datetime.fromisoformat(previous["finished_at"])
+                if 0 <= age.total_seconds() <= 60:
+                    return int(previous["id"])
+            except (TypeError, ValueError):
+                pass
         result = conn.execute(
             text(
                 """

@@ -74,6 +74,10 @@ Pendant une tâche, la barre actualisée chaque seconde affiche le pourcentage,
 le nombre d'éléments traités sur le total, les téléchargements réussis, les
 ressources déjà présentes et les appels API lorsque ces compteurs sont
 disponibles pour la phase en cours.
+Si un quota interrompt un nouveau passage avant son premier appel, la barre
+utilise la couverture réellement persistée dans les tables plutôt qu'un faux
+zéro. Les événements identiques produits dans la même minute sont dédupliqués
+dans l'historique des mises à jour.
 
 Par défaut, une limite par minute est retentée après 90 secondes et un quota
 journalier après le prochain renouvellement quotidien (00:05 UTC). La tâche

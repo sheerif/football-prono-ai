@@ -13,6 +13,32 @@ class _ImmediateThread:
 
 
 class BackgroundProgressTests(unittest.TestCase):
+    def test_waiting_state_uses_durable_database_progress(self):
+        with (
+            patch.object(
+                background_jobs.sync_registry,
+                "get",
+                return_value={
+                    "status": "waiting_quota",
+                    "metadata": {"progress": 0, "progress_total": 100},
+                },
+            ),
+            patch.object(
+                background_jobs,
+                "_durable_full_progress_snapshot",
+                return_value={
+                    "progress": 0.25,
+                    "progress_current": 250,
+                    "progress_total": 1000,
+                    "progress_label": "Couverture persistante",
+                },
+            ),
+        ):
+            state = background_jobs.full_sync_state()
+
+        self.assertEqual(state["metadata"]["progress"], 0.25)
+        self.assertEqual(state["metadata"]["progress_current"], 250)
+
     def test_phase_progress_is_mapped_inside_the_global_range(self):
         with patch.object(background_jobs, "_jobs", {}):
             job_id = background_jobs._create_job("startup_updates", "Démarrage")
