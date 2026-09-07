@@ -55,6 +55,7 @@ class ApiFootballClient:
         self.headers = {"x-apisports-key": self.api_key}
         self.session = session or _build_session(_retry_count())
         self.last_rate_limit = {}
+        self.request_count = 0
 
     @staticmethod
     def _error_detail(payload) -> str:
@@ -71,6 +72,7 @@ class ApiFootballClient:
                 "Clé API_FOOTBALL_KEY manquante. Ajoutez-la dans .env ou dans les secrets Streamlit avant de lancer une synchronisation."
             )
         url = f"{self.base}{path}"
+        self.request_count += 1
         resp = self.session.get(
             url,
             headers=self.headers,

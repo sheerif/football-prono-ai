@@ -31,6 +31,14 @@ def _api_error(response) -> str | None:
         return " ; ".join(f"{key}: {value}" for key, value in errors.items())
     return str(errors)
 
+
+def _is_quota_error(error: Exception | str) -> bool:
+    value = str(error).casefold()
+    return any(
+        token in value
+        for token in ("quota", "rate limit", "request limit", "too many requests", "429")
+    )
+
 # configure basic logging if not set
 if not logging.getLogger().handlers:
     logging.basicConfig(level=logging.INFO)
@@ -585,6 +593,20 @@ def audit_configured_season_access(
     config = config or get_auto_refresh_config()
     seasons = list(range(config["start_season"], config["end_season"] + 1))
     sample_league = config["league_ids"][0]
+    signature = json.dumps(
+        {"sample_league": sample_league, "seasons": seasons},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    if _get_sync_value("last_api_access_signature") == signature:
+        cached = _get_sync_value("last_api_access_audit")
+        try:
+            result = json.loads(cached) if cached else None
+        except (TypeError, ValueError):
+            result = None
+        if isinstance(result, dict):
+            result["cached"] = True
+            return result
     accessible = []
     unavailable = []
     total_seasons = max(1, len(seasons))
@@ -599,6 +621,8 @@ def audit_configured_season_access(
             else:
                 accessible.append(season)
         except Exception as exc:
+            if _is_quota_error(exc):
+                raise
             unavailable.append({"season": season, "reason": str(exc)})
         if progress_callback:
             progress_callback(
@@ -607,7 +631,8 @@ def audit_configured_season_access(
                 f"Accès à la saison {season} vérifié",
             )
     summary = {"sample_league": sample_league, "accessible": accessible, "unavailable": unavailable}
-    _set_sync_value("last_api_access_audit", str(summary))
+    _set_sync_value("last_api_access_audit", json.dumps(summary, ensure_ascii=False))
+    _set_sync_value("last_api_access_signature", signature)
     return summary
 
 
@@ -865,8 +890,10 @@ def _refresh_league_season(
             logger.warning(f"HTTP error refreshing teams {league_id}/{season}: {exc} — retry {tries}")
             time.sleep(pause * tries)
         except Exception as exc:
-            tries += 1
             session.rollback()
+            if _is_quota_error(exc):
+                raise
+            tries += 1
             logger.warning(f"Error refreshing teams {league_id}/{season}: {exc} — retry {tries}")
             time.sleep(pause * tries)
 
@@ -905,8 +932,10 @@ def _refresh_league_season(
             logger.warning(f"HTTP error refreshing fixtures {league_id}/{season}: {exc} — retry {tries}")
             time.sleep(pause * tries)
         except Exception as exc:
-            tries += 1
             session.rollback()
+            if _is_quota_error(exc):
+                raise
+            tries += 1
             logger.warning(f"Error refreshing fixtures {league_id}/{season}: {exc} — retry {tries}")
             time.sleep(pause * tries)
 
@@ -964,8 +993,10 @@ def _refresh_league_season(
             logger.warning(f"HTTP error refreshing standings {league_id}/{season}: {exc} — retry {tries}")
             time.sleep(pause * tries)
         except Exception as exc:
-            tries += 1
             session.rollback()
+            if _is_quota_error(exc):
+                raise
+            tries += 1
             logger.warning(f"Error refreshing standings {league_id}/{season}: {exc} — retry {tries}")
             time.sleep(pause * tries)
 
@@ -978,6 +1009,19 @@ def refresh_current_competitions_on_connection(progress_callback=None) -> dict:
     config = get_auto_refresh_config()
     if not config["enabled"] or not config["current_enabled"]:
         return {"ran": False, "reason": "Mise à jour des championnats en cours désactivée.", "config": config}
+    raw_last_refresh = _get_sync_value("last_current_refresh_utc")
+    if raw_last_refresh:
+        try:
+            last_refresh = datetime.datetime.fromisoformat(raw_last_refresh)
+            if (utc_now() - last_refresh).total_seconds() < config["interval_minutes"] * 60:
+                return {
+                    "ran": False,
+                    "reason": "Championnats en cours déjà actualisés récemment.",
+                    "config": config,
+                    "cached": True,
+                }
+        except (TypeError, ValueError):
+            pass
 
     register_league_seasons(config["league_ids"], [config["end_season"]], source="current_refresh")
     session = SessionLocal()
@@ -1096,8 +1140,10 @@ def import_leagues_cautious(
                         time.sleep(pause * tries)
                     except Exception as e:
                         last_error = e
-                        tries += 1
                         session.rollback()
+                        if _is_quota_error(e):
+                            raise
+                        tries += 1
                         logging.warning(f"Error fetching teams {lid}/{season}: {e} — retry {tries}")
                         time.sleep(pause * tries)
                 if not teams_ok:
@@ -1155,8 +1201,10 @@ def import_leagues_cautious(
                         time.sleep(pause * tries)
                     except Exception as e:
                         last_error = e
-                        tries += 1
                         session.rollback()
+                        if _is_quota_error(e):
+                            raise
+                        tries += 1
                         logging.warning(f"Error fetching fixtures {lid}/{season}: {e} — retry {tries}")
                         time.sleep(pause * tries)
                 if not fixtures_ok:
@@ -1228,8 +1276,10 @@ def import_leagues_cautious(
                         time.sleep(pause * tries)
                     except Exception as e:
                         last_error = e
-                        tries += 1
                         session.rollback()
+                        if _is_quota_error(e):
+                            raise
+                        tries += 1
                         logging.warning(f"Error fetching standings {lid}/{season}: {e} — retry {tries}")
                         time.sleep(pause * tries)
                 if not standings_ok:

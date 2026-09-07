@@ -62,6 +62,15 @@ quota, le traitement mémorise son point de reprise, attend le renouvellement
 du quota puis continue en ignorant les ressources déjà complètes. Cet état
 survit à un redémarrage tant que le fichier `football.db` est conservé.
 
+La même politique différentielle s'applique aux données principales par
+ligue/saison, détails de match, compositions, conseils API, statistiques des
+joueurs par match, joueurs par saison et xG. La présence des lignes métier est
+contrôlée avant le registre afin de réparer un marqueur devenu incohérent. Les
+réponses indisponibles sont temporisées et ne sont plus redemandées pour les
+anciens matchs après leur fenêtre de publication. Les saisons récentes ne sont
+rafraîchies qu'après `CORE_SYNC_REFRESH_HOURS` (6 heures par défaut). Le journal
+des tâches indique le nombre réel d'appels et le minimum de requêtes évitées.
+
 Par défaut, une limite par minute est retentée après 90 secondes et un quota
 journalier après le prochain renouvellement quotidien (00:05 UTC). La tâche
 libère l’interface pendant l’attente. `FULL_SYNC_QUOTA_RETRY_SECONDS` permet de

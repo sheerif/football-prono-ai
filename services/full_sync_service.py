@@ -43,40 +43,54 @@ def _is_quota_error(error: Exception | str) -> bool:
     return any(token in value for token in ("quota", "rate limit", "request limit", "too many requests", "429"))
 
 
-def _xg_should_download(row: dict, state: dict | None, retry_hours: int) -> bool:
-    """Évite de sonder indéfiniment les anciens matchs sans xG publié."""
+def _resource_should_download(
+    row: dict,
+    state: dict | None,
+    resource_key: str,
+    retry_hours: int,
+    *,
+    terminal_unavailable_after_hours: int | None = None,
+    repair_missing_complete: bool = False,
+) -> bool:
+    """Politique différentielle commune aux ressources liées à un match."""
     if not state:
         return True
     if state.get("status") == "complete":
-        # Une ancienne version pouvait marquer complet avec un seul xG. On
-        # autorise une tentative de réparation puisque le contrôle strict a
-        # déjà constaté que les deux équipes ne sont pas présentes.
-        return True
+        # Le stockage métier reste la source de vérité : l'appelant peut
+        # demander une réparation si la ligne a disparu ou est incomplète.
+        return repair_missing_complete
     if state.get("status") != "unavailable":
-        return sync_registry.should_download(
-            f"fixture-statistics:{int(row['fixture_id'])}", retry_hours
-        )
+        return True
 
+    if state.get("status") == "unavailable" and terminal_unavailable_after_hours:
+        try:
+            match_date = datetime.datetime.fromisoformat(
+                str(row.get("date") or "").replace("Z", "+00:00")
+            )
+            if match_date.tzinfo is None:
+                match_date = match_date.replace(tzinfo=datetime.UTC)
+            age = datetime.datetime.now(datetime.UTC) - match_date.astimezone(
+                datetime.UTC
+            )
+            if age.total_seconds() >= terminal_unavailable_after_hours * 3600:
+                return False
+        except (TypeError, ValueError):
+            pass
+    return sync_registry.should_download(resource_key, retry_hours)
+
+
+def _xg_should_download(row: dict, state: dict | None, retry_hours: int) -> bool:
     try:
-        grace_hours = max(
-            24,
-            int(os.getenv("XG_PUBLICATION_GRACE_HOURS", "72")),
-        )
+        grace_hours = max(24, int(os.getenv("XG_PUBLICATION_GRACE_HOURS", "72")))
     except (TypeError, ValueError):
         grace_hours = 72
-    try:
-        match_date = datetime.datetime.fromisoformat(
-            str(row.get("date") or "").replace("Z", "+00:00")
-        )
-        if match_date.tzinfo is None:
-            match_date = match_date.replace(tzinfo=datetime.UTC)
-        age = datetime.datetime.now(datetime.UTC) - match_date.astimezone(datetime.UTC)
-        if age.total_seconds() >= grace_hours * 3600:
-            return False
-    except (TypeError, ValueError):
-        pass
-    return sync_registry.should_download(
-        f"fixture-statistics:{int(row['fixture_id'])}", retry_hours
+    return _resource_should_download(
+        row,
+        state,
+        f"fixture-statistics:{int(row['fixture_id'])}",
+        retry_hours,
+        terminal_unavailable_after_hours=grace_hours,
+        repair_missing_complete=True,
     )
 
 
@@ -85,6 +99,18 @@ def _percent(value):
         return float(str(value).replace("%", "").strip())
     except (TypeError, ValueError):
         return None
+
+
+def _registry_refresh_due(resource_key: str, refresh_hours: int) -> bool:
+    state = sync_registry.get(resource_key)
+    if not state or state.get("status") != "complete":
+        return True
+    try:
+        updated_at = datetime.datetime.fromisoformat(str(state["updated_at"]))
+        age = datetime.datetime.now(datetime.UTC).replace(tzinfo=None) - updated_at
+        return age.total_seconds() >= max(1, int(refresh_hours)) * 3600
+    except (KeyError, TypeError, ValueError):
+        return True
 
 
 def _upcoming_matches(days: int | None = None) -> list[dict]:
@@ -223,6 +249,18 @@ def _lineup_present(fixture_id: int) -> bool:
             {"fixture_id": int(fixture_id)},
         ).scalar()
     return int(count or 0) >= 2
+
+
+def _fixture_players_present(fixture_id: int) -> bool:
+    with engine.begin() as conn:
+        count = conn.execute(
+            text(
+                "SELECT COUNT(*) FROM fixture_player_statistics "
+                "WHERE fixture_id = :fixture_id"
+            ),
+            {"fixture_id": int(fixture_id)},
+        ).scalar()
+    return int(count or 0) > 0
 
 
 def _save_fixture_details(fixture_id: int, item: dict) -> None:
@@ -372,6 +410,7 @@ def _sync_prediction_rows(
     progress_callback=None,
 ) -> dict:
     """Traite une liste figée de fixtures, ce qui rend la reprise testable."""
+    initial_request_count = int(getattr(client, "request_count", 0) or 0)
     summary = {
         "total": len(rows),
         "downloaded": 0,
@@ -379,6 +418,8 @@ def _sync_prediction_rows(
         "unavailable": 0,
         "errors": [],
         "quota_reached": False,
+        "duplicates_avoided": 0,
+        "unavailable_deferred": 0,
     }
     for index, row in enumerate(rows, start=1):
         fixture_id = int(row["fixture_id"])
@@ -392,6 +433,7 @@ def _sync_prediction_rows(
                 message="Déjà en base",
             )
             result = "skipped"
+            summary["duplicates_avoided"] += 1
         else:
             try:
                 result = _fetch_one(
@@ -409,6 +451,8 @@ def _sync_prediction_rows(
                 result = "error"
             if result != "skipped":
                 time.sleep(pause)
+            else:
+                summary["unavailable_deferred"] += 1
         if result in summary:
             summary[result] += 1
         if progress_callback:
@@ -417,6 +461,10 @@ def _sync_prediction_rows(
                 max(1, len(rows)),
                 f"Conseils API : match {index}/{len(rows)}",
             )
+    summary["api_calls"] = max(
+        0,
+        int(getattr(client, "request_count", 0) or 0) - initial_request_count,
+    )
     return summary
 
 
@@ -604,6 +652,7 @@ def sync_historical_xg(
     """Télécharge les statistiques des matchs terminés, du plus récent au plus ancien."""
     import_service.init_db()
     sync_registry.ensure_table()
+    coverage_before = xg_service.coverage(league_ids, seasons)
     pause = (
         _nonnegative_float_env("XG_SYNC_PAUSE_SECONDS", 0.25)
         if pause is None
@@ -651,6 +700,9 @@ def sync_historical_xg(
         sync_run_id=xg_service.new_sync_run_id(),
     )
     summary["coverage"] = xg_service.coverage(league_ids, seasons)
+    summary["duplicates_avoided"] += int(
+        coverage_before.get("available") or 0
+    )
     return summary
 
 
@@ -675,6 +727,34 @@ def run_full_sync(progress_callback=None) -> dict:
         "quota_reached": False,
         "partial": 0,
     }
+    tracked_clients = {
+        "données principales": getattr(import_service, "client", None),
+        "matchs/prédictions/xG": client,
+        "compositions/statistiques joueurs": getattr(lineup_service, "client", None),
+        "joueurs par saison": getattr(player_service, "client", None),
+    }
+    initial_request_counts = {
+        label: int(getattr(api_client, "request_count", 0) or 0)
+        for label, api_client in tracked_clients.items()
+    }
+
+    def finalize() -> dict:
+        calls = {
+            label: max(
+                0,
+                int(getattr(api_client, "request_count", 0) or 0)
+                - initial_request_counts[label],
+            )
+            for label, api_client in tracked_clients.items()
+        }
+        summary["api_calls_by_family"] = calls
+        summary["api_calls"] = sum(calls.values())
+        summary["requests_avoided_at_least"] = (
+            int(summary.get("skipped") or 0)
+            + int(summary.get("core_skipped") or 0)
+            + int(summary.get("xg_duplicates_avoided") or 0)
+        )
+        return summary
 
     def progress(current, total, label):
         if progress_callback:
@@ -688,20 +768,28 @@ def run_full_sync(progress_callback=None) -> dict:
         summary["errors"].append(f"{key}: {exc}")
         summary["quota_reached"] = True
         summary["checkpoint"] = key
-        return summary
+        return finalize()
 
     progress(0, 100, "Vérification des championnats, équipes, matchs et classements...")
     seasons = list(range(config["start_season"], config["end_season"] + 1))
     missing_core = set(_missing_core_scopes(config["league_ids"], seasons))
     recent_count = max(1, int(config.get("recent_seasons") or 1))
     recent_seasons = set(seasons[-recent_count:])
+    try:
+        core_refresh_hours = max(1, int(os.getenv("CORE_SYNC_REFRESH_HOURS", "6")))
+    except (TypeError, ValueError):
+        core_refresh_hours = 6
+    recent_due = {
+        (int(league_id), int(season))
+        for league_id in config["league_ids"]
+        for season in recent_seasons
+        if _registry_refresh_due(
+            f"core:{int(league_id)}:{int(season)}", core_refresh_hours
+        )
+    }
     core_scopes = sorted(
         missing_core
-        | {
-            (int(league_id), int(season))
-            for league_id in config["league_ids"]
-            for season in recent_seasons
-        }
+        | recent_due
     )
     for index, (league_id, season) in enumerate(core_scopes, start=1):
         key = f"core:{league_id}:{season}"
@@ -779,7 +867,7 @@ def run_full_sync(progress_callback=None) -> dict:
         summary["xg_coverage"] = xg_service.coverage(
             config["league_ids"], seasons
         )
-        return summary
+        return finalize()
 
     total_items = max(
         1,
@@ -807,6 +895,15 @@ def run_full_sync(progress_callback=None) -> dict:
                 message="Déjà en base",
             )
             result = "skipped"
+        elif not _resource_should_download(
+            match,
+            sync_registry.get(detail_key),
+            detail_key,
+            12,
+            terminal_unavailable_after_hours=72,
+            repair_missing_complete=True,
+        ):
+            result = "skipped"
         else:
             try:
                 result = _fetch_one(
@@ -829,10 +926,13 @@ def run_full_sync(progress_callback=None) -> dict:
         if _lineup_present(fixture_id):
             sync_registry.mark(lineup_key, "fixture_lineup", "complete", item_count=2, message="Déjà en base")
             result = "skipped"
-        elif (
-            (lineup_state := sync_registry.get(lineup_key))
-            and lineup_state.get("status") != "complete"
-            and not sync_registry.should_download(lineup_key, 12)
+        elif not _resource_should_download(
+            match,
+            sync_registry.get(lineup_key),
+            lineup_key,
+            12,
+            terminal_unavailable_after_hours=72,
+            repair_missing_complete=True,
         ):
             result = "skipped"
         else:
@@ -887,7 +987,22 @@ def run_full_sync(progress_callback=None) -> dict:
         fixture_id = int(match["fixture_id"])
         key = f"fixture-players:{fixture_id}"
         try:
-            if not sync_registry.should_download(key, 24):
+            if _fixture_players_present(fixture_id):
+                sync_registry.mark(
+                    key,
+                    "fixture_players",
+                    "complete",
+                    message="Déjà en base",
+                )
+                result = "skipped"
+            elif not _resource_should_download(
+                match,
+                sync_registry.get(key),
+                key,
+                24,
+                terminal_unavailable_after_hours=72,
+                repair_missing_complete=True,
+            ):
                 result = "skipped"
             else:
                 sync_registry.mark(key, "fixture_players", "running")
@@ -914,6 +1029,8 @@ def run_full_sync(progress_callback=None) -> dict:
         player_state = sync_registry.get(key)
         if existing and player_state and player_state.get("status") == "complete":
             sync_registry.mark(key, "season_players", "complete", item_count=existing, message="Déjà en base")
+            result = "skipped"
+        elif player_state and player_state.get("status") == "unavailable" and season < max(seasons):
             result = "skipped"
         elif (
             player_state
@@ -971,4 +1088,4 @@ def run_full_sync(progress_callback=None) -> dict:
         seasons,
     )
     progress(100, 100, "Toutes les informations disponibles ont été vérifiées")
-    return summary
+    return finalize()

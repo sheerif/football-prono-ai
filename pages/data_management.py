@@ -125,6 +125,7 @@ def _render_jobs():
         with st.expander("Dernières tâches terminées", expanded=False):
             rows = []
             for job in finished:
+                details = job.get("details") or {}
                 status_label = {
                     "error": "Erreur",
                     "partial": "À reprendre",
@@ -135,6 +136,11 @@ def _render_jobs():
                         "Tâche": job.get("label"),
                         "Statut": status_label,
                         "Fin": _format_datetime(job.get("finished_at")),
+                        "Appels API": details.get("api_calls", "—"),
+                        "Requêtes évitées": details.get(
+                            "requests_avoided_at_least",
+                            details.get("duplicates_avoided", "—"),
+                        ),
                         "Message": job.get("error") or job.get("message"),
                     }
                 )

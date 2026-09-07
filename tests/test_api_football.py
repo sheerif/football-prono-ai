@@ -28,6 +28,7 @@ class ApiFootballClientTests(unittest.TestCase):
         payload = client.get_teams(61, 2026)
 
         self.assertEqual(payload, {"response": []})
+        self.assertEqual(client.request_count, 1)
         session.get.assert_called_once_with(
             "https://v3.football.api-sports.io/teams",
             headers={"x-apisports-key": "test-key"},

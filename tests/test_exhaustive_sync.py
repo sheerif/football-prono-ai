@@ -18,6 +18,37 @@ class _ImmediateThread:
 
 
 class ExhaustiveSyncTests(unittest.TestCase):
+    def test_old_unavailable_fixture_resource_is_not_requested_again(self):
+        with patch.object(
+            full_sync_service.sync_registry,
+            "should_download",
+            return_value=True,
+        ) as should_download:
+            due = full_sync_service._resource_should_download(
+                {"fixture_id": 1, "date": "2020-01-01T12:00:00"},
+                {"status": "unavailable"},
+                "fixture-lineup:1",
+                12,
+                terminal_unavailable_after_hours=72,
+            )
+
+        self.assertFalse(due)
+        should_download.assert_not_called()
+
+    def test_recent_core_scope_respects_refresh_ttl(self):
+        now = datetime.datetime.now(datetime.UTC).replace(tzinfo=None)
+        with patch.object(
+            full_sync_service.sync_registry,
+            "get",
+            return_value={
+                "status": "complete",
+                "updated_at": (now - datetime.timedelta(hours=2)).isoformat(),
+            },
+        ):
+            self.assertFalse(
+                full_sync_service._registry_refresh_due("core:61:2026", 6)
+            )
+
     def test_manual_retry_supports_the_previous_service_signature(self):
         calls = []
 
@@ -173,6 +204,11 @@ class ExhaustiveSyncTests(unittest.TestCase):
             patch.object(full_sync_service.sync_registry, "ensure_table"),
             patch.object(full_sync_service.sync_registry, "mark") as mark,
             patch.object(full_sync_service.sync_registry, "should_download", return_value=False),
+            patch.object(
+                full_sync_service.sync_registry,
+                "get",
+                return_value={"status": "unavailable"},
+            ),
             patch.object(full_sync_service.import_service, "get_auto_refresh_config", return_value=config),
             patch.object(full_sync_service.import_service, "import_leagues_cautious"),
             patch.object(full_sync_service, "_missing_core_scopes", return_value=[]),
@@ -182,6 +218,7 @@ class ExhaustiveSyncTests(unittest.TestCase):
             patch.object(full_sync_service, "_fixture_details_present", return_value=True),
             patch.object(full_sync_service, "_lineup_present", return_value=True),
             patch.object(full_sync_service, "_prediction_present", return_value=True),
+            patch.object(full_sync_service, "_fixture_players_present", return_value=False),
             patch.object(
                 full_sync_service,
                 "sync_historical_xg",
@@ -209,6 +246,8 @@ class ExhaustiveSyncTests(unittest.TestCase):
         self.assertEqual(sync_xg.call_args.kwargs["seasons"], [2025])
         self.assertIsNone(sync_xg.call_args.kwargs["max_matches"])
         self.assertEqual(result["mode"], "exhaustive")
+        self.assertIn("api_calls_by_family", result)
+        self.assertIn("requests_avoided_at_least", result)
 
     def test_xg_quota_stops_before_less_important_match_endpoints(self):
         played = {
