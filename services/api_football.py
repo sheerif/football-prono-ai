@@ -114,6 +114,10 @@ class ApiFootballClient:
         params = {"country": country} if country else None
         return self._get("/leagues", params)
 
+    def get_status(self):
+        """Retourne l'abonnement et la consommation courante du compte."""
+        return self._get("/status")
+
     def get_teams(self, league_id, season):
         return self._get("/teams", {"league": league_id, "season": season})
 

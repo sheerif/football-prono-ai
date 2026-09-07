@@ -43,6 +43,40 @@ def _is_quota_error(error: Exception | str) -> bool:
     return any(token in value for token in ("quota", "rate limit", "request limit", "too many requests", "429"))
 
 
+def _daily_reserve() -> int:
+    try:
+        return max(0, int(os.getenv("FULL_SYNC_DAILY_RESERVE", "500")))
+    except (TypeError, ValueError):
+        return 500
+
+
+def _request_count(api_client) -> int:
+    try:
+        return max(0, int(getattr(api_client, "request_count", 0) or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _daily_reserve_reached(api_client, initial_request_count: int) -> bool:
+    """Protège une réserve seulement après une réponse reçue dans ce passage."""
+    if _request_count(api_client) <= initial_request_count:
+        return False
+    raw_remaining = (getattr(api_client, "last_rate_limit", {}) or {}).get(
+        "daily_remaining"
+    )
+    try:
+        return int(raw_remaining) <= _daily_reserve()
+    except (TypeError, ValueError):
+        return False
+
+
+def _reserve_message() -> str:
+    return (
+        f"Quota journalier protégé : {_daily_reserve()} requêtes réservées "
+        "aux prédictions et mises à jour courantes."
+    )
+
+
 def _resource_should_download(
     row: dict,
     state: dict | None,
@@ -485,7 +519,7 @@ def _sync_prediction_rows(
     progress_callback=None,
 ) -> dict:
     """Traite une liste figée de fixtures, ce qui rend la reprise testable."""
-    initial_request_count = int(getattr(client, "request_count", 0) or 0)
+    initial_request_count = _request_count(client)
     summary = {
         "total": len(rows),
         "downloaded": 0,
@@ -540,7 +574,7 @@ def _sync_prediction_rows(
             )
     summary["api_calls"] = max(
         0,
-        int(getattr(client, "request_count", 0) or 0) - initial_request_count,
+        _request_count(client) - initial_request_count,
     )
     return summary
 
@@ -605,6 +639,7 @@ def _sync_xg_rows(
 ) -> dict:
     """Synchronise une liste figée de matchs terminés, avec reprise sur quota."""
     sync_run_id = sync_run_id or xg_service.new_sync_run_id()
+    initial_request_count = _request_count(client)
     summary = {
         "sync_run_id": sync_run_id,
         "total": len(rows),
@@ -616,6 +651,8 @@ def _sync_xg_rows(
         "api_calls": 0,
         "duplicates_avoided": 0,
         "unavailable_deferred": 0,
+        "daily_reserve": _daily_reserve(),
+        "budget_reserved": False,
     }
     for index, row in enumerate(rows, start=1):
         fixture_id = int(row["fixture_id"])
@@ -638,6 +675,12 @@ def _sync_xg_rows(
             result = "skipped"
             summary["unavailable_deferred"] += 1
         else:
+            if _daily_reserve_reached(client, initial_request_count):
+                summary["errors"].append(f"{key}: {_reserve_message()}")
+                summary["quota_reached"] = True
+                summary["budget_reserved"] = True
+                summary["checkpoint"] = key
+                break
             requested_at = _now_iso()
             response = None
             try:
@@ -805,6 +848,8 @@ def run_full_sync(progress_callback=None) -> dict:
         "errors": [],
         "quota_reached": False,
         "partial": 0,
+        "daily_reserve": _daily_reserve(),
+        "budget_reserved": False,
     }
     tracked_clients = {
         "données principales": getattr(import_service, "client", None),
@@ -813,7 +858,7 @@ def run_full_sync(progress_callback=None) -> dict:
         "joueurs par saison": getattr(player_service, "client", None),
     }
     initial_request_counts = {
-        label: int(getattr(api_client, "request_count", 0) or 0)
+        label: _request_count(api_client)
         for label, api_client in tracked_clients.items()
     }
 
@@ -821,7 +866,7 @@ def run_full_sync(progress_callback=None) -> dict:
         calls = {
             label: max(
                 0,
-                int(getattr(api_client, "request_count", 0) or 0)
+                _request_count(api_client)
                 - initial_request_counts[label],
             )
             for label, api_client in tracked_clients.items()
@@ -846,6 +891,8 @@ def run_full_sync(progress_callback=None) -> dict:
     def stop_for_quota(key: str, exc: Exception) -> dict:
         summary["errors"].append(f"{key}: {exc}")
         summary["quota_reached"] = True
+        if "quota journalier protégé" in str(exc).casefold():
+            summary["budget_reserved"] = True
         summary["checkpoint"] = key
         return finalize()
 
@@ -872,6 +919,11 @@ def run_full_sync(progress_callback=None) -> dict:
     )
     for index, (league_id, season) in enumerate(core_scopes, start=1):
         key = f"core:{league_id}:{season}"
+        if _daily_reserve_reached(
+            tracked_clients["données principales"],
+            initial_request_counts["données principales"],
+        ):
+            return stop_for_quota(key, RuntimeError(_reserve_message()))
         sync_registry.mark(key, "core_season", "running")
         try:
             import_service.import_leagues_cautious(
@@ -943,6 +995,7 @@ def run_full_sync(progress_callback=None) -> dict:
     summary["errors"].extend(xg_result.get("errors") or [])
     if xg_result.get("quota_reached"):
         summary["quota_reached"] = True
+        summary["budget_reserved"] = bool(xg_result.get("budget_reserved"))
         summary["checkpoint"] = xg_result.get("checkpoint") or "fixture-statistics"
         summary["xg_coverage"] = xg_service.coverage(
             config["league_ids"], seasons
@@ -990,6 +1043,10 @@ def run_full_sync(progress_callback=None) -> dict:
         ):
             result = "skipped"
         else:
+            if _daily_reserve_reached(
+                client, initial_request_counts["matchs/prédictions/xG"]
+            ):
+                return stop_for_quota(detail_key, RuntimeError(_reserve_message()))
             try:
                 result = _fetch_one(
                     detail_key,
@@ -1021,6 +1078,11 @@ def run_full_sync(progress_callback=None) -> dict:
         ):
             result = "skipped"
         else:
+            if _daily_reserve_reached(
+                tracked_clients["compositions/statistiques joueurs"],
+                initial_request_counts["compositions/statistiques joueurs"],
+            ):
+                return stop_for_quota(lineup_key, RuntimeError(_reserve_message()))
             try:
                 sync_registry.mark(lineup_key, "fixture_lineup", "running")
                 lineup_result = lineup_service.sync_lineups(fixture_id)
@@ -1051,6 +1113,10 @@ def run_full_sync(progress_callback=None) -> dict:
             )
             result = "skipped"
         else:
+            if _daily_reserve_reached(
+                client, initial_request_counts["matchs/prédictions/xG"]
+            ):
+                return stop_for_quota(key, RuntimeError(_reserve_message()))
             try:
                 result = _fetch_one(
                     key,
@@ -1090,6 +1156,11 @@ def run_full_sync(progress_callback=None) -> dict:
             ):
                 result = "skipped"
             else:
+                if _daily_reserve_reached(
+                    tracked_clients["compositions/statistiques joueurs"],
+                    initial_request_counts["compositions/statistiques joueurs"],
+                ):
+                    return stop_for_quota(key, RuntimeError(_reserve_message()))
                 sync_registry.mark(key, "fixture_players", "running")
                 data = lineup_service.sync_fixture_players(fixture_id)
                 count = int(data.get("players") or 0)
@@ -1124,6 +1195,11 @@ def run_full_sync(progress_callback=None) -> dict:
         ):
             result = "skipped"
         else:
+            if _daily_reserve_reached(
+                tracked_clients["joueurs par saison"],
+                initial_request_counts["joueurs par saison"],
+            ):
+                return stop_for_quota(key, RuntimeError(_reserve_message()))
             try:
                 sync_registry.mark(key, "season_players", "running")
                 data = player_service.sync_players(

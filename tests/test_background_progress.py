@@ -13,6 +13,28 @@ class _ImmediateThread:
 
 
 class BackgroundProgressTests(unittest.TestCase):
+    def test_quota_status_exposes_only_consumption_counters(self):
+        payload = {
+            "response": {
+                "account": {"email": "secret@example.com"},
+                "requests": {"current": 125, "limit_day": 7500},
+            }
+        }
+        with (
+            patch.object(background_jobs, "_quota_status_cache", None),
+            patch.object(
+                background_jobs.import_service.client,
+                "get_status",
+                return_value=payload,
+            ),
+        ):
+            status = background_jobs.api_quota_status(force=True)
+
+        self.assertEqual(status["remaining"], 7375)
+        self.assertTrue(status["available"])
+        self.assertNotIn("account", status)
+        self.assertNotIn("email", status)
+
     def test_waiting_state_uses_durable_database_progress(self):
         with (
             patch.object(

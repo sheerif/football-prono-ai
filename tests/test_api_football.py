@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 from requests.exceptions import HTTPError
 
 from services.api_football import (
@@ -46,6 +46,12 @@ class ApiFootballClientTests(unittest.TestCase):
 
         with self.assertRaisesRegex(RuntimeError, "quota reached"):
             client.get_leagues()
+
+    def test_status_endpoint_is_available_for_quota_verification(self):
+        client = ApiFootballClient(api_key="test")
+        with patch.object(client, "_get", return_value={"response": {}}) as get:
+            client.get_status()
+        get.assert_called_once_with("/status")
 
     def test_http_429_preserves_minute_quota_detail_and_headers(self):
         response = Mock()

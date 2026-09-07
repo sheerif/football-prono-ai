@@ -611,6 +611,13 @@ def inject_app_style():
             line-height: 1.25;
             margin: 0 0 .28rem 0;
         }
+        [data-testid="stSidebar"] [data-testid="stProgress"] p {
+            color: #f4f8fb;
+            text-shadow: 0 1px 2px rgba(0,0,0,.45);
+        }
+        [data-testid="stSidebar"] [data-testid="stCaptionContainer"] {
+            color: #b8c8d6;
+        }
         [data-testid="stDownloadButton"] > button {
             border-color: rgba(42,161,152,.48);
             color: var(--app-navy);

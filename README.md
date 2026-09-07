@@ -79,12 +79,22 @@ utilise la couverture réellement persistée dans les tables plutôt qu'un faux
 zéro. Les événements identiques produits dans la même minute sont dédupliqués
 dans l'historique des mises à jour.
 
-Par défaut, une limite par minute est retentée après 90 secondes et un quota
-journalier après le prochain renouvellement quotidien (00:05 UTC). La tâche
+Par défaut, une limite par minute est contrôlée après 90 secondes. Pour le quota
+journalier de ce forfait, la reprise est programmée à minuit UTC. L'application
+n'interroge `/status` qu'au moment de la reprise ou sur demande manuelle, afin
+de ne pas consommer d'appels de contrôle inutiles. Elle reprend lorsque le
+compteur `requests.current` redevient inférieur à `requests.limit_day`. La tâche
 libère l’interface pendant l’attente. `FULL_SYNC_QUOTA_RETRY_SECONDS` permet de
-remplacer ce calcul par un délai explicite (minimum 60 secondes). Le mécanisme
-ne contourne pas les limites du fournisseur : il étale automatiquement le
-téléchargement sur plusieurs fenêtres de quota.
+forcer un autre délai de secours (minimum 60 secondes). Le
+mécanisme ne contourne pas les limites du fournisseur : il étale automatiquement
+le téléchargement sur plusieurs fenêtres de quota.
+
+La synchronisation exhaustive conserve par défaut une réserve quotidienne de
+500 requêtes pour les prédictions et les mises à jour courantes. La variable
+`FULL_SYNC_DAILY_RESERVE` permet d'ajuster cette valeur. Les traitements
+historiques s'arrêtent à cette réserve sans perdre leur progression et ne
+reprennent que lorsque `/status` signale un nouveau budget supérieur à la
+réserve.
 
 ### Supported database
 

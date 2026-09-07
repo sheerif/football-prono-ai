@@ -1,4 +1,5 @@
 import datetime
+import math
 import os
 import threading
 import traceback
@@ -11,6 +12,7 @@ _lock = threading.RLock()
 _jobs: dict[str, dict] = {}
 _startup_started = False
 _full_progress_cache: tuple[datetime.datetime, dict] | None = None
+_quota_status_cache: tuple[datetime.datetime, dict] | None = None
 FULL_SYNC_CONTROL_KEY = "full-sync:exhaustive"
 ACTIVE_JOB_STATUSES = {"running", "waiting_quota"}
 DATA_JOB_KINDS = {
@@ -126,16 +128,18 @@ def _full_sync_retry_seconds(result: dict | None = None, now=None) -> int:
     if _is_minute_quota(result):
         return 90
 
-    reference = now or datetime.datetime.now(datetime.UTC)
-    if reference.tzinfo is None:
-        reference = reference.replace(tzinfo=datetime.UTC)
-    next_reset = (reference + datetime.timedelta(days=1)).replace(
-        hour=0,
-        minute=5,
-        second=0,
-        microsecond=0,
+    # Le forfait utilisé par l'application est renouvelé chaque jour à minuit
+    # UTC. /status peut autoriser une reprise plus tôt si le fournisseur expose
+    # déjà un nouveau compteur.
+    current = now or datetime.datetime.now(datetime.UTC)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=datetime.UTC)
+    else:
+        current = current.astimezone(datetime.UTC)
+    next_midnight = (current + datetime.timedelta(days=1)).replace(
+        hour=0, minute=0, second=0, microsecond=0
     )
-    return max(60, int((next_reset - reference).total_seconds()))
+    return max(60, math.ceil((next_midnight - current).total_seconds()))
 
 
 def full_sync_state() -> dict | None:
@@ -146,6 +150,29 @@ def full_sync_state() -> dict | None:
         return None
     if state and state.get("status") == "waiting_quota":
         metadata = dict(state.get("metadata") or {})
+        message = str(state.get("message") or "")
+        retry_at_raw = metadata.get("next_retry_at")
+        if (
+            "quota api journalier atteint" in message.casefold()
+            and not metadata.get("budget_reserved")
+            and retry_at_raw
+        ):
+            try:
+                retry_at = datetime.datetime.fromisoformat(retry_at_raw).replace(
+                    hour=0, minute=0, second=0, microsecond=0
+                )
+                metadata["next_retry_at"] = retry_at.isoformat()
+            except (TypeError, ValueError):
+                pass
+            state = {
+                **state,
+                "message": (
+                    "Quota API journalier atteint : données conservées. "
+                    "Reprise automatique à minuit UTC, ou dès que l’API "
+                    "confirme le renouvellement."
+                ),
+                "metadata": metadata,
+            }
         durable = _durable_full_progress_snapshot()
         if durable and float(durable.get("progress") or 0) > float(
             metadata.get("progress") or 0
@@ -180,6 +207,43 @@ def _best_progress_snapshot(job_id: str) -> dict:
     if float(durable.get("progress") or 0) > float(current.get("progress") or 0):
         return durable
     return current
+
+
+def api_quota_status(*, force: bool = False) -> dict:
+    """Lit uniquement les compteurs du endpoint /status, sans exposer le compte."""
+    global _quota_status_cache
+    now = datetime.datetime.now(datetime.UTC)
+    if (
+        not force
+        and _quota_status_cache
+        and (now - _quota_status_cache[0]).total_seconds() < 60
+    ):
+        return dict(_quota_status_cache[1])
+    try:
+        payload = import_service.client.get_status()
+        response = payload.get("response") or {}
+        if isinstance(response, list):
+            response = response[0] if response else {}
+        requests = response.get("requests") or {}
+        current = int(requests.get("current") or 0)
+        daily_limit = int(requests.get("limit_day") or 0)
+        result = {
+            "verified": daily_limit > 0,
+            "current": current,
+            "limit": daily_limit,
+            "remaining": max(0, daily_limit - current),
+            "available": daily_limit > current,
+            "checked_at": now.replace(tzinfo=None).isoformat(),
+        }
+    except Exception as exc:
+        result = {
+            "verified": False,
+            "available": False,
+            "error": str(exc),
+            "checked_at": now.replace(tzinfo=None).isoformat(),
+        }
+    _quota_status_cache = (now, dict(result))
+    return result
 
 
 def _progress(job_id: str, current: int, total: int, label: str):
@@ -498,12 +562,25 @@ def start_full_sync(*, resumed: bool = False) -> str:
                 retry_at = (now + datetime.timedelta(seconds=retry_seconds)).replace(
                     tzinfo=None
                 )
+                budget_reserved = bool(result.get("budget_reserved"))
                 quota_kind = "minute" if _is_minute_quota(result) else "journalier"
-                waiting_message = (
-                    f"Quota API {quota_kind} atteint : données conservées. "
-                    "La tâche est libérée et reprendra automatiquement "
-                    f"à {retry_at.strftime('%d/%m/%Y %H:%M:%S')} UTC."
-                )
+                if budget_reserved:
+                    waiting_message = (
+                        f"Réserve quotidienne protégée : {int(result.get('daily_reserve') or 500)} "
+                        "requêtes conservées pour les prédictions et mises à jour courantes. "
+                        "La synchronisation exhaustive reprendra après le renouvellement."
+                    )
+                elif quota_kind == "minute":
+                    waiting_message = (
+                        "Quota API minute atteint : données conservées. "
+                        "Reprise automatique dès que /status confirme la disponibilité."
+                    )
+                else:
+                    waiting_message = (
+                        "Quota API journalier atteint : données conservées. "
+                        "Reprise automatique à minuit UTC, ou dès que l’API "
+                        "confirme le renouvellement."
+                    )
                 metadata = {
                     "persistent": True,
                     "attempt": attempt,
@@ -511,6 +588,8 @@ def start_full_sync(*, resumed: bool = False) -> str:
                     "started_at": started_at,
                     "next_retry_at": retry_at.isoformat(),
                     "checkpoint": result.get("checkpoint"),
+                    "budget_reserved": budget_reserved,
+                    "daily_reserve": int(result.get("daily_reserve") or 500),
                     **_best_progress_snapshot(job_id),
                     **_result_metrics(result),
                 }
@@ -637,6 +716,16 @@ def resume_pending_full_sync() -> str | None:
                 return None
         except (TypeError, ValueError):
             pass
+        quota = api_quota_status()
+        if quota.get("verified"):
+            if metadata.get("budget_reserved"):
+                reserve = int(metadata.get("daily_reserve") or 500)
+                if int(quota.get("remaining") or 0) > reserve:
+                    return start_full_sync(resumed=True)
+                return None
+            if quota.get("available"):
+                return start_full_sync(resumed=True)
+            return None
     return start_full_sync(resumed=True)
 
 

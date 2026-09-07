@@ -18,6 +18,20 @@ class _ImmediateThread:
 
 
 class ExhaustiveSyncTests(unittest.TestCase):
+    def test_daily_reserve_uses_a_current_pass_rate_limit_header(self):
+        api_client = Mock()
+        api_client.request_count = 11
+        api_client.last_rate_limit = {"daily_remaining": "500"}
+        with patch.dict(
+            "os.environ", {"FULL_SYNC_DAILY_RESERVE": "500"}, clear=False
+        ):
+            self.assertTrue(
+                full_sync_service._daily_reserve_reached(api_client, 10)
+            )
+            self.assertFalse(
+                full_sync_service._daily_reserve_reached(api_client, 11)
+            )
+
     def test_old_unavailable_fixture_resource_is_not_requested_again(self):
         with patch.object(
             full_sync_service.sync_registry,
@@ -145,7 +159,7 @@ class ExhaustiveSyncTests(unittest.TestCase):
                 )
 
         self.assertEqual(minute, 90)
-        self.assertEqual(daily, 12_900)
+        self.assertEqual(daily, 12_600)
 
     def test_interrupted_persistent_sync_is_resumed_after_restart(self):
         starter = Mock(return_value="new-job")
@@ -169,6 +183,134 @@ class ExhaustiveSyncTests(unittest.TestCase):
 
         self.assertEqual(result, "new-job")
         starter.assert_called_once_with(resumed=True)
+
+    def test_available_quota_resumes_after_the_scheduled_time(self):
+        starter = Mock(return_value="resumed-job")
+        past = (
+            datetime.datetime.now(datetime.UTC).replace(tzinfo=None)
+            - datetime.timedelta(minutes=1)
+        ).isoformat()
+        with (
+            patch.object(background_jobs, "data_job_running", return_value=False),
+            patch.object(
+                background_jobs,
+                "full_sync_state",
+                return_value={
+                    "status": "waiting_quota",
+                    "metadata": {"next_retry_at": past},
+                },
+            ),
+            patch.object(
+                background_jobs,
+                "api_quota_status",
+                return_value={"verified": True, "available": True, "remaining": 7500},
+            ),
+            patch.object(background_jobs, "start_full_sync", starter),
+        ):
+            result = background_jobs.resume_pending_full_sync()
+
+        self.assertEqual(result, "resumed-job")
+        starter.assert_called_once_with(resumed=True)
+
+    def test_reserved_budget_does_not_restart_the_exhaustive_sync(self):
+        starter = Mock()
+        future = (
+            datetime.datetime.now(datetime.UTC).replace(tzinfo=None)
+            + datetime.timedelta(hours=12)
+        ).isoformat()
+        with (
+            patch.object(background_jobs, "data_job_running", return_value=False),
+            patch.object(
+                background_jobs,
+                "full_sync_state",
+                return_value={
+                    "status": "waiting_quota",
+                    "metadata": {
+                        "next_retry_at": future,
+                        "budget_reserved": True,
+                        "daily_reserve": 500,
+                    },
+                },
+            ),
+            patch.object(
+                background_jobs,
+                "api_quota_status",
+                return_value={
+                    "verified": True,
+                    "available": True,
+                    "remaining": 500,
+                },
+            ),
+            patch.object(background_jobs, "start_full_sync", starter),
+        ):
+            result = background_jobs.resume_pending_full_sync()
+
+        self.assertIsNone(result)
+        starter.assert_not_called()
+
+    def test_reserved_budget_restarts_after_daily_renewal(self):
+        starter = Mock(return_value="renewed-job")
+        past = (
+            datetime.datetime.now(datetime.UTC).replace(tzinfo=None)
+            - datetime.timedelta(minutes=1)
+        ).isoformat()
+        with (
+            patch.object(background_jobs, "data_job_running", return_value=False),
+            patch.object(
+                background_jobs,
+                "full_sync_state",
+                return_value={
+                    "status": "waiting_quota",
+                    "metadata": {
+                        "next_retry_at": past,
+                        "budget_reserved": True,
+                        "daily_reserve": 500,
+                    },
+                },
+            ),
+            patch.object(
+                background_jobs,
+                "api_quota_status",
+                return_value={
+                    "verified": True,
+                    "available": True,
+                    "remaining": 7500,
+                },
+            ),
+            patch.object(background_jobs, "start_full_sync", starter),
+        ):
+            result = background_jobs.resume_pending_full_sync()
+
+        self.assertEqual(result, "renewed-job")
+        starter.assert_called_once_with(resumed=True)
+
+    def test_exhausted_verified_quota_never_launches_a_fallback_request(self):
+        starter = Mock()
+        past = (
+            datetime.datetime.now(datetime.UTC).replace(tzinfo=None)
+            - datetime.timedelta(hours=1)
+        ).isoformat()
+        with (
+            patch.object(background_jobs, "data_job_running", return_value=False),
+            patch.object(
+                background_jobs,
+                "full_sync_state",
+                return_value={
+                    "status": "waiting_quota",
+                    "metadata": {"next_retry_at": past},
+                },
+            ),
+            patch.object(
+                background_jobs,
+                "api_quota_status",
+                return_value={"verified": True, "available": False, "remaining": 0},
+            ),
+            patch.object(background_jobs, "start_full_sync", starter),
+        ):
+            result = background_jobs.resume_pending_full_sync()
+
+        self.assertIsNone(result)
+        starter.assert_not_called()
 
     def test_full_sync_covers_past_and_future_matches(self):
         past = {
