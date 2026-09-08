@@ -167,7 +167,7 @@ def _api_error(response: dict) -> str | None:
 
 def _ensure_player(session, player_data: dict):
     player_id = _as_int(player_data.get("id"))
-    if player_id is None:
+    if player_id is None or player_id <= 0:
         return
     player = session.get(models.Player, player_id)
     if player is None:
@@ -218,7 +218,7 @@ def _save_lineups(session, fixture_id: int, items: list[dict]) -> int:
             for entry in collection:
                 player_data = entry.get("player") or entry
                 player_id = _as_int(player_data.get("id"))
-                if player_id is None:
+                if player_id is None or player_id <= 0:
                     continue
                 _ensure_player(session, player_data)
                 session.add(
@@ -266,7 +266,7 @@ def _save_fixture_players(session, fixture_id: int, items: list[dict]) -> int:
             player_data = item.get("player") or {}
             player_id = _as_int(player_data.get("id"))
             statistics = (item.get("statistics") or [{}])[0] or {}
-            if player_id is None:
+            if player_id is None or player_id <= 0:
                 continue
             _ensure_player(session, player_data)
             games = statistics.get("games") or {}
