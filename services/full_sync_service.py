@@ -311,27 +311,139 @@ def _missing_core_scopes(league_ids: list[int], seasons: list[int]) -> list[tupl
 
 def _recent_fixture_ids(upcoming: list[dict], per_team: int = 5) -> list[int]:
     ids: set[int] = set()
+    team_cutoffs: dict[int, str] = {}
+    for match in upcoming:
+        cutoff = str(match["date"])
+        for team_id in (match["home_team_id"], match["away_team_id"]):
+            team_id = int(team_id)
+            if team_id not in team_cutoffs or cutoff < team_cutoffs[team_id]:
+                team_cutoffs[team_id] = cutoff
     with engine.begin() as conn:
-        for match in upcoming:
-            for team_id in (match["home_team_id"], match["away_team_id"]):
-                rows = conn.execute(
-                    text(
-                        """
-                        SELECT fixture_id FROM matches
-                        WHERE (home_team_id = :team_id OR away_team_id = :team_id)
-                          AND date < :before_date
-                          AND home_goals IS NOT NULL AND away_goals IS NOT NULL
-                        ORDER BY date DESC LIMIT :limit
-                        """
-                    ),
-                    {
-                        "team_id": int(team_id),
-                        "before_date": str(match["date"]),
-                        "limit": int(per_team),
-                    },
-                ).fetchall()
-                ids.update(int(row[0]) for row in rows)
+        for team_id, cutoff in team_cutoffs.items():
+            rows = conn.execute(
+                text(
+                    """
+                    SELECT fixture_id FROM matches
+                    WHERE (home_team_id = :team_id OR away_team_id = :team_id)
+                      AND date < :before_date
+                      AND home_goals IS NOT NULL AND away_goals IS NOT NULL
+                    ORDER BY date DESC LIMIT :limit
+                    """
+                ),
+                {
+                    "team_id": team_id,
+                    "before_date": cutoff,
+                    "limit": int(per_team),
+                },
+            ).fetchall()
+            ids.update(int(row[0]) for row in rows)
     return sorted(ids)
+
+
+def download_plan() -> dict:
+    """Calcule depuis SQLite ce qui est présent, différé et réellement requis."""
+    import_service.init_db()
+    config = import_service.get_auto_refresh_config()
+    matches = _all_matches()
+    match_ids = {int(item["fixture_id"]) for item in matches}
+    upcoming = _upcoming_matches()
+    upcoming_ids = {int(item["fixture_id"]) for item in upcoming}
+    completed_ids = {
+        int(item["fixture_id"])
+        for item in matches
+        if item.get("home_goals") is not None and item.get("away_goals") is not None
+    }
+    recent_player_ids = set(_recent_fixture_ids(upcoming, per_team=5))
+    scopes = _player_scopes()
+    season_scope_keys = {
+        f"season-players:{int(item['league_id'])}:{int(item['season'])}"
+        for item in scopes
+    }
+    core_scope_keys = {
+        f"core:{int(league_id)}:{int(season)}"
+        for league_id in config["league_ids"]
+        for season in range(config["start_season"], config["end_season"] + 1)
+    }
+
+    with engine.connect() as conn:
+        def id_set(sql: str) -> set[int]:
+            return {int(row[0]) for row in conn.execute(text(sql)).fetchall()}
+
+        details_present = id_set("SELECT fixture_id FROM fixture_api_details")
+        predictions_present = id_set(
+            "SELECT fixture_id FROM fixture_api_predictions"
+        )
+        fixture_players_present = id_set(
+            "SELECT DISTINCT fixture_id FROM fixture_player_statistics"
+        )
+        lineup_present = id_set(
+            "SELECT fixture_id FROM fixture_lineups GROUP BY fixture_id "
+            "HAVING COUNT(*) >= 2"
+        )
+        xg_present = id_set(
+            "SELECT fixture_id FROM fixture_team_statistics "
+            "WHERE expected_goals IS NOT NULL GROUP BY fixture_id "
+            "HAVING COUNT(DISTINCT team_id) >= 2"
+        )
+        unavailable = {
+            str(row[0])
+            for row in conn.execute(
+                text(
+                    "SELECT resource_key FROM resource_sync_state "
+                    "WHERE status = 'unavailable'"
+                )
+            ).fetchall()
+        }
+
+    missing_core = {
+        f"core:{league_id}:{season}"
+        for league_id, season in _missing_core_scopes(
+            config["league_ids"],
+            list(range(config["start_season"], config["end_season"] + 1)),
+        )
+    }
+    player_scopes_present = {
+        f"season-players:{int(item['league_id'])}:{int(item['season'])}"
+        for item in scopes
+        if int(item.get("player_count") or 0) > 0
+    }
+
+    def row(key, label, endpoint, targets: set, present: set) -> dict:
+        missing = targets - present
+        deferred = {
+            item
+            for item in missing
+            if (item if isinstance(item, str) else f"{key}:{item}") in unavailable
+        }
+        return {
+            "key": key,
+            "label": label,
+            "endpoint": endpoint,
+            "total": len(targets),
+            "present": len(targets & present),
+            "missing": len(missing),
+            "deferred": len(deferred),
+            "to_download": max(0, len(missing) - len(deferred)),
+        }
+
+    rows = [
+        row("core", "Ligues/saisons", "/teams · /fixtures · /standings", core_scope_keys, core_scope_keys - missing_core),
+        row("fixture-detail", "Détails des matchs", "/fixtures", match_ids, details_present),
+        row("fixture-lineup", "Compositions utiles", "/fixtures/lineups", upcoming_ids, lineup_present),
+        row("fixture-prediction", "Conseils à venir", "/predictions", upcoming_ids, predictions_present),
+        row("fixture-statistics", "xG historiques", "/fixtures/statistics", completed_ids, xg_present),
+        row("fixture-players", "Forme individuelle récente", "/fixtures/players", recent_player_ids, fixture_players_present),
+        row("season-players", "Joueurs par saison", "/players", season_scope_keys, player_scopes_present),
+    ]
+    return {
+        "generated_at": _now_iso(),
+        "resources": rows,
+        "total": sum(item["total"] for item in rows),
+        "present": sum(item["present"] for item in rows),
+        "missing": sum(item["missing"] for item in rows),
+        "deferred": sum(item["deferred"] for item in rows),
+        "to_download": sum(item["to_download"] for item in rows),
+    }
 
 
 def _fixture_details_present(fixture_id: int) -> bool:
@@ -854,6 +966,10 @@ def run_full_sync(progress_callback=None) -> dict:
         "daily_reserve": _daily_reserve(),
         "budget_reserved": False,
     }
+    try:
+        summary["plan_before"] = download_plan()
+    except Exception as exc:
+        summary["plan_before_error"] = str(exc)
     tracked_clients = {
         "données principales": getattr(import_service, "client", None),
         "matchs/prédictions/xG": client,
@@ -962,10 +1078,13 @@ def run_full_sync(progress_callback=None) -> dict:
 
     matches = _all_matches()
     upcoming = _upcoming_matches()
+    upcoming_ids = {int(match["fixture_id"]) for match in upcoming}
+    matches_by_id = {int(match["fixture_id"]): match for match in matches}
+    recent_player_ids = set(_recent_fixture_ids(upcoming, per_team=5))
     completed_matches = [
-        match
-        for match in matches
-        if match.get("home_goals") is not None and match.get("away_goals") is not None
+        matches_by_id[fixture_id]
+        for fixture_id in sorted(recent_player_ids)
+        if fixture_id in matches_by_id
     ]
     scopes = _player_scopes()
 
@@ -1007,7 +1126,8 @@ def run_full_sync(progress_callback=None) -> dict:
 
     total_items = max(
         1,
-        len(matches) * 2
+        len(matches)
+        + len(upcoming)
         + len(upcoming)
         + len(completed_matches)
         + len(scopes),
@@ -1066,6 +1186,11 @@ def run_full_sync(progress_callback=None) -> dict:
                 time.sleep(pause)
         add_result(result)
         advance(f"Match {fixture_id}: détails")
+
+        # Les compositions historiques ne sont pas utilisées par le moteur.
+        # Seules celles des rencontres à venir peuvent modifier une prédiction.
+        if fixture_id not in upcoming_ids:
+            continue
 
         lineup_key = f"fixture-lineup:{fixture_id}"
         if _lineup_present(fixture_id):

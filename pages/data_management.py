@@ -236,6 +236,46 @@ def show():
             "matchs connus pour conserver les données exploitées : équipes, matchs, "
             "classements, détails, compositions, joueurs, prédictions et xG."
         )
+        try:
+            download_plan = full_sync_service.download_plan()
+        except Exception as exc:
+            download_plan = None
+            st.warning(f"Plan de téléchargement indisponible : {exc}")
+        if download_plan:
+            st.markdown("#### Plan calculé depuis la base")
+            plan_columns = st.columns(4)
+            plan_columns[0].metric("Ressources utiles", download_plan["total"])
+            plan_columns[1].metric("Déjà en base", download_plan["present"])
+            plan_columns[2].metric("À télécharger", download_plan["to_download"])
+            plan_columns[3].metric("Différées", download_plan["deferred"])
+            plan_rows = pd.DataFrame(download_plan["resources"]).rename(
+                columns={
+                    "label": "Donnée",
+                    "endpoint": "Endpoint",
+                    "total": "Utiles",
+                    "present": "En base",
+                    "to_download": "À télécharger",
+                    "deferred": "Différées",
+                }
+            )
+            st.dataframe(
+                plan_rows[
+                    [
+                        "Donnée",
+                        "Endpoint",
+                        "Utiles",
+                        "En base",
+                        "À télécharger",
+                        "Différées",
+                    ]
+                ],
+                hide_index=True,
+                width="stretch",
+            )
+            st.caption(
+                "Ce plan est calculé sans appel API. Chaque élément est contrôlé "
+                "une seconde fois juste avant son téléchargement."
+            )
         api_key_missing = not (os.getenv("API_FOOTBALL_KEY") or "").strip()
         if api_key_missing:
             st.error("Synchronisation indisponible : la clé API_FOOTBALL_KEY est absente. Ajoutez-la dans .env ou les secrets Streamlit.")

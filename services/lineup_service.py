@@ -255,6 +255,8 @@ def sync_lineups(fixture_id: int) -> dict:
 def _save_fixture_players(session, fixture_id: int, items: list[dict]) -> int:
     now = _now()
     saved = 0
+    seen_keys = set()
+    pending_rows = {}
     for team_payload in items:
         team = team_payload.get("team") or {}
         team_id = _as_int(team.get("id"))
@@ -278,11 +280,14 @@ def _save_fixture_players(session, fixture_id: int, items: list[dict]) -> int:
             cards = statistics.get("cards") or {}
             penalty = statistics.get("penalty") or {}
             key = (int(fixture_id), team_id, player_id)
-            row = session.get(models.FixturePlayerStatistic, key)
+            row = pending_rows.get(key)
+            if row is None:
+                row = session.get(models.FixturePlayerStatistic, key)
             if row is None:
                 row = models.FixturePlayerStatistic(
                     fixture_id=int(fixture_id), team_id=team_id, player_id=player_id
                 )
+                pending_rows[key] = row
             values = {
                 "player_name": player_data.get("name"),
                 "player_photo": player_data.get("photo"),
@@ -325,7 +330,9 @@ def _save_fixture_players(session, fixture_id: int, items: list[dict]) -> int:
             for field, value in values.items():
                 setattr(row, field, value)
             session.add(row)
-            saved += 1
+            if key not in seen_keys:
+                seen_keys.add(key)
+                saved += 1
     return saved
 
 
