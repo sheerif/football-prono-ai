@@ -105,6 +105,12 @@ Les réponses identiques demandées simultanément ou dans les 60 secondes sont
 également partagées entre tous les clients sans nouvel appel réseau. Ce délai
 peut être réglé avec `API_FOOTBALL_REQUEST_CACHE_SECONDS`.
 
+Le workflow GitHub Actions `Synchronisation quotidienne` lance également la
+synchronisation à 00 h 05 UTC, même lorsque Streamlit Cloud est endormi. Il
+nécessite les secrets GitHub `API_FOOTBALL_KEY`, `TURSO_DATABASE_URL` et
+`TURSO_AUTH_TOKEN`. Le verrou persistant `full-sync:exhaustive` empêche ce
+workflow de doubler une reprise déjà lancée par Streamlit.
+
 L'audit endpoint par endpoint et les exceptions autorisées sont documentés dans
 [`docs/api-request-audit.md`](docs/api-request-audit.md).
 

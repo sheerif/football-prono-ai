@@ -1,0 +1,47 @@
+name: Synchronisation quotidienne
+
+on:
+  schedule:
+    # API-Football renouvelle le quota à 00:00 UTC. La marge de cinq minutes
+    # évite une requête envoyée pendant la bascule du compteur.
+    - cron: "5 0 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: football-prono-daily-sync
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  synchronize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
+      TURSO_ENABLED: "true"
+      TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+      TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+      AUTO_REFRESH_START_SEASON: "2016"
+      AUTO_REFRESH_END_SEASON: "2026"
+      AUTO_REFRESH_LEAGUE_IDS: "61,39,140,135,78,2"
+      AUTO_REFRESH_RECENT_SEASONS: "2"
+      AUTO_REFRESH_PAUSE_SECONDS: "0.8"
+      AUTO_REFRESH_MAX_RETRIES: "3"
+      XG_DAILY_RESERVE: "1500"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Vérifier les secrets nécessaires
+        run: |
+          test -n "$API_FOOTBALL_KEY"
+          test -n "$TURSO_DATABASE_URL"
+          test -n "$TURSO_AUTH_TOKEN"
+      - name: Installer les dépendances
+        run: python -m pip install -r requirements.txt
+      - name: Synchroniser les données persistantes
+        run: python scripts/run_scheduled_sync.py
