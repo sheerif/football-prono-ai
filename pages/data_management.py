@@ -5,7 +5,11 @@ import pandas as pd
 import streamlit as st
 
 from components import ui
-from database.database import engine
+from database.database import (
+    engine,
+    persistence_configuration_error,
+    persistence_mode,
+)
 from services import (
     background_jobs,
     full_sync_service,
@@ -208,6 +212,17 @@ def show():
         "Mise à jour",
         "Lancez une mise à jour et suivez son avancement simplement.",
     )
+
+    config_error = persistence_configuration_error()
+    if config_error:
+        st.error(f"Configuration Turso incomplète : {config_error}")
+    elif persistence_mode() == "sqlite_local":
+        st.warning(
+            "Base SQLite locale : sur Streamlit Cloud, configurez Turso avant "
+            "une synchronisation exhaustive pour conserver les téléchargements."
+        )
+    else:
+        st.success("Base Turso distante connectée : données et reprises persistantes.")
 
     counts = _summary_counts()
     database_kpis = [
