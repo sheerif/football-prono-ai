@@ -81,6 +81,10 @@ class ExhaustiveSyncTests(unittest.TestCase):
                     full_sync_service._daily_reserve_reached(api_client, 10)
                 )
 
+    def test_xg_reserves_requests_for_current_data_by_default(self):
+        with patch.dict("os.environ", {}, clear=True):
+            self.assertEqual(full_sync_service._xg_daily_reserve(), 1500)
+
     def test_daily_reserve_uses_a_current_pass_rate_limit_header(self):
         api_client = Mock()
         api_client.request_count = 11
@@ -487,6 +491,62 @@ class ExhaustiveSyncTests(unittest.TestCase):
         core_import.assert_not_called()
         self.assertTrue(result["quota_reached"])
         self.assertEqual(result["checkpoint"], "fixture-statistics:99")
+
+    def test_xg_budget_reserve_continues_with_current_data(self):
+        config = {
+            "league_ids": [61],
+            "start_season": 2025,
+            "end_season": 2025,
+            "recent_seasons": 1,
+            "pause": 0,
+            "max_retries": 1,
+        }
+        with (
+            patch.object(full_sync_service.import_service, "init_db"),
+            patch.object(full_sync_service.sync_registry, "ensure_table"),
+            patch.object(full_sync_service.sync_registry, "mark"),
+            patch.object(full_sync_service, "download_plan", return_value={}),
+            patch.object(
+                full_sync_service.import_service,
+                "get_auto_refresh_config",
+                return_value=config,
+            ),
+            patch.object(
+                full_sync_service,
+                "sync_historical_xg",
+                return_value={
+                    "downloaded": 100,
+                    "skipped": 0,
+                    "unavailable": 0,
+                    "errors": [],
+                    "quota_reached": True,
+                    "budget_reserved": True,
+                    "checkpoint": "fixture-statistics:99",
+                    "daily_reserve": 1500,
+                },
+            ),
+            patch.object(
+                full_sync_service,
+                "_missing_core_scopes",
+                side_effect=[[(61, 2025)], []],
+            ),
+            patch.object(full_sync_service, "_registry_refresh_due", return_value=False),
+            patch.object(
+                full_sync_service.import_service, "import_leagues_cautious"
+            ) as core_import,
+            patch.object(full_sync_service, "_all_matches", return_value=[]),
+            patch.object(full_sync_service, "_upcoming_matches", return_value=[]),
+            patch.object(full_sync_service, "_recent_fixture_ids", return_value=[]),
+            patch.object(full_sync_service, "_player_scopes", return_value=[]),
+            patch.object(full_sync_service, "prediction_coverage", return_value={}),
+            patch.object(full_sync_service.xg_service, "coverage", return_value={}),
+        ):
+            result = full_sync_service.run_full_sync()
+
+        core_import.assert_called_once()
+        self.assertFalse(result["quota_reached"])
+        self.assertTrue(result["xg_budget_reserved"])
+        self.assertEqual(result["xg_resume_checkpoint"], "fixture-statistics:99")
 
 
 if __name__ == "__main__":

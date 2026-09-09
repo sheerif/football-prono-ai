@@ -89,11 +89,14 @@ secours (minimum 60 secondes). Le
 mécanisme ne contourne pas les limites du fournisseur : il étale automatiquement
 le téléchargement sur plusieurs fenêtres de quota.
 
-La synchronisation exhaustive n'applique aucune réserve interne par défaut :
-elle peut utiliser la totalité des 7 500 requêtes du forfait. La limite du
-fournisseur reste toutefois incontournable ; lorsqu'elle est atteinte, la
-progression est conservée jusqu'à minuit. Une réserve facultative peut être
-activée avec `FULL_SYNC_DAILY_RESERVE` (valeur par défaut : `0`).
+Les xG passent en premier, avec une réserve quotidienne de 1 500 requêtes par
+défaut pour les matchs courants, classements, compositions, prédictions et
+joueurs. Cette réserve se règle avec `XG_DAILY_RESERVE`. Une fois ce seuil
+atteint, le rattrapage xG s'interrompt pour la journée et la synchronisation
+continue sur les données courantes. `FULL_SYNC_DAILY_RESERVE` permet en plus de
+conserver une réserve en fin de synchronisation (valeur par défaut : `0`).
+La limite du fournisseur reste incontournable ; lorsqu'elle est atteinte, la
+progression est conservée jusqu'à minuit UTC.
 Tous les clients API partagent aussi un coupe-circuit en mémoire : dès qu'une
 réponse indique zéro requête restante ou une limite journalière atteinte, les
 appels suivants sont bloqués localement jusqu'à minuit UTC. Un verrou commun

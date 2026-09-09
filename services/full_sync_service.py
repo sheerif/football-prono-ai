@@ -50,6 +50,14 @@ def _daily_reserve() -> int:
         return 0
 
 
+def _xg_daily_reserve() -> int:
+    """Quota conservé pour rafraîchir les données courantes après les xG."""
+    try:
+        return max(0, int(os.getenv("XG_DAILY_RESERVE", "1500")))
+    except (TypeError, ValueError):
+        return 1500
+
+
 def _request_count(api_client) -> int:
     try:
         return max(0, int(getattr(api_client, "request_count", 0) or 0))
@@ -57,9 +65,14 @@ def _request_count(api_client) -> int:
         return 0
 
 
-def _daily_reserve_reached(api_client, initial_request_count: int) -> bool:
+def _daily_reserve_reached(
+    api_client,
+    initial_request_count: int,
+    *,
+    reserve: int | None = None,
+) -> bool:
     """Protège une réserve seulement après une réponse reçue dans ce passage."""
-    reserve = _daily_reserve()
+    reserve = _daily_reserve() if reserve is None else max(0, int(reserve))
     if reserve <= 0:
         return False
     if _request_count(api_client) <= initial_request_count:
@@ -73,9 +86,10 @@ def _daily_reserve_reached(api_client, initial_request_count: int) -> bool:
         return False
 
 
-def _reserve_message() -> str:
+def _reserve_message(reserve: int | None = None) -> str:
+    reserve = _daily_reserve() if reserve is None else max(0, int(reserve))
     return (
-        f"Quota journalier protégé : {_daily_reserve()} requêtes réservées "
+        f"Quota journalier protégé : {reserve} requêtes réservées "
         "aux prédictions et mises à jour courantes."
     )
 
@@ -805,6 +819,7 @@ def _sync_xg_rows(
     """Synchronise une liste figée de matchs terminés, avec reprise sur quota."""
     sync_run_id = sync_run_id or xg_service.new_sync_run_id()
     initial_request_count = _request_count(client)
+    xg_reserve = _xg_daily_reserve()
     summary = {
         "sync_run_id": sync_run_id,
         "total": len(rows),
@@ -816,7 +831,7 @@ def _sync_xg_rows(
         "api_calls": 0,
         "duplicates_avoided": 0,
         "unavailable_deferred": 0,
-        "daily_reserve": _daily_reserve(),
+        "daily_reserve": xg_reserve,
         "budget_reserved": False,
     }
     for index, row in enumerate(rows, start=1):
@@ -840,8 +855,12 @@ def _sync_xg_rows(
             result = "skipped"
             summary["unavailable_deferred"] += 1
         else:
-            if _daily_reserve_reached(client, initial_request_count):
-                summary["errors"].append(f"{key}: {_reserve_message()}")
+            if _daily_reserve_reached(
+                client,
+                initial_request_count,
+                reserve=xg_reserve,
+            ):
+                summary["message"] = _reserve_message(xg_reserve)
                 summary["quota_reached"] = True
                 summary["budget_reserved"] = True
                 summary["checkpoint"] = key
@@ -1095,13 +1114,20 @@ def run_full_sync(progress_callback=None) -> dict:
         summary[result_key] += int(xg_result.get(result_key) or 0)
     summary["errors"].extend(xg_result.get("errors") or [])
     if xg_result.get("quota_reached"):
-        summary["quota_reached"] = True
-        summary["budget_reserved"] = bool(xg_result.get("budget_reserved"))
-        summary["checkpoint"] = xg_result.get("checkpoint") or "fixture-statistics"
         summary["xg_coverage"] = xg_service.coverage(
             config["league_ids"], seasons
         )
-        return finalize()
+        if xg_result.get("budget_reserved"):
+            summary["xg_budget_reserved"] = True
+            summary["xg_resume_checkpoint"] = (
+                xg_result.get("checkpoint") or "fixture-statistics"
+            )
+        else:
+            summary["quota_reached"] = True
+            summary["checkpoint"] = (
+                xg_result.get("checkpoint") or "fixture-statistics"
+            )
+            return finalize()
 
     progress(60, 100, "Mise à jour des championnats, équipes, matchs et classements...")
     missing_core = set(_missing_core_scopes(config["league_ids"], seasons))
@@ -1167,6 +1193,11 @@ def run_full_sync(progress_callback=None) -> dict:
     upcoming = _upcoming_matches()
     upcoming_ids = {int(match["fixture_id"]) for match in upcoming}
     matches_by_id = {int(match["fixture_id"]): match for match in matches}
+    historical_matches = [
+        match
+        for match in matches
+        if int(match["fixture_id"]) not in upcoming_ids
+    ]
     recent_player_ids = set(_recent_fixture_ids(upcoming, per_team=5))
     completed_matches = [
         matches_by_id[fixture_id]
@@ -1195,7 +1226,44 @@ def run_full_sync(progress_callback=None) -> dict:
             f"{summary['skipped']} évité(s)",
         )
 
-    for match in matches:
+    # Les conseils des rencontres à venir passent avant le rattrapage des
+    # détails historiques afin que les informations quotidiennes restent à jour.
+    for match in upcoming:
+        fixture_id = int(match["fixture_id"])
+        key = f"fixture-prediction:{fixture_id}"
+        if _prediction_present(fixture_id):
+            sync_registry.mark(
+                key,
+                "fixture_prediction",
+                "complete",
+                item_count=1,
+                message="Déjà en base",
+            )
+            result = "skipped"
+        else:
+            if _daily_reserve_reached(
+                client, initial_request_counts["matchs/prédictions/xG"]
+            ):
+                return stop_for_quota(key, RuntimeError(_reserve_message()))
+            try:
+                result = _fetch_one(
+                    key,
+                    "fixture_prediction",
+                    lambda fid=fixture_id: client.get_predictions(fid),
+                    lambda item, fid=fixture_id: _save_prediction(fid, item),
+                )
+            except Exception as exc:
+                if _is_quota_error(exc):
+                    return stop_for_quota(key, exc)
+                summary["errors"].append(f"{key}: {exc}")
+                result = "error"
+            if result != "skipped":
+                time.sleep(pause)
+        add_result(result)
+        advance(f"Match {fixture_id}: prédiction API")
+
+    # Détails et compositions des matchs à venir avant tout rattrapage ancien.
+    for match in upcoming:
         fixture_id = int(match["fixture_id"])
         detail_key = f"fixture-detail:{fixture_id}"
         if _fixture_details_present(fixture_id):
@@ -1238,11 +1306,6 @@ def run_full_sync(progress_callback=None) -> dict:
         add_result(result)
         advance(f"Match {fixture_id}: détails")
 
-        # Les compositions historiques ne sont pas utilisées par le moteur.
-        # Seules celles des rencontres à venir peuvent modifier une prédiction.
-        if fixture_id not in upcoming_ids:
-            continue
-
         lineup_key = f"fixture-lineup:{fixture_id}"
         if _lineup_present(fixture_id):
             sync_registry.mark(lineup_key, "fixture_lineup", "complete", item_count=2, message="Déjà en base")
@@ -1278,40 +1341,6 @@ def run_full_sync(progress_callback=None) -> dict:
             time.sleep(pause)
         add_result(result)
         advance(f"Match {fixture_id}: composition")
-
-    for match in upcoming:
-        fixture_id = int(match["fixture_id"])
-        key = f"fixture-prediction:{fixture_id}"
-        if _prediction_present(fixture_id):
-            sync_registry.mark(
-                key,
-                "fixture_prediction",
-                "complete",
-                item_count=1,
-                message="Déjà en base",
-            )
-            result = "skipped"
-        else:
-            if _daily_reserve_reached(
-                client, initial_request_counts["matchs/prédictions/xG"]
-            ):
-                return stop_for_quota(key, RuntimeError(_reserve_message()))
-            try:
-                result = _fetch_one(
-                    key,
-                    "fixture_prediction",
-                    lambda fid=fixture_id: client.get_predictions(fid),
-                    lambda item, fid=fixture_id: _save_prediction(fid, item),
-                )
-            except Exception as exc:
-                if _is_quota_error(exc):
-                    return stop_for_quota(key, exc)
-                summary["errors"].append(f"{key}: {exc}")
-                result = "error"
-            if result != "skipped":
-                time.sleep(pause)
-        add_result(result)
-        advance(f"Match {fixture_id}: prédiction API")
 
     for match in completed_matches:
         fixture_id = int(match["fixture_id"])
@@ -1421,6 +1450,53 @@ def run_full_sync(progress_callback=None) -> dict:
                 result = "error"
         add_result(result)
         advance(f"Joueurs: ligue {league_id}, saison {season}")
+
+    # Les détails des matchs historiques restent bien synchronisés, mais après
+    # toutes les ressources susceptibles de modifier les analyses quotidiennes.
+    for match in historical_matches:
+        fixture_id = int(match["fixture_id"])
+        detail_key = f"fixture-detail:{fixture_id}"
+        if _fixture_details_present(fixture_id):
+            sync_registry.mark(
+                detail_key,
+                "fixture_detail",
+                "complete",
+                item_count=1,
+                message="Déjà en base",
+            )
+            result = "skipped"
+        elif not _resource_should_download(
+            match,
+            sync_registry.get(detail_key),
+            detail_key,
+            12,
+            terminal_unavailable_after_hours=72,
+            repair_missing_complete=True,
+        ):
+            result = "skipped"
+        else:
+            if _daily_reserve_reached(
+                client, initial_request_counts["matchs/prédictions/xG"]
+            ):
+                return stop_for_quota(
+                    detail_key, RuntimeError(_reserve_message())
+                )
+            try:
+                result = _fetch_one(
+                    detail_key,
+                    "fixture_detail",
+                    lambda fid=fixture_id: client.get_fixture(fid),
+                    lambda item, fid=fixture_id: _save_fixture_details(fid, item),
+                )
+            except Exception as exc:
+                if _is_quota_error(exc):
+                    return stop_for_quota(detail_key, exc)
+                summary["errors"].append(f"{detail_key}: {exc}")
+                result = "error"
+            if result != "skipped":
+                time.sleep(pause)
+        add_result(result)
+        advance(f"Match historique {fixture_id}: détails")
 
     summary["prediction_coverage"] = prediction_coverage()
     summary["xg_coverage"] = xg_service.coverage(

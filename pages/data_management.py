@@ -253,7 +253,8 @@ def show():
         )
         st.caption(
             "Priorité stricte : les xG manquants sont téléchargés avant toutes "
-            "les autres données."
+            "les autres données, avec 1 500 requêtes conservées par défaut pour "
+            "maintenir les informations courantes à jour."
         )
         api_key_missing = not (os.getenv("API_FOOTBALL_KEY") or "").strip()
         state_loader = getattr(background_jobs, "full_sync_state", None)
