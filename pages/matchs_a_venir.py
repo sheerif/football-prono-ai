@@ -524,7 +524,7 @@ def _sync_missing_fixture_details(upcoming: pd.DataFrame, progress_callback=None
 
     for group_index, ((league_id, season), group) in enumerate(grouped, start=1):
         if progress_callback:
-            progress_callback(group_index - 1, total_groups, f"Vérification SQLite: ligue {league_id}, saison {season}")
+            progress_callback(group_index - 1, total_groups, f"Vérification du cache: ligue {league_id}, saison {season}")
 
         fixture_ids = tuple(int(value) for value in group["fixture_id"].dropna().tolist())
         cached_details = _load_cached_fixture_details(int(league_id), int(season), fixture_ids)
@@ -721,7 +721,7 @@ def _enrich_with_api_details(upcoming: pd.DataFrame, force_refresh: bool = False
     total_groups = max(1, len(grouped))
     for group_index, ((league_id, season), group) in enumerate(grouped, start=1):
         if progress_callback:
-            progress_callback(group_index - 1, total_groups, f"Lecture SQLite: ligue {league_id}, saison {season}")
+            progress_callback(group_index - 1, total_groups, f"Lecture de la base: ligue {league_id}, saison {season}")
         fixture_ids = tuple(int(value) for value in group["fixture_id"].dropna().tolist())
         details = _load_cached_fixture_details(int(league_id), int(season), fixture_ids)
         if not details:
@@ -731,7 +731,7 @@ def _enrich_with_api_details(upcoming: pd.DataFrame, force_refresh: bool = False
             for key, value in fixture_details.items():
                 enriched.at[index, key] = value or ""
     if progress_callback:
-        progress_callback(total_groups, total_groups, "Détails chargés depuis SQLite")
+        progress_callback(total_groups, total_groups, "Détails chargés depuis la base")
     return enriched
 
 
@@ -1227,7 +1227,12 @@ def _build_match_preview(match, context_df: pd.DataFrame) -> dict:
     }
 
 
-def _build_previews(upcoming: pd.DataFrame, max_per_league: int, progress_callback=None) -> pd.DataFrame:
+def _build_previews(
+    upcoming: pd.DataFrame,
+    max_per_league: int,
+    progress_callback=None,
+    refresh_stale: bool = False,
+) -> pd.DataFrame:
     schema_guard.ensure_fixture_api_cache_tables()
     rows = []
     limited_groups = [
@@ -1247,13 +1252,29 @@ def _build_previews(upcoming: pd.DataFrame, max_per_league: int, progress_callba
     for league_id, limited_matches in limited_groups:
         context_cache = {}
         for match in limited_matches.itertuples():
+            cached = cached_previews.get(int(match.fixture_id))
             if progress_callback:
-                progress_callback(processed_matches, total_matches, f"Lecture SQLite: {match.home_name} - {match.away_name}")
+                source = "cache" if cached and not refresh_stale else "base"
+                progress_callback(
+                    processed_matches,
+                    total_matches,
+                    f"Lecture du {source}: {match.home_name} - {match.away_name}",
+                )
+
+            # L'affichage normal privilégie l'aperçu persistant. Recalculer son
+            # empreinte déclenche plusieurs requêtes réseau par match sur Turso.
+            # La validation complète reste disponible lors d'une mise à jour
+            # explicite afin de ne jamais ralentir une simple consultation.
+            if cached and not refresh_stale:
+                rows.append(_cached_preview_to_row(cached))
+                reused_count += 1
+                processed_matches += 1
+                continue
+
             context_key = (int(league_id), str(match.date))
             if context_key not in context_cache:
                 context_cache[context_key] = _load_prediction_context(int(league_id), match.date)
             source_hash = _preview_source_hash(match, context_cache[context_key])
-            cached = cached_previews.get(int(match.fixture_id))
             if cached and cached.get("source_hash") == source_hash:
                 rows.append(_cached_preview_to_row(cached))
                 reused_count += 1
@@ -1267,7 +1288,7 @@ def _build_previews(upcoming: pd.DataFrame, max_per_league: int, progress_callba
         progress_callback(
             total_matches,
             total_matches,
-            f"Résumés SQLite prêts: {reused_count} déjà en base, {generated_count} mis à jour",
+            f"Résumés prêts: {reused_count} lus du cache, {generated_count} mis à jour",
         )
     return pd.DataFrame(rows)
 
@@ -2401,7 +2422,14 @@ def show():
             step=7,
             help="Les matchs déjà joués de la saison active restent affichés.",
         )
-        compare_api = st.checkbox("Comparer avec l'API et mettre à jour", value=False)
+        compare_api = st.checkbox(
+            "Comparer avec l'API et mettre à jour",
+            value=False,
+            help=(
+                "Désactivé : affichage rapide depuis le cache persistant. "
+                "Activé : contrôle complet et recalcul des données modifiées."
+            ),
+        )
 
     if not selected_leagues:
         st.info("Sélectionnez au moins une ligue pour afficher ses matchs à venir.")
@@ -2441,6 +2469,7 @@ def show():
         upcoming,
         int(len(upcoming)),
         progress_callback=lambda current, total, label: _update_progress(progress_bar, status_slot, current, total, label),
+        refresh_stale=bool(compare_api),
     )
     result_columns = upcoming[
         ["fixture_id", "date", "home_goals", "away_goals", "status"]

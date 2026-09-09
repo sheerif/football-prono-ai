@@ -11,6 +11,91 @@ from pages import matchs_a_venir
 
 
 class MatchdayDisplayTests(unittest.TestCase):
+    def test_cached_previews_do_not_requery_remote_dependencies(self):
+        upcoming = pd.DataFrame(
+            [
+                {
+                    "fixture_id": 123,
+                    "league_id": 61,
+                    "season": 2026,
+                    "date": "2026-09-12T18:00:00Z",
+                    "home_team_id": 10,
+                    "away_team_id": 20,
+                    "home_name": "Nice",
+                    "away_name": "Paris Saint Germain",
+                }
+            ]
+        )
+        cached = {
+            123: {
+                "fixture_id": 123,
+                "source_hash": "already-calculated",
+                "match_label": "Nice - Paris Saint Germain",
+            }
+        }
+
+        with (
+            patch.object(matchs_a_venir.schema_guard, "ensure_fixture_api_cache_tables"),
+            patch.object(matchs_a_venir, "_load_cached_previews", return_value=cached),
+            patch.object(matchs_a_venir, "_load_prediction_context") as load_context,
+            patch.object(matchs_a_venir, "_preview_source_hash") as source_hash,
+            patch.object(matchs_a_venir, "_build_match_preview") as build_preview,
+            patch.object(matchs_a_venir, "_save_match_preview") as save_preview,
+        ):
+            result = matchs_a_venir._build_previews(upcoming, 10)
+
+        self.assertEqual(result.iloc[0]["Match"], "Nice - Paris Saint Germain")
+        load_context.assert_not_called()
+        source_hash.assert_not_called()
+        build_preview.assert_not_called()
+        save_preview.assert_not_called()
+
+    def test_explicit_refresh_still_validates_cached_preview(self):
+        upcoming = pd.DataFrame(
+            [
+                {
+                    "fixture_id": 123,
+                    "league_id": 61,
+                    "season": 2026,
+                    "date": "2026-09-12T18:00:00Z",
+                    "home_team_id": 10,
+                    "away_team_id": 20,
+                    "home_name": "Nice",
+                    "away_name": "Paris Saint Germain",
+                }
+            ]
+        )
+        cached = {
+            123: {
+                "fixture_id": 123,
+                "source_hash": "current-hash",
+                "match_label": "Nice - Paris Saint Germain",
+            }
+        }
+
+        with (
+            patch.object(matchs_a_venir.schema_guard, "ensure_fixture_api_cache_tables"),
+            patch.object(matchs_a_venir, "_load_cached_previews", return_value=cached),
+            patch.object(
+                matchs_a_venir,
+                "_load_prediction_context",
+                return_value=pd.DataFrame(),
+            ) as load_context,
+            patch.object(
+                matchs_a_venir,
+                "_preview_source_hash",
+                return_value="current-hash",
+            ) as source_hash,
+            patch.object(matchs_a_venir, "_build_match_preview") as build_preview,
+            patch.object(matchs_a_venir, "_save_match_preview") as save_preview,
+        ):
+            matchs_a_venir._build_previews(upcoming, 10, refresh_stale=True)
+
+        load_context.assert_called_once()
+        source_hash.assert_called_once()
+        build_preview.assert_not_called()
+        save_preview.assert_not_called()
+
     def _schedule_engine(self):
         engine = create_engine("sqlite://")
         now = datetime.datetime.now(datetime.UTC).replace(tzinfo=None)
