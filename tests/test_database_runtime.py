@@ -11,6 +11,22 @@ from services import background_jobs, import_service
 
 
 class DatabaseRuntimeTests(unittest.TestCase):
+    def test_current_remote_schema_skips_slow_ddl_checks(self):
+        previous = import_service._db_initialized
+        import_service._db_initialized = False
+        try:
+            with (
+                patch.object(import_service, "persistence_mode", return_value="turso"),
+                patch.object(import_service, "_remote_schema_is_current", return_value=True),
+                patch.object(models.Base.metadata, "create_all") as create_all,
+            ):
+                import_service.init_db()
+                import_service.init_db()
+        finally:
+            import_service._db_initialized = previous
+
+        create_all.assert_not_called()
+
     def test_complete_historical_season_sends_no_api_request(self):
         session = Mock()
         session.query.return_value.filter_by.return_value.count.return_value = 10

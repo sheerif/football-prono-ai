@@ -1,11 +1,12 @@
 import logging
 from typing import List
 from .api_football import ApiFootballClient
-from database.database import engine, SessionLocal
+from database.database import engine, persistence_mode, SessionLocal
 from database import models
 import datetime
 import json
 import os
+import threading
 import time
 import requests
 from sqlalchemy import text, inspect
@@ -20,6 +21,9 @@ DEFAULT_START_SEASON = 2016
 # football season is represented by the current calendar year and can still
 # be overridden explicitly with AUTO_REFRESH_END_SEASON.
 DEFAULT_END_SEASON = datetime.datetime.now(datetime.UTC).year
+REMOTE_SCHEMA_VERSION = "2026.09.09.1"
+_db_initialized = False
+_db_init_lock = threading.Lock()
 
 
 def _api_error(response) -> str | None:
@@ -55,22 +59,63 @@ def utc_now() -> datetime.datetime:
 
 def init_db():
     """Create database tables."""
-    models.Base.metadata.create_all(bind=engine)
-    _ensure_schema_columns()
-    _ensure_sync_state_table()
-    _ensure_connection_log_table()
-    _ensure_update_log_table()
-    _ensure_league_seasons_table()
-    _ensure_fixture_api_cache_tables()
-    from services import schema_guard, sync_registry
-    schema_guard.ensure_performance_indexes()
-    sync_registry.ensure_table()
-    config = get_auto_refresh_config()
-    register_league_seasons(
-        config["league_ids"],
-        range(config["start_season"], config["end_season"] + 1),
-        source="configuration",
-    )
+    global _db_initialized
+    if _db_initialized:
+        return
+    with _db_init_lock:
+        if _db_initialized:
+            return
+        if persistence_mode() == "turso" and _remote_schema_is_current():
+            _db_initialized = True
+            return
+        models.Base.metadata.create_all(bind=engine)
+        _ensure_schema_columns()
+        _ensure_sync_state_table()
+        _ensure_connection_log_table()
+        _ensure_update_log_table()
+        _ensure_league_seasons_table()
+        _ensure_fixture_api_cache_tables()
+        from services import schema_guard, sync_registry
+        schema_guard.ensure_performance_indexes()
+        sync_registry.ensure_table()
+        config = get_auto_refresh_config()
+        register_league_seasons(
+            config["league_ids"],
+            range(config["start_season"], config["end_season"] + 1),
+            source="configuration",
+        )
+        if persistence_mode() == "turso":
+            _mark_remote_schema_current()
+        _db_initialized = True
+
+
+def _remote_schema_is_current() -> bool:
+    try:
+        with engine.connect() as conn:
+            value = conn.execute(
+                text("SELECT value FROM sync_state WHERE key = :key"),
+                {"key": "app_schema_version"},
+            ).scalar_one_or_none()
+        return value == REMOTE_SCHEMA_VERSION
+    except Exception:
+        return False
+
+
+def _mark_remote_schema_current() -> None:
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO sync_state (key, value, updated_at) "
+                "VALUES (:key, :value, :updated_at) "
+                "ON CONFLICT(key) DO UPDATE SET "
+                "value = excluded.value, updated_at = excluded.updated_at"
+            ),
+            {
+                "key": "app_schema_version",
+                "value": REMOTE_SCHEMA_VERSION,
+                "updated_at": utc_now().isoformat(),
+            },
+        )
 
 
 def _ensure_schema_columns():
