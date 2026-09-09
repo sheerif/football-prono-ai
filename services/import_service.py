@@ -586,7 +586,7 @@ def get_auto_refresh_config() -> dict:
         "start_season": int(os.getenv("AUTO_REFRESH_START_SEASON", str(DEFAULT_START_SEASON))),
         "end_season": end_season,
         "recent_seasons": int(os.getenv("AUTO_REFRESH_RECENT_SEASONS", "2")),
-        "interval_minutes": int(os.getenv("AUTO_REFRESH_INTERVAL_MINUTES", "1440")),
+        "interval_minutes": int(os.getenv("AUTO_REFRESH_INTERVAL_MINUTES", "360")),
         "pause": float(os.getenv("AUTO_REFRESH_PAUSE_SECONDS", "0.8")),
         "max_retries": int(os.getenv("AUTO_REFRESH_MAX_RETRIES", "3")),
     }
