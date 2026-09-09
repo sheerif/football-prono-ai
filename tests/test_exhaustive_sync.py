@@ -346,6 +346,7 @@ class ExhaustiveSyncTests(unittest.TestCase):
             patch.object(full_sync_service, "_missing_core_scopes", return_value=[]),
             patch.object(full_sync_service, "_all_matches", return_value=[past, future]),
             patch.object(full_sync_service, "_upcoming_matches", return_value=[future]),
+            patch.object(full_sync_service, "_recent_fixture_ids", return_value=[1]),
             patch.object(full_sync_service, "_player_scopes", return_value=[]),
             patch.object(full_sync_service, "_fixture_details_present", return_value=True),
             patch.object(full_sync_service, "_lineup_present", return_value=True),
@@ -370,7 +371,7 @@ class ExhaustiveSyncTests(unittest.TestCase):
         marked_keys = [item.args[0] for item in mark.call_args_list]
         self.assertIn("fixture-detail:1", marked_keys)
         self.assertIn("fixture-detail:2", marked_keys)
-        self.assertIn("fixture-lineup:1", marked_keys)
+        self.assertNotIn("fixture-lineup:1", marked_keys)
         self.assertIn("fixture-lineup:2", marked_keys)
         self.assertIn("fixture-prediction:2", marked_keys)
         sync_xg.assert_called_once()

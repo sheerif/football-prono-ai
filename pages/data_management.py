@@ -5,7 +5,7 @@ import pandas as pd
 import streamlit as st
 
 from components import ui
-from database.database import engine
+from database.database import engine, persistence_mode
 from services import (
     background_jobs,
     full_sync_service,
@@ -208,6 +208,15 @@ def show():
         "Mise à jour",
         "Lancez une mise à jour et suivez son avancement simplement.",
     )
+
+    if persistence_mode() == "sqlite_local":
+        st.error(
+            "Stockage non durable : cette instance utilise un fichier SQLite local. "
+            "Sur Streamlit Community Cloud, ce fichier peut disparaître lors d’un "
+            "redémarrage. Configurez TURSO_DATABASE_URL et TURSO_AUTH_TOKEN avant "
+            "un nouvel import exhaustif afin de ne pas perdre les données ni "
+            "consommer à nouveau le quota API."
+        )
 
     counts = _summary_counts()
     database_kpis = [

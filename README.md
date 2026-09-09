@@ -46,7 +46,36 @@ by domain and quota if that exposure becomes a concern.
 streamlit run app.py
 ```
 
-The app creates SQLite tables on first run.
+The app creates the database tables on first run.
+
+### Stockage persistant et restauration Streamlit
+
+Un fichier `football.db` local convient au développement, mais pas à un
+déploiement Streamlit Community Cloud : le système de fichiers de l’instance
+n’est pas garanti persistant. Un redémarrage peut donc remettre le compteur de
+matchs à zéro et supprimer aussi le point de reprise de la synchronisation.
+
+En production, configurez une base Turso/libSQL persistante. Une copie SQLite
+locale existante peut être importée sans retélécharger les données depuis
+API-Football :
+
+```bash
+turso db create football-prono --from-file ./football.db
+turso db show --url football-prono
+turso db tokens create football-prono
+```
+
+Ajoutez ensuite les deux valeurs aux secrets Streamlit, sans enregistrer le
+jeton dans Git :
+
+```toml
+TURSO_DATABASE_URL = "libsql://votre-base.turso.io"
+TURSO_AUTH_TOKEN = "votre-jeton"
+```
+
+Après redémarrage, la page « Mise à jour » ne doit plus afficher l’avertissement
+« Stockage non durable ». Le plan différentiel repart alors des lignes et des
+marqueurs réellement conservés dans la base distante.
 
 ### Synchronisation exhaustive et quotas
 
@@ -107,10 +136,12 @@ L'audit endpoint par endpoint et les exceptions autorisées sont documentés dan
 
 ### Supported database
 
-SQLite is the only officially supported database engine. Some synchronization
-queries intentionally use SQLite features such as `datetime(...)`, `PRAGMA`
-and `ON CONFLICT`. Set `DATABASE_URL` to a SQLite URL (the default is
-`sqlite:///football.db`). Other SQLAlchemy engines are not currently supported.
+SQLite local est pris en charge pour le développement avec
+`DATABASE_URL=sqlite:///football.db`. Turso/libSQL, compatible avec la syntaxe
+SQLite utilisée par la synchronisation, est recommandé pour un déploiement
+persistant. Renseignez `TURSO_DATABASE_URL` et `TURSO_AUTH_TOKEN` : ces valeurs
+prennent alors priorité sur `DATABASE_URL`. Les autres moteurs SQLAlchemy ne
+sont pas officiellement pris en charge.
 
 ## Checks
 

@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 from sqlalchemy import text
-from database.database import engine
+from database.database import engine, persistence_mode
 from components import ui
 from services import import_service
 from services.season_format import season_range
@@ -309,7 +309,15 @@ def show():
         league_scope = str(league_seasons_df["league_id"].nunique())
 
     if matches_df.empty:
-        st.warning("Aucune donnée disponible. Ouvrez 'Mise à jour' pour lancer l’import.")
+        if persistence_mode() == "sqlite_local":
+            st.error(
+                "Aucune donnée disponible et la base actuelle est locale. Sur "
+                "Streamlit Community Cloud, elle n’est pas durable : configurez "
+                "Turso dans les secrets avant de relancer l’import, sinon les "
+                "données et le quota consommé risquent d’être perdus à nouveau."
+            )
+        else:
+            st.warning("Aucune donnée disponible. Ouvrez 'Mise à jour' pour lancer l’import.")
 
     ui.dashboard_hero(
         "Prono insight",
