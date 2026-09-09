@@ -282,31 +282,61 @@ def overall_progress_snapshot() -> dict:
 
 
 def _missing_core_scopes(league_ids: list[int], seasons: list[int]) -> list[tuple[int, int]]:
-    missing = []
+    requested = [
+        (int(league_id), int(season))
+        for league_id in league_ids
+        for season in seasons
+    ]
+    if not requested:
+        return []
+
+    values = []
+    params = {}
+    for index, (league_id, season) in enumerate(requested):
+        values.append(f"(:league_{index}, :season_{index})")
+        params[f"league_{index}"] = league_id
+        params[f"season_{index}"] = season
+
     with engine.begin() as conn:
-        for league_id in league_ids:
-            for season in seasons:
-                match_count = conn.execute(
-                    text(
-                        "SELECT COUNT(*) FROM matches "
-                        "WHERE league_id = :league_id AND season = :season"
-                    ),
-                    {"league_id": int(league_id), "season": int(season)},
-                ).scalar()
-                team_count = conn.execute(
-                    text("SELECT COUNT(*) FROM teams WHERE league_id = :league_id"),
-                    {"league_id": int(league_id)},
-                ).scalar()
-                standing_count = conn.execute(
-                    text(
-                        "SELECT COUNT(*) FROM standings "
-                        "WHERE league_id = :league_id AND season = :season"
-                    ),
-                    {"league_id": int(league_id), "season": int(season)},
-                ).scalar()
-                if int(match_count or 0) == 0 or int(team_count or 0) == 0 or int(standing_count or 0) == 0:
-                    missing.append((int(league_id), int(season)))
-    return missing
+        rows = conn.execute(
+            text(
+                f"""
+                WITH requested(league_id, season) AS (
+                    VALUES {','.join(values)}
+                ),
+                match_counts AS (
+                    SELECT league_id, season, COUNT(*) AS item_count
+                    FROM matches
+                    GROUP BY league_id, season
+                ),
+                standing_counts AS (
+                    SELECT league_id, season, COUNT(*) AS item_count
+                    FROM standings
+                    GROUP BY league_id, season
+                ),
+                team_counts AS (
+                    SELECT league_id, COUNT(*) AS item_count
+                    FROM teams
+                    GROUP BY league_id
+                )
+                SELECT requested.league_id, requested.season
+                FROM requested
+                LEFT JOIN match_counts
+                  ON match_counts.league_id = requested.league_id
+                 AND match_counts.season = requested.season
+                LEFT JOIN standing_counts
+                  ON standing_counts.league_id = requested.league_id
+                 AND standing_counts.season = requested.season
+                LEFT JOIN team_counts
+                  ON team_counts.league_id = requested.league_id
+                WHERE COALESCE(match_counts.item_count, 0) = 0
+                   OR COALESCE(standing_counts.item_count, 0) = 0
+                   OR COALESCE(team_counts.item_count, 0) = 0
+                """
+            ),
+            params,
+        ).fetchall()
+    return [(int(row[0]), int(row[1])) for row in rows]
 
 
 def _recent_fixture_ids(upcoming: list[dict], per_team: int = 5) -> list[int]:
@@ -318,25 +348,45 @@ def _recent_fixture_ids(upcoming: list[dict], per_team: int = 5) -> list[int]:
             team_id = int(team_id)
             if team_id not in team_cutoffs or cutoff < team_cutoffs[team_id]:
                 team_cutoffs[team_id] = cutoff
+    if not team_cutoffs:
+        return []
+
+    values = []
+    params = {"limit": int(per_team)}
+    for index, (team_id, cutoff) in enumerate(team_cutoffs.items()):
+        values.append(f"(:team_{index}, :cutoff_{index})")
+        params[f"team_{index}"] = team_id
+        params[f"cutoff_{index}"] = cutoff
+
     with engine.begin() as conn:
-        for team_id, cutoff in team_cutoffs.items():
-            rows = conn.execute(
-                text(
-                    """
-                    SELECT fixture_id FROM matches
-                    WHERE (home_team_id = :team_id OR away_team_id = :team_id)
-                      AND date < :before_date
-                      AND home_goals IS NOT NULL AND away_goals IS NOT NULL
-                    ORDER BY date DESC LIMIT :limit
-                    """
+        rows = conn.execute(
+            text(
+                f"""
+                WITH team_cutoffs(team_id, cutoff) AS (
+                    VALUES {','.join(values)}
                 ),
-                {
-                    "team_id": team_id,
-                    "before_date": cutoff,
-                    "limit": int(per_team),
-                },
-            ).fetchall()
-            ids.update(int(row[0]) for row in rows)
+                ranked AS (
+                    SELECT m.fixture_id,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY team_cutoffs.team_id
+                               ORDER BY m.date DESC, m.fixture_id DESC
+                           ) AS position
+                    FROM team_cutoffs
+                    JOIN matches m
+                      ON (m.home_team_id = team_cutoffs.team_id
+                          OR m.away_team_id = team_cutoffs.team_id)
+                     AND m.date < team_cutoffs.cutoff
+                     AND m.home_goals IS NOT NULL
+                     AND m.away_goals IS NOT NULL
+                )
+                SELECT DISTINCT fixture_id
+                FROM ranked
+                WHERE position <= :limit
+                """
+            ),
+            params,
+        ).fetchall()
+        ids.update(int(row[0]) for row in rows)
     return sorted(ids)
 
 

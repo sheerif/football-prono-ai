@@ -3,7 +3,7 @@ from pathlib import Path
 import unittest
 from unittest.mock import Mock, patch
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 
 from pages import data_management
 from services import background_jobs, full_sync_service, sync_registry
@@ -18,6 +18,59 @@ class _ImmediateThread:
 
 
 class ExhaustiveSyncTests(unittest.TestCase):
+    def test_missing_core_scopes_are_computed_in_bulk(self):
+        test_engine = create_engine("sqlite://")
+        with test_engine.begin() as conn:
+            conn.execute(text("CREATE TABLE matches (league_id INTEGER, season INTEGER)"))
+            conn.execute(text("CREATE TABLE teams (league_id INTEGER)"))
+            conn.execute(text("CREATE TABLE standings (league_id INTEGER, season INTEGER)"))
+            conn.execute(text("INSERT INTO matches VALUES (61, 2026), (39, 2026)"))
+            conn.execute(text("INSERT INTO teams VALUES (61), (39)"))
+            conn.execute(text("INSERT INTO standings VALUES (61, 2026)"))
+
+        with patch.object(full_sync_service, "engine", test_engine):
+            missing = full_sync_service._missing_core_scopes(
+                [61, 39], [2026]
+            )
+
+        self.assertEqual(missing, [(39, 2026)])
+
+    def test_recent_fixture_ids_are_loaded_in_one_ranked_query(self):
+        test_engine = create_engine("sqlite://")
+        with test_engine.begin() as conn:
+            conn.execute(
+                text(
+                    "CREATE TABLE matches (fixture_id INTEGER, date TEXT, "
+                    "home_team_id INTEGER, away_team_id INTEGER, "
+                    "home_goals INTEGER, away_goals INTEGER)"
+                )
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO matches VALUES "
+                    "(1, '2026-09-01', 10, 30, 2, 0), "
+                    "(2, '2026-09-02', 10, 40, 1, 1), "
+                    "(3, '2026-09-03', 20, 30, 0, 1), "
+                    "(4, '2026-09-04', 20, 40, 3, 2), "
+                    "(5, '2026-09-11', 10, 20, NULL, NULL)"
+                )
+            )
+        upcoming = [
+            {
+                "fixture_id": 5,
+                "date": "2026-09-10",
+                "home_team_id": 10,
+                "away_team_id": 20,
+            }
+        ]
+
+        with patch.object(full_sync_service, "engine", test_engine):
+            fixture_ids = full_sync_service._recent_fixture_ids(
+                upcoming, per_team=1
+            )
+
+        self.assertEqual(fixture_ids, [2, 4])
+
     def test_daily_reserve_is_disabled_by_default(self):
         api_client = Mock()
         api_client.request_count = 11

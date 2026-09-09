@@ -251,6 +251,26 @@ def show():
             "matchs connus pour conserver les données exploitées : équipes, matchs, "
             "classements, détails, compositions, joueurs, prédictions et xG."
         )
+        api_key_missing = not (os.getenv("API_FOOTBALL_KEY") or "").strip()
+        state_loader = getattr(background_jobs, "full_sync_state", None)
+        full_state = state_loader() if callable(state_loader) else None
+        quota_waiting = bool(
+            full_state and full_state.get("status") == "waiting_quota"
+        )
+        if api_key_missing:
+            st.error("Synchronisation indisponible : la clé API_FOOTBALL_KEY est absente. Ajoutez-la dans .env ou les secrets Streamlit.")
+        if st.button(
+            "↻ Lancer la synchronisation exhaustive",
+            type="primary",
+            width="stretch",
+            disabled=api_key_missing or data_job_active or quota_waiting,
+        ):
+            _start_full_sync()
+            st.success(
+                "Synchronisation exhaustive lancée. Chaque donnée reçue est "
+                "enregistrée immédiatement dans la base."
+            )
+
         try:
             download_plan = full_sync_service.download_plan()
         except Exception as exc:
@@ -291,25 +311,6 @@ def show():
                 "Ce plan est calculé sans appel API. Chaque élément est contrôlé "
                 "une seconde fois juste avant son téléchargement."
             )
-        api_key_missing = not (os.getenv("API_FOOTBALL_KEY") or "").strip()
-        if api_key_missing:
-            st.error("Synchronisation indisponible : la clé API_FOOTBALL_KEY est absente. Ajoutez-la dans .env ou les secrets Streamlit.")
-        state_loader = getattr(background_jobs, "full_sync_state", None)
-        full_state = state_loader() if callable(state_loader) else None
-        quota_waiting = bool(
-            full_state and full_state.get("status") == "waiting_quota"
-        )
-        if st.button(
-            "↻ Lancer la synchronisation exhaustive",
-            type="primary",
-            width="stretch",
-            disabled=api_key_missing or data_job_active or quota_waiting,
-        ):
-            _start_full_sync()
-            st.success(
-                "Synchronisation exhaustive lancée. Chaque donnée reçue est "
-                "enregistrée immédiatement dans la base."
-        )
         if full_state and full_state.get("status") == "waiting_quota":
             st.warning(full_state.get("message") or "Synchronisation en attente du quota API.")
             st.caption(
