@@ -1,4 +1,5 @@
 import unittest
+import math
 from unittest.mock import Mock, patch
 
 from database import turso_http_dbapi
@@ -13,6 +14,27 @@ class _Result:
 
 
 class TursoHttpDbapiTests(unittest.TestCase):
+    def test_non_finite_float_is_sent_as_sql_null(self):
+        client = Mock()
+        client.execute.return_value = _Result(rows_affected=1)
+        with patch.object(
+            turso_http_dbapi.libsql_client,
+            "create_client_sync",
+            return_value=client,
+        ):
+            connection = turso_http_dbapi.connect(
+                "libsql://football-prono.example.turso.io",
+                "secret-token",
+            )
+            connection.execute(
+                "INSERT INTO sample(value, other) VALUES (?, ?)",
+                (float("nan"), 2.5),
+            )
+
+        sent_parameters = client.execute.call_args.args[1]
+        self.assertIsNone(sent_parameters[0])
+        self.assertTrue(math.isfinite(sent_parameters[1]))
+
     def test_remote_url_is_converted_to_https_without_exposing_token(self):
         client = Mock()
         client.execute.return_value = _Result(columns=("count",), rows=[(22_143,)])

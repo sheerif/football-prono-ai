@@ -9,6 +9,8 @@ transaction longue côté serveur.
 from __future__ import annotations
 
 import sqlite3
+import math
+from collections.abc import Mapping
 from typing import Any, Iterable
 
 import libsql_client
@@ -33,6 +35,24 @@ NotSupportedError = sqlite3.NotSupportedError
 Binary = sqlite3.Binary
 
 
+def _normalize_value(value: Any) -> Any:
+    """Convertit les scalaires pandas/numpy en valeurs acceptées par libSQL."""
+    module_name = type(value).__module__.split(".", 1)[0]
+    if module_name == "numpy" and hasattr(value, "item"):
+        value = value.item()
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    return value
+
+
+def _normalize_parameters(parameters: Any) -> Any:
+    if parameters is None:
+        return None
+    if isinstance(parameters, Mapping):
+        return {key: _normalize_value(value) for key, value in parameters.items()}
+    return tuple(_normalize_value(value) for value in parameters)
+
+
 class Cursor:
     def __init__(self, connection: "Connection"):
         self.connection = connection
@@ -47,7 +67,10 @@ class Cursor:
     def execute(self, operation: str, parameters: Any = None):
         self._ensure_open()
         try:
-            result = self.connection._client.execute(operation, parameters)
+            result = self.connection._client.execute(
+                operation,
+                _normalize_parameters(parameters),
+            )
         except Exception as exc:
             raise OperationalError(str(exc)) from exc
         self._load_result(result)
@@ -55,7 +78,10 @@ class Cursor:
 
     def executemany(self, operation: str, seq_of_parameters: Iterable[Any]):
         self._ensure_open()
-        statements = [(operation, parameters) for parameters in seq_of_parameters]
+        statements = [
+            (operation, _normalize_parameters(parameters))
+            for parameters in seq_of_parameters
+        ]
         if not statements:
             self.rowcount = 0
             return self
