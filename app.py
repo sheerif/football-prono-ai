@@ -3,6 +3,7 @@ import datetime
 import os
 
 from services import background_jobs, import_service, schema_guard
+from database.database import persistence_configuration_error, persistence_mode
 
 from components import auth, sidebar, ui
 from pages import dashboard, data_management, api_widgets, matchs_a_venir, analyse_match, prediction_ia
@@ -19,8 +20,23 @@ def _init_db_once():
 	import_service.init_db()
 
 
-_init_db_once()
-schema_guard.ensure_match_score_columns()
+try:
+	_init_db_once()
+	schema_guard.ensure_match_score_columns()
+except Exception:
+	mode = persistence_mode()
+	config_error = persistence_configuration_error()
+	if mode == "turso" or config_error:
+		st.error(
+			"Connexion à la base Turso impossible. Aucune mise à jour API n’a été "
+			"lancée. Vérifiez TURSO_DATABASE_URL et TURSO_AUTH_TOKEN dans les "
+			"secrets Streamlit, puis redémarrez l’application."
+		)
+	else:
+		st.error(
+			"Initialisation de la base impossible. Aucune mise à jour API n’a été lancée."
+		)
+	st.stop()
 
 if "connection_started_at" not in st.session_state:
 	st.session_state["connection_started_at"] = datetime.datetime.now(datetime.UTC).replace(tzinfo=None).isoformat()
