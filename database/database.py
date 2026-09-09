@@ -22,13 +22,7 @@ if _turso_requested:
         _turso_enabled = True
 
 if _turso_enabled:
-    DATABASE_URL = (
-        _turso_url
-        if _turso_url.startswith("sqlite+libsql://")
-        else f"sqlite+{_turso_url}"
-    )
-    if "secure=" not in DATABASE_URL:
-        DATABASE_URL += ("&" if "?" in DATABASE_URL else "?") + "secure=true"
+    DATABASE_URL = "sqlite://"
 else:
     DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///football.db")
 
@@ -36,13 +30,23 @@ else:
 # driver prevents the application from starting when DATABASE_URL is changed.
 _url = make_url(DATABASE_URL)
 _is_sqlite = _url.get_backend_name() == "sqlite"
-_is_local_sqlite = _url.drivername == "sqlite"
-_connect_args = (
-    {"auth_token": _turso_token}
-    if _turso_enabled
-    else ({"check_same_thread": False, "timeout": 30} if _is_sqlite else {})
-)
-engine = create_engine(DATABASE_URL, connect_args=_connect_args, pool_pre_ping=True)
+_is_local_sqlite = _url.drivername == "sqlite" and not _turso_enabled
+if _turso_enabled:
+    from database import turso_http_dbapi
+
+    engine = create_engine(
+        DATABASE_URL,
+        module=turso_http_dbapi,
+        creator=lambda: turso_http_dbapi.connect(_turso_url, _turso_token),
+        pool_pre_ping=True,
+    )
+else:
+    _connect_args = {"check_same_thread": False, "timeout": 30} if _is_sqlite else {}
+    engine = create_engine(
+        DATABASE_URL,
+        connect_args=_connect_args,
+        pool_pre_ping=True,
+    )
 
 
 if _is_local_sqlite:
