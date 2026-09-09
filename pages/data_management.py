@@ -251,6 +251,10 @@ def show():
             "matchs connus pour conserver les données exploitées : équipes, matchs, "
             "classements, détails, compositions, joueurs, prédictions et xG."
         )
+        st.caption(
+            "Priorité stricte : les xG manquants sont téléchargés avant toutes "
+            "les autres données."
+        )
         api_key_missing = not (os.getenv("API_FOOTBALL_KEY") or "").strip()
         state_loader = getattr(background_jobs, "full_sync_state", None)
         full_state = state_loader() if callable(state_loader) else None

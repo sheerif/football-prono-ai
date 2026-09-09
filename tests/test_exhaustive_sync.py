@@ -459,7 +459,9 @@ class ExhaustiveSyncTests(unittest.TestCase):
             patch.object(full_sync_service.sync_registry, "ensure_table"),
             patch.object(full_sync_service.sync_registry, "mark"),
             patch.object(full_sync_service.import_service, "get_auto_refresh_config", return_value=config),
-            patch.object(full_sync_service.import_service, "import_leagues_cautious"),
+            patch.object(
+                full_sync_service.import_service, "import_leagues_cautious"
+            ) as core_import,
             patch.object(full_sync_service, "_missing_core_scopes", return_value=[]),
             patch.object(full_sync_service, "_all_matches", return_value=[played]),
             patch.object(full_sync_service, "_upcoming_matches", return_value=[]),
@@ -482,6 +484,7 @@ class ExhaustiveSyncTests(unittest.TestCase):
             result = full_sync_service.run_full_sync()
 
         details.assert_not_called()
+        core_import.assert_not_called()
         self.assertTrue(result["quota_reached"])
         self.assertEqual(result["checkpoint"], "fixture-statistics:99")
 

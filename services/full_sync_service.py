@@ -996,7 +996,7 @@ def sync_historical_xg(
 def run_full_sync(progress_callback=None) -> dict:
     """Synchronise exhaustivement les données exploitées par l'application.
 
-    Chaque ressource est validée dans SQLite dès sa réception. Une relance
+    Chaque ressource est validée dans la base persistante dès sa réception. Une relance
     repart donc du registre persistant et ignore ce qui est déjà complet.
     """
     import_service.init_db()
@@ -1065,8 +1065,45 @@ def run_full_sync(progress_callback=None) -> dict:
         summary["checkpoint"] = key
         return finalize()
 
-    progress(0, 100, "Vérification des championnats, équipes, matchs et classements...")
+    progress(0, 100, "Priorité xG : recherche des statistiques manquantes...")
     seasons = list(range(config["start_season"], config["end_season"] + 1))
+
+    # Priorité stricte : les xG déjà identifiables depuis les matchs persistés
+    # passent avant tout autre endpoint, y compris le rafraîchissement courant.
+    # Une reprise après quota revient donc toujours ici en premier.
+    xg_result = sync_historical_xg(
+        league_ids=config["league_ids"],
+        seasons=seasons,
+        max_matches=None,
+        pause=pause,
+        retry_hours=24,
+        progress_callback=lambda current, total, label: progress(
+            int((current / max(1, total)) * 60),
+            100,
+            label,
+        ),
+    )
+    summary["xg"] = xg_result
+    summary["xg_api_calls"] = int(xg_result.get("api_calls") or 0)
+    summary["xg_duplicates_avoided"] = int(
+        xg_result.get("duplicates_avoided") or 0
+    )
+    summary["xg_unavailable_deferred"] = int(
+        xg_result.get("unavailable_deferred") or 0
+    )
+    for result_key in ("downloaded", "skipped", "unavailable"):
+        summary[result_key] += int(xg_result.get(result_key) or 0)
+    summary["errors"].extend(xg_result.get("errors") or [])
+    if xg_result.get("quota_reached"):
+        summary["quota_reached"] = True
+        summary["budget_reserved"] = bool(xg_result.get("budget_reserved"))
+        summary["checkpoint"] = xg_result.get("checkpoint") or "fixture-statistics"
+        summary["xg_coverage"] = xg_service.coverage(
+            config["league_ids"], seasons
+        )
+        return finalize()
+
+    progress(60, 100, "Mise à jour des championnats, équipes, matchs et classements...")
     missing_core = set(_missing_core_scopes(config["league_ids"], seasons))
     recent_count = max(1, int(config.get("recent_seasons") or 1))
     recent_seasons = set(seasons[-recent_count:])
@@ -1110,7 +1147,7 @@ def run_full_sync(progress_callback=None) -> dict:
                 return stop_for_quota(key, exc)
             summary["errors"].append(f"{key}: {exc}")
         progress(
-            int((index / max(1, len(core_scopes))) * 15),
+            60 + int((index / max(1, len(core_scopes))) * 10),
             100,
             f"Données principales : ligue {league_id}, saison {season} · "
             f"{summary['downloaded']} téléchargé(s)",
@@ -1138,42 +1175,6 @@ def run_full_sync(progress_callback=None) -> dict:
     ]
     scopes = _player_scopes()
 
-    # Les xG sont la donnée historique prioritaire. Ils sont traités avant les
-    # autres endpoints afin que le quota quotidien serve d'abord à compléter
-    # cette couverture. Le registre et la table de statistiques font office de
-    # différence persistante entre deux passages.
-    xg_result = sync_historical_xg(
-        league_ids=config["league_ids"],
-        seasons=seasons,
-        max_matches=None,
-        pause=pause,
-        retry_hours=24,
-        progress_callback=lambda current, total, label: progress(
-            15 + int((current / max(1, total)) * 40),
-            100,
-            label,
-        ),
-    )
-    summary["xg"] = xg_result
-    summary["xg_api_calls"] = int(xg_result.get("api_calls") or 0)
-    summary["xg_duplicates_avoided"] = int(
-        xg_result.get("duplicates_avoided") or 0
-    )
-    summary["xg_unavailable_deferred"] = int(
-        xg_result.get("unavailable_deferred") or 0
-    )
-    for result_key in ("downloaded", "skipped", "unavailable"):
-        summary[result_key] += int(xg_result.get(result_key) or 0)
-    summary["errors"].extend(xg_result.get("errors") or [])
-    if xg_result.get("quota_reached"):
-        summary["quota_reached"] = True
-        summary["budget_reserved"] = bool(xg_result.get("budget_reserved"))
-        summary["checkpoint"] = xg_result.get("checkpoint") or "fixture-statistics"
-        summary["xg_coverage"] = xg_service.coverage(
-            config["league_ids"], seasons
-        )
-        return finalize()
-
     total_items = max(
         1,
         len(matches)
@@ -1188,7 +1189,7 @@ def run_full_sync(progress_callback=None) -> dict:
         nonlocal completed
         completed += 1
         progress(
-            55 + int((completed / total_items) * 45),
+            70 + int((completed / total_items) * 30),
             100,
             f"{label} · {summary['downloaded']} téléchargé(s) · "
             f"{summary['skipped']} évité(s)",
@@ -1384,14 +1385,14 @@ def run_full_sync(progress_callback=None) -> dict:
                     league_id,
                     season,
                     progress_callback=lambda page, pages, page_label: progress(
-                        15
+                        70
                         + int(
                             (
                                 completed
                                 + page / max(1, pages)
                             )
                             / total_items
-                            * 85
+                            * 30
                         ),
                         100,
                         page_label,
