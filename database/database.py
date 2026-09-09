@@ -7,10 +7,13 @@ from sqlalchemy.orm import sessionmaker, declarative_base
 load_dotenv()
 _turso_url = (os.getenv("TURSO_DATABASE_URL") or "").strip()
 _turso_token = (os.getenv("TURSO_AUTH_TOKEN") or "").strip()
+_turso_requested = os.getenv("TURSO_ENABLED", "false").lower() in {
+    "1", "true", "yes", "oui"
+}
 _turso_config_error = None
 _turso_enabled = False
 
-if _turso_url or _turso_token:
+if _turso_requested:
     if not _turso_url or not _turso_token:
         _turso_config_error = "URL ou jeton Turso manquant."
     elif not _turso_url.startswith(("libsql://", "sqlite+libsql://")):
