@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pandas as pd
 
@@ -14,6 +14,26 @@ from pages import matchs_a_venir, prediction_ia
 
 
 class PredictionBusinessRuleTests(unittest.TestCase):
+    def test_prediction_progress_exposes_percentage_count_and_step(self):
+        progress_bar = Mock()
+        status_slot = Mock()
+
+        prediction_ia._update_visible_progress(
+            progress_bar,
+            status_slot,
+            current=3,
+            total=6,
+            label="Analyse de Paris - Marseille",
+        )
+
+        progress_bar.progress.assert_called_once_with(
+            0.5,
+            text="50 % — Analyse de Paris - Marseille",
+        )
+        status_slot.caption.assert_called_once_with(
+            "Traitement : 3/6 · Analyse de Paris - Marseille"
+        )
+
     def test_pages_support_legacy_final_service_signature_during_deploy(self):
         def legacy_calculate(
             matches_df,

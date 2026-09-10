@@ -318,6 +318,98 @@ def _build_reasons(home_name: str, away_name: str, details: dict):
     return reasons
 
 
+def _compute_match_prediction(
+    matches_df: pd.DataFrame,
+    league_id: int,
+    seasons_with_data: list[int],
+    home_team: int,
+    away_team: int,
+    home_name: str,
+    away_name: str,
+    progress_callback=None,
+) -> dict:
+    def report(current: int, label: str) -> None:
+        if progress_callback:
+            progress_callback(current, 7, label)
+
+    report(1, "Détermination de la saison d’analyse")
+    analysis_season = lineup_service.resolve_player_season(
+        [home_team, away_team], league_id, seasons_with_data
+    )
+    report(2, "Lecture des compositions et de la forme des joueurs")
+    player_intelligence = lineup_service.get_prediction_intelligence(
+        home_team_id=home_team,
+        away_team_id=away_team,
+        league_id=league_id,
+        season=analysis_season,
+    )
+    report(3, "Lecture des conseils API déjà enregistrés")
+    api_signal = cross_insight_service.load_upcoming_api_signal(
+        home_team,
+        away_team,
+    )
+    report(4, "Calcul des probabilités et du score probable")
+    final = _calculate_final_prediction(
+        matches_df,
+        home_team,
+        away_team,
+        home_name,
+        away_name,
+        player_intelligence=player_intelligence,
+        api_signal=api_signal,
+    )
+    report(5, "Croisement des statistiques, compositions et conseils")
+    cross_insight = cross_insight_service.build_cross_insight(
+        matches_df=matches_df,
+        home_team=home_team,
+        away_team=away_team,
+        home_name=home_name,
+        away_name=away_name,
+        prediction=final["internal_prediction"],
+        score_prediction=final["score_prediction"],
+        home_form_score=final["model_details"]["home_form_score"] / 100,
+        away_form_score=final["model_details"]["away_form_score"] / 100,
+        home_played=final["home_stats"]["played"],
+        away_played=final["away_stats"]["played"],
+        selected_seasons=seasons_with_data,
+        api_signal=api_signal,
+        player_intelligence=player_intelligence,
+    )
+    report(6, "Enregistrement de l’analyse dans la base")
+    analysis_store.save_analysis_snapshot(
+        analysis_type="prédiction_manuelle",
+        league_id=league_id,
+        season=analysis_season,
+        home_team_id=home_team,
+        away_team_id=away_team,
+        prediction=final["prediction"],
+        score_prediction=final["score_prediction"],
+        player_intelligence=player_intelligence,
+        model_details=final["model_details"],
+        cross_insight=cross_insight,
+        context={
+            "selected_seasons": seasons_with_data,
+            "home_name": home_name,
+            "away_name": away_name,
+            "historical_match_count": int(len(matches_df)),
+        },
+    )
+    report(7, "Prédiction terminée et enregistrée")
+    return {
+        **final,
+        "analysis_season": analysis_season,
+        "player_intelligence": player_intelligence,
+        "cross_insight": cross_insight,
+    }
+
+
+def _update_visible_progress(progress_bar, status_slot, current, total, label):
+    ratio = min(1.0, max(0.0, current / max(1, total)))
+    percent = int(round(ratio * 100))
+    progress_bar.progress(ratio, text=f"{percent} % — {label}")
+    status_slot.caption(f"Traitement : {current}/{total} · {label}")
+
+
 def _show_match_prediction():
     st.subheader("Prédiction d'un match")
     st.caption(
@@ -382,73 +474,39 @@ def _show_match_prediction():
         width="stretch",
         key="prediction_match_submit",
     ):
-        analysis_season = lineup_service.resolve_player_season(
-            [home_team, away_team], league_id, seasons_with_data
-        )
-        player_intelligence = lineup_service.get_prediction_intelligence(
-            home_team_id=home_team,
-            away_team_id=away_team,
-            league_id=league_id,
-            season=analysis_season,
-        )
         home_name = team_options[home_team]
         away_name = team_options[away_team]
-        api_signal = cross_insight_service.load_upcoming_api_signal(
-            home_team,
-            away_team,
+        progress_bar = st.progress(0.0, text="0 % — Préparation de la prédiction")
+        progress_status = st.empty()
+        try:
+            final = _compute_match_prediction(
+                matches_df,
+                league_id,
+                seasons_with_data,
+                home_team,
+                away_team,
+                home_name,
+                away_name,
+                progress_callback=lambda current, total, label: _update_visible_progress(
+                    progress_bar, progress_status, current, total, label
+                ),
+            )
+        except Exception as exc:
+            progress_bar.progress(1.0, text="Traitement interrompu")
+            progress_status.error(f"Impossible de calculer la prédiction : {exc}")
+            return
+        progress_status.success(
+            f"Prédiction {home_name} - {away_name} calculée et enregistrée."
         )
-        final = _calculate_final_prediction(
-            matches_df,
-            home_team,
-            away_team,
-            home_name,
-            away_name,
-            player_intelligence=player_intelligence,
-            api_signal=api_signal,
-        )
+        player_intelligence = final["player_intelligence"]
+        cross_insight = final["cross_insight"]
         pred = final["prediction"]
-        internal_prediction = final["internal_prediction"]
         home_stats = final["home_stats"]
         away_stats = final["away_stats"]
         details = final["model_details"]
         api_refinement = final["api_refinement"]
         consensus_advice = final["consensus_advice"]
         score_prediction = final["score_prediction"]
-        cross_insight = cross_insight_service.build_cross_insight(
-            matches_df=matches_df,
-            home_team=home_team,
-            away_team=away_team,
-            home_name=home_name,
-            away_name=away_name,
-            prediction=internal_prediction,
-            score_prediction=score_prediction,
-            home_form_score=details["home_form_score"] / 100,
-            away_form_score=details["away_form_score"] / 100,
-            home_played=home_stats["played"],
-            away_played=away_stats["played"],
-            selected_seasons=seasons_with_data,
-            api_signal=api_signal,
-            player_intelligence=player_intelligence,
-        )
-        analysis_store.save_analysis_snapshot(
-            analysis_type="prédiction_manuelle",
-            league_id=league_id,
-            season=analysis_season,
-            home_team_id=home_team,
-            away_team_id=away_team,
-            prediction=pred,
-            score_prediction=score_prediction,
-            player_intelligence=player_intelligence,
-            model_details=details,
-            cross_insight=cross_insight,
-            context={
-                "selected_seasons": seasons_with_data,
-                "home_name": home_name,
-                "away_name": away_name,
-                "historical_match_count": int(len(matches_df)),
-            },
-        )
-
         ui.section_label("Ce que ces informations représentent")
         st.dataframe(
             _match_context_table(league_map[league_id], seasons_with_data, matches_df, home_name, away_name),
@@ -643,6 +701,7 @@ def _build_rankings(
     league_id: int,
     season: int,
     horizon_days: int = 60,
+    progress_callback=None,
 ) -> pd.DataFrame:
     rows = []
     fixtures = prediction_helpers.upcoming_fixtures(
@@ -650,11 +709,22 @@ def _build_rankings(
         team_ids=team_options,
         days_ahead=horizon_days,
     )
-    for match in fixtures.itertuples():
+    total_fixtures = len(fixtures)
+    if progress_callback:
+        progress_callback(0, max(1, total_fixtures), "Préparation des matchs programmés")
+    for index, match in enumerate(fixtures.itertuples(), start=1):
         home_team = int(match.home_team_id)
         away_team = int(match.away_team_id)
         fixture_id = int(match.fixture_id)
         fixture_season = int(match.season or season)
+        home_name = team_options[home_team]
+        away_name = team_options[away_team]
+        if progress_callback:
+            progress_callback(
+                index - 1,
+                total_fixtures,
+                f"Analyse de {home_name} - {away_name}",
+            )
         historical_context = prediction_helpers.load_historical_context(
             int(match.league_id),
             match.date,
@@ -667,8 +737,6 @@ def _build_rankings(
             match_date=match.date,
         )
         api_signal = cross_insight_service.load_fixture_api_signal(fixture_id)
-        home_name = team_options[home_team]
-        away_name = team_options[away_team]
         final = _calculate_final_prediction(
             historical_context,
             home_team,
@@ -767,6 +835,14 @@ def _build_rankings(
                 ),
             }
         )
+        if progress_callback:
+            progress_callback(
+                index,
+                total_fixtures,
+                f"{home_name} - {away_name} traité",
+            )
+    if not total_fixtures and progress_callback:
+        progress_callback(1, 1, "Aucun match à traiter")
     return (
         pd.DataFrame(rows)
         .sort_values(
@@ -874,15 +950,30 @@ def _show_best_predictions():
         width="stretch",
         key="prediction_ranking_submit",
     ):
-        rankings = _build_rankings(
-            matches_df,
-            selected_options,
-            int(top_limit),
-            league_id=league_id,
-            horizon_days=int(horizon_days),
-            season=lineup_service.resolve_player_season(
-                list(selected_options), league_id, seasons_with_data
-            ),
+        progress_bar = st.progress(0.0, text="0 % — Préparation du classement")
+        progress_status = st.empty()
+        try:
+            progress_status.caption("Lecture de la saison et des matchs sélectionnés…")
+            rankings = _build_rankings(
+                matches_df,
+                selected_options,
+                int(top_limit),
+                league_id=league_id,
+                horizon_days=int(horizon_days),
+                season=lineup_service.resolve_player_season(
+                    list(selected_options), league_id, seasons_with_data
+                ),
+                progress_callback=lambda current, total, label: _update_visible_progress(
+                    progress_bar, progress_status, current, total, label
+                ),
+            )
+        except Exception as exc:
+            progress_bar.progress(1.0, text="Traitement interrompu")
+            progress_status.error(f"Impossible de générer le classement : {exc}")
+            return
+        progress_bar.progress(1.0, text="100 % — Classement terminé")
+        progress_status.success(
+            f"{len(rankings)} scénario(s) classé(s) et enregistré(s)."
         )
         ui.section_label("Classement")
         st.caption(
