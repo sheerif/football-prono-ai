@@ -2698,8 +2698,29 @@ def show():
                     )
                     report_key = f"{report_league_id}-{report_season}-{export_mode}-{report_title}-{selected_signature}"
                     if st.button("Générer le rapport PDF", type="primary", key="generate_pdf_report"):
-                        with st.spinner("Calcul des prédictions et mise en page du PDF…"):
-                            reports = pdf_report_service.build_fixture_reports(selected_fixtures)
+                        pdf_progress = st.progress(0.0, text="0 % — Préparation du rapport")
+                        pdf_status = st.empty()
+
+                        def update_pdf_progress(current, total, label):
+                            ratio = min(0.9, 0.9 * current / max(1, total))
+                            pdf_progress.progress(
+                                ratio,
+                                text=f"{int(round(ratio * 100))} % — {label}",
+                            )
+                            pdf_status.caption(
+                                f"Traitement : {current}/{total} · {label}"
+                            )
+
+                        try:
+                            reports = pdf_report_service.build_fixture_reports(
+                                selected_fixtures,
+                                progress_callback=update_pdf_progress,
+                            )
+                            pdf_progress.progress(
+                                0.95,
+                                text="95 % — Mise en page du document PDF",
+                            )
+                            pdf_status.caption("Création du fichier téléchargeable…")
                             st.session_state["pdf_report_data"] = pdf_report_service.build_pdf(
                                 reports,
                                 league=report_labels[int(report_league_id)],
@@ -2707,6 +2728,17 @@ def show():
                                 round_name=report_title,
                             )
                             st.session_state["pdf_report_key"] = report_key
+                        except Exception as exc:
+                            pdf_progress.progress(1.0, text="Traitement interrompu")
+                            pdf_status.error(f"Impossible de générer le PDF : {exc}")
+                        else:
+                            pdf_progress.progress(
+                                1.0,
+                                text="100 % — Rapport PDF terminé",
+                            )
+                            pdf_status.success(
+                                f"Rapport de {len(reports)} match(s) prêt."
+                            )
                     if st.session_state.get("pdf_report_key") == report_key:
                         filename_label = re.sub(
                             r"[^a-z0-9-]+",

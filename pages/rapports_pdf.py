@@ -52,10 +52,29 @@ def show() -> None:
     signature = ",".join(str(value) for value in sorted(selected["fixture_id"].astype(int)))
     key = f"{league_id}-{season}-{signature}"
     if st.button("Générer le PDF", type="primary", width="stretch"):
-        with st.spinner("Calcul des pronostics et création du rapport…"):
-            reports = pdf_report_service.build_fixture_reports(selected)
+        progress_bar = st.progress(0.0, text="0 % — Préparation du rapport")
+        progress_status = st.empty()
+
+        def update_progress(current, total, label):
+            ratio = min(0.9, 0.9 * current / max(1, total))
+            progress_bar.progress(ratio, text=f"{int(round(ratio * 100))} % — {label}")
+            progress_status.caption(f"Traitement : {current}/{total} · {label}")
+
+        try:
+            reports = pdf_report_service.build_fixture_reports(
+                selected,
+                progress_callback=update_progress,
+            )
+            progress_bar.progress(0.95, text="95 % — Mise en page du document PDF")
+            progress_status.caption("Création du fichier téléchargeable…")
             st.session_state["report_pdf_bytes"] = pdf_report_service.build_pdf(reports, league=labels[league_id], season=season_period(season), round_name=title)
             st.session_state["report_pdf_key"] = key
+        except Exception as exc:
+            progress_bar.progress(1.0, text="Traitement interrompu")
+            progress_status.error(f"Impossible de générer le PDF : {exc}")
+        else:
+            progress_bar.progress(1.0, text="100 % — Rapport PDF terminé")
+            progress_status.success(f"Rapport de {len(reports)} match(s) prêt.")
     if st.session_state.get("report_pdf_key") == key:
         safe = re.sub(r"[^a-z0-9-]+", "-", title.lower()).strip("-")
         st.success("Rapport prêt à télécharger.")

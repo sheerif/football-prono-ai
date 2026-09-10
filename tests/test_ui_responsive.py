@@ -60,6 +60,27 @@ class ResponsiveUiContractTests(unittest.TestCase):
         self.assertIn('job.get("status") == "partial"', sidebar_source)
         self.assertIn("st.warning(job.get(\"message\")", updates_source)
 
+    def test_every_long_user_action_has_visible_progress(self):
+        required_markers = {
+            "pages/prediction_ia.py": (
+                "Préparation de la prédiction",
+                "Préparation du classement",
+            ),
+            "pages/analyse_match.py": ("Préparation de l’analyse",),
+            "pages/rapports_pdf.py": ("Préparation du rapport",),
+            "pages/joueurs.py": ("Préparation…",),
+            "pages/matchs_a_venir.py": (
+                "Préparation des compositions et performances",
+                "Préparation du téléchargement",
+                "Préparation du rapport",
+            ),
+            "pages/data_management.py": ("ui.progress_bar_text(job)",),
+        }
+        for relative_path, markers in required_markers.items():
+            source = (ROOT / relative_path).read_text(encoding="utf-8")
+            for marker in markers:
+                self.assertIn(marker, source, f"{relative_path}: {marker}")
+
 
 if __name__ == "__main__":
     unittest.main()

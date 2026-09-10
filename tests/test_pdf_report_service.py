@@ -1,9 +1,48 @@
 import unittest
+from unittest.mock import patch
+
+import pandas as pd
 
 from services import pdf_report_service
 
 
 class PdfReportServiceTests(unittest.TestCase):
+    def test_fixture_report_progress_tracks_each_match(self):
+        fixtures = pd.DataFrame(
+            [
+                {
+                    "fixture_id": 42,
+                    "date": "2026-09-12T18:00:00",
+                    "league_id": 61,
+                    "league_name": "Ligue 1",
+                    "api_round": "Regular Season - 4",
+                    "home_name": "Paris",
+                    "away_name": "Marseille",
+                    "home_goals": None,
+                    "away_goals": None,
+                    "home_team_id": 1,
+                    "away_team_id": 2,
+                    "season": 2026,
+                }
+            ]
+        )
+        progress = []
+        with patch.object(
+            pdf_report_service,
+            "historical_context",
+            return_value=pd.DataFrame(),
+        ):
+            reports = pdf_report_service.build_fixture_reports(
+                fixtures,
+                progress_callback=lambda current, total, label: progress.append(
+                    (current, total, label)
+                ),
+            )
+
+        self.assertEqual(len(reports), 1)
+        self.assertEqual(progress[0], (0, 1, "Préparation des matchs du rapport"))
+        self.assertEqual(progress[-1], (1, 1, "Paris - Marseille traité"))
+
     def test_round_labels_are_readable(self):
         self.assertEqual(
             pdf_report_service.round_label("Regular Season - 12"), "Journée 12"

@@ -1192,13 +1192,28 @@ def show():
         )
         return
 
+    analysis_progress = st.progress(0.0, text="0 % — Préparation de l’analyse")
+    analysis_status = st.empty()
+
+    def update_analysis_progress(current: int, label: str) -> None:
+        ratio = min(1.0, max(0.0, current / 8))
+        analysis_progress.progress(
+            ratio,
+            text=f"{int(round(ratio * 100))} % — {label}",
+        )
+        analysis_status.caption(f"Traitement : étape {current}/8 · {label}")
+
+    update_analysis_progress(1, "Lecture des matchs historiques")
     matches_df = _load_matches_window(league_id, seasons_window)
     if matches_df.empty:
+        analysis_progress.progress(1.0, text="Traitement interrompu")
         st.warning("Aucun match disponible sur les saisons retenues.")
         return
 
+    update_analysis_progress(2, "Calcul des statistiques des deux équipes")
     home_stats = stats_service.compute_basic_stats(matches_df, home_team)
     away_stats = stats_service.compute_basic_stats(matches_df, away_team)
+    update_analysis_progress(3, "Calcul de la forme récente")
     home_results = _last_results(matches_df, home_team, 10)
     away_results = _last_results(matches_df, away_team, 10)
     home_view = _team_summary_metrics(
@@ -1223,6 +1238,7 @@ def show():
     home_defense = home_stats["goals_against"] / max(1, home_stats["played"])
     away_attack = away_stats["goals_for"] / max(1, away_stats["played"])
     away_defense = away_stats["goals_against"] / max(1, away_stats["played"])
+    update_analysis_progress(4, "Lecture des compositions et de la forme des joueurs")
     analysis_season = lineup_service.resolve_player_season(
         [home_team, away_team], league_id, seasons_window
     )
@@ -1232,10 +1248,12 @@ def show():
         league_id=league_id,
         season=analysis_season,
     )
+    update_analysis_progress(5, "Lecture des conseils API enregistrés")
     api_signal = cross_insight_service.load_upcoming_api_signal(
         home_team,
         away_team,
     )
+    update_analysis_progress(6, "Calcul des probabilités et du score probable")
     final = final_prediction_service.calculate(
         matches_df,
         home_team,
@@ -1255,6 +1273,7 @@ def show():
     score_prediction = final["score_prediction"]
     home_xg_summary = xg_service.summarize_team(matches_df, home_team)
     away_xg_summary = xg_service.summarize_team(matches_df, away_team)
+    update_analysis_progress(7, "Croisement des xG, statistiques et données tactiques")
     cross_insight = cross_insight_service.build_cross_insight(
         matches_df=matches_df,
         home_team=home_team,
@@ -1271,6 +1290,7 @@ def show():
         api_signal=api_signal,
         player_intelligence=player_intelligence,
     )
+    update_analysis_progress(8, "Enregistrement de l’analyse")
     analysis_store.save_analysis_snapshot(
         analysis_type="analyse_comparaison",
         league_id=league_id,
@@ -1288,6 +1308,10 @@ def show():
             "away_name": away_view["team_name"],
             "historical_match_count": int(len(matches_df)),
         },
+    )
+    analysis_progress.progress(1.0, text="100 % — Analyse terminée et enregistrée")
+    analysis_status.success(
+        f"Fiche {home_view['team_name']} - {away_view['team_name']} prête."
     )
 
     _render_match_header(

@@ -97,11 +97,20 @@ def historical_context(league_id: int, kickoff: object) -> pd.DataFrame:
     )
 
 
-def build_fixture_reports(fixtures: pd.DataFrame) -> list[dict]:
+def build_fixture_reports(fixtures: pd.DataFrame, progress_callback=None) -> list[dict]:
     """Calcule les rapports sans jamais intégrer un résultat postérieur au match."""
     reports: list[dict] = []
     contexts: dict[str, pd.DataFrame] = {}
-    for fixture in fixtures.itertuples(index=False):
+    total = len(fixtures)
+    if progress_callback:
+        progress_callback(0, max(1, total), "Préparation des matchs du rapport")
+    for index, fixture in enumerate(fixtures.itertuples(index=False), start=1):
+        if progress_callback:
+            progress_callback(
+                index - 1,
+                total,
+                f"Analyse de {fixture.home_name} - {fixture.away_name}",
+            )
         kickoff = str(fixture.date)
         context = contexts.setdefault(
             kickoff, historical_context(int(fixture.league_id), kickoff)
@@ -121,6 +130,8 @@ def build_fixture_reports(fixtures: pd.DataFrame) -> list[dict]:
         }
         if context.empty:
             reports.append({**base, "available": False, "reason": "Historique insuffisant avant ce match."})
+            if progress_callback:
+                progress_callback(index, total, f"{fixture.home_name} - {fixture.away_name} traité")
             continue
         intelligence = lineup_service.get_match_intelligence(
             fixture_id=int(fixture.fixture_id), home_team_id=int(fixture.home_team_id),
@@ -151,6 +162,10 @@ def build_fixture_reports(fixtures: pd.DataFrame) -> list[dict]:
             "risk": str(prediction.get("risk_level") or "modéré"),
             "market": str(prediction.get("recommended_market") or "PRUDENCE"),
         })
+        if progress_callback:
+            progress_callback(index, total, f"{fixture.home_name} - {fixture.away_name} traité")
+    if not total and progress_callback:
+        progress_callback(1, 1, "Aucun match à traiter")
     return reports
 
 
