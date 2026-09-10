@@ -170,6 +170,14 @@ disponible dans [`docs/statistics-glossary.md`](docs/statistics-glossary.md).
 La même documentation est présentée sous forme de légende contextuelle dans
 chacun des six onglets d’une prédiction.
 
+### Sauvegarde et restauration
+
+Le code, la base Turso et les secrets sont sauvegardés séparément. La procédure
+de copie distante, de contrôle et de restauration est documentée dans
+[`docs/backup-restore.md`](docs/backup-restore.md). Le script
+`scripts/backup_turso.sh` crée une copie indépendante de la base sans consommer
+de requête API-Football.
+
 Chaque tentative xG génère également une ligne immuable dans
 `xg_ingestion_audit` avec un identifiant de lot, la fixture, l'endpoint et les
 paramètres sans secret, les heures de début et de fin, le statut, la réponse
