@@ -800,7 +800,24 @@ def _sync_league_metadata(session, league_id: int, season: int | None = None):
 
 def _get_or_create_team(session, team_info: dict, league_id: int = None):
     tid = int(team_info.get("id") or team_info.get("team", {}).get("id"))
-    team = session.get(models.Team, tid)
+    # ``Session.get`` ne retrouve pas toujours une instance encore dans
+    # ``session.new`` avant le flush. Une réponse /fixtures répète la même
+    # équipe sur plusieurs matchs : sans ce contrôle, le commit tente alors
+    # plusieurs INSERT pour la même clé primaire.
+    try:
+        pending_entities = iter(session.new)
+    except TypeError:
+        pending_entities = iter(())
+    team = next(
+        (
+            candidate
+            for candidate in pending_entities
+            if isinstance(candidate, models.Team) and candidate.id == tid
+        ),
+        None,
+    )
+    if team is None:
+        team = session.get(models.Team, tid)
     if team:
         team.name = team_info.get("name") or team_info.get("team", {}).get("name") or team.name
         team.logo = team_info.get("logo") or team_info.get("team", {}).get("logo") or team.logo

@@ -4,6 +4,7 @@ import json
 from unittest.mock import Mock, patch
 
 from sqlalchemy import create_engine, text
+from sqlalchemy.orm import sessionmaker
 
 from database import models
 from database.database import engine
@@ -11,6 +12,30 @@ from services import background_jobs, import_service
 
 
 class DatabaseRuntimeTests(unittest.TestCase):
+    def test_repeated_team_in_same_batch_is_inserted_once(self):
+        test_engine = create_engine("sqlite://")
+        models.Base.metadata.create_all(test_engine)
+        session = sessionmaker(bind=test_engine)()
+        try:
+            first = import_service._get_or_create_team(
+                session,
+                {"id": 759, "name": "Viking", "logo": "first.png"},
+                league_id=2,
+            )
+            second = import_service._get_or_create_team(
+                session,
+                {"id": 759, "name": "Viking", "logo": "latest.png"},
+                league_id=2,
+            )
+            session.commit()
+
+            self.assertIs(first, second)
+            self.assertEqual(session.query(models.Team).count(), 1)
+            self.assertEqual(session.get(models.Team, 759).logo, "latest.png")
+        finally:
+            session.close()
+            test_engine.dispose()
+
     def test_current_remote_schema_skips_slow_ddl_checks(self):
         previous = import_service._db_initialized
         import_service._db_initialized = False
