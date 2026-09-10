@@ -3,6 +3,7 @@ from dotenv import load_dotenv
 from sqlalchemy import create_engine, event
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import sessionmaker, declarative_base
+from sqlalchemy.pool import QueuePool
 
 load_dotenv()
 _turso_url = (os.getenv("TURSO_DATABASE_URL") or "").strip()
@@ -34,10 +35,20 @@ _is_local_sqlite = _url.drivername == "sqlite" and not _turso_enabled
 if _turso_enabled:
     from database import turso_http_dbapi
 
+    # ``sqlite://`` selects SingletonThreadPool by default.  Streamlit runs
+    # fragments and background synchronisations on several threads; that pool
+    # may then close a connection owned by another thread.  A bounded
+    # QueuePool gives each checkout exclusive ownership until it is returned.
     engine = create_engine(
         DATABASE_URL,
         module=turso_http_dbapi,
         creator=lambda: turso_http_dbapi.connect(_turso_url, _turso_token),
+        poolclass=QueuePool,
+        pool_size=5,
+        max_overflow=10,
+        pool_timeout=30,
+        pool_recycle=300,
+        pool_use_lifo=True,
         pool_pre_ping=True,
     )
 else:
