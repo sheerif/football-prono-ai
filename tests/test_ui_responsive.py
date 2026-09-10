@@ -81,6 +81,15 @@ class ResponsiveUiContractTests(unittest.TestCase):
             for marker in markers:
                 self.assertIn(marker, source, f"{relative_path}: {marker}")
 
+    def test_xg_page_is_registered_in_the_custom_navigation(self):
+        sidebar = (ROOT / "components" / "sidebar.py").read_text(encoding="utf-8")
+        ui_source = (ROOT / "components" / "ui.py").read_text(encoding="utf-8")
+        page = (ROOT / "pages" / "xg.py").read_text(encoding="utf-8")
+
+        self.assertIn('"xG": "pages/xg.py"', sidebar)
+        self.assertIn('"xG": "xG"', ui_source)
+        self.assertIn('ui.run_direct_page("xG", show)', page)
+
 
 if __name__ == "__main__":
     unittest.main()
