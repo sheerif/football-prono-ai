@@ -226,11 +226,20 @@ class DatabaseRuntimeTests(unittest.TestCase):
             "ignorée",
             details='{"reason":"Synchronisation récente, aucun appel API relancé."}',
         )
+        pandas_null_error = import_service.update_log_message(
+            "championnats_en_cours",
+            "effectuée",
+            reason="Championnats en cours mis à jour.",
+            error=float("nan"),
+        )
 
         self.assertIn("succès", success)
         self.assertIn("déjà à jour", ignored)
         self.assertEqual(
             detailed, "Synchronisation récente, aucun appel API relancé."
+        )
+        self.assertEqual(
+            pandas_null_error, "Championnats en cours mis à jour."
         )
 
     def test_sqlite_connections_enable_integrity_and_lock_protection(self):

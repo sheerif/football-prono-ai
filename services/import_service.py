@@ -464,8 +464,9 @@ def update_log_message(
 ) -> str:
     """Produit une explication lisible, même pour les anciens journaux incomplets."""
     for value in (error, reason):
-        if value is not None and str(value).strip() not in {"", "None", "null"}:
-            return str(value).strip()
+        rendered = "" if value is None else str(value).strip()
+        if rendered.casefold() not in {"", "none", "null", "nan", "nat", "<na>"}:
+            return rendered
 
     parsed_details = details
     if isinstance(parsed_details, str):
@@ -476,8 +477,9 @@ def update_log_message(
     if isinstance(parsed_details, dict):
         for key in ("reason", "message"):
             value = parsed_details.get(key)
-            if value is not None and str(value).strip() not in {"", "None", "null"}:
-                return str(value).strip()
+            rendered = "" if value is None else str(value).strip()
+            if rendered.casefold() not in {"", "none", "null", "nan", "nat", "<na>"}:
+                return rendered
 
     label = _UPDATE_EVENT_LABELS.get(
         str(event_type), str(event_type).replace("_", " ").capitalize()
