@@ -14,6 +14,7 @@ class StatisticsGuideTests(unittest.TestCase):
             "form",
             "lineups",
             "h2h",
+            "xg",
             "statistics",
             "prediction",
         }
@@ -40,10 +41,15 @@ class StatisticsGuideTests(unittest.TestCase):
             self.assertIn(expected, all_text)
 
     def test_both_prediction_pages_render_all_contextual_legends(self):
+        shared_sections = set(statistics_guide.GLOSSARY) - {"xg"}
         for relative_path in ("pages/matchs_a_venir.py", "pages/analyse_match.py"):
             source = (ROOT / relative_path).read_text(encoding="utf-8")
-            for section in statistics_guide.GLOSSARY:
+            for section in shared_sections:
                 self.assertIn(f'statistics_guide.render("{section}")', source)
+        analysis_source = (ROOT / "pages/analyse_match.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('statistics_guide.render("xg")', analysis_source)
 
     def test_persistent_documentation_covers_method_and_limits(self):
         documentation = (ROOT / "docs/statistics-glossary.md").read_text(

@@ -124,7 +124,28 @@ def _load_matches_window(league_id: int, seasons):
         placeholders = ",".join([f":s{i}" for i in range(len(seasons))])
         params = {"lid": league_id}
         params.update({f"s{i}": season for i, season in enumerate(seasons)})
-        query = text(f"SELECT * FROM matches WHERE league_id = :lid AND season IN ({placeholders}) ORDER BY date")
+        query = text(
+            f"""
+            SELECT m.*,
+                   home_stats.expected_goals AS home_xg,
+                   away_stats.expected_goals AS away_xg,
+                   home_stats.goals_prevented AS home_goals_prevented,
+                   away_stats.goals_prevented AS away_goals_prevented,
+                   home_stats.retrieved_at AS home_xg_retrieved_at,
+                   away_stats.retrieved_at AS away_xg_retrieved_at,
+                   home_stats.payload_sha256 AS home_xg_payload_sha256,
+                   away_stats.payload_sha256 AS away_xg_payload_sha256
+            FROM matches m
+            LEFT JOIN fixture_team_statistics home_stats
+              ON home_stats.fixture_id = m.fixture_id
+             AND home_stats.team_id = m.home_team_id
+            LEFT JOIN fixture_team_statistics away_stats
+              ON away_stats.fixture_id = m.fixture_id
+             AND away_stats.team_id = m.away_team_id
+            WHERE m.league_id = :lid AND m.season IN ({placeholders})
+            ORDER BY m.date
+            """
+        )
         return pd.read_sql(query, engine, params=params)
     except Exception:
         return pd.DataFrame(columns=['fixture_id', 'league_id', 'season', 'date', 'home_team_id', 'away_team_id', 'home_goals', 'away_goals', 'winner', 'status'])
@@ -160,6 +181,54 @@ def _match_xg_label(match, team_id: int) -> str:
     if pd.isna(own) or pd.isna(against):
         return "—"
     return f"{float(own):.2f}–{float(against):.2f}"
+
+
+def _team_xg_history_table(
+    matches_df: pd.DataFrame,
+    team_id: int,
+    team_options: dict[int, str],
+    limit: int = 8,
+) -> pd.DataFrame:
+    """Détaille les derniers matchs possédant les deux valeurs xG."""
+    rows = matches_df[
+        (matches_df["home_team_id"] == int(team_id))
+        | (matches_df["away_team_id"] == int(team_id))
+    ].copy()
+    if rows.empty or "home_xg" not in rows or "away_xg" not in rows:
+        return pd.DataFrame()
+    rows = rows.dropna(subset=["home_xg", "away_xg"])
+    rows["_xg_date"] = pd.to_datetime(rows["date"], errors="coerce", utc=True)
+    rows = rows.sort_values("_xg_date", ascending=False).head(max(1, int(limit)))
+    result = []
+    for _, match in rows.iterrows():
+        is_home = int(match["home_team_id"]) == int(team_id)
+        opponent_id = int(
+            match["away_team_id"] if is_home else match["home_team_id"]
+        )
+        own = float(match["home_xg"] if is_home else match["away_xg"])
+        against = float(match["away_xg"] if is_home else match["home_xg"])
+        retrieved_at = match.get(
+            "home_xg_retrieved_at" if is_home else "away_xg_retrieved_at"
+        )
+        result.append(
+            {
+                "Date": _format_match_datetime(match.get("date")),
+                "Adversaire": team_options.get(opponent_id, str(opponent_id)),
+                "Lieu": "Domicile" if is_home else "Extérieur",
+                "Score réel": _score_label(
+                    match.get("home_goals"), match.get("away_goals")
+                ),
+                "xG": round(own, 2),
+                "xGA": round(against, 2),
+                "Différentiel": round(own - against, 2),
+                "Récupéré le": (
+                    _format_match_datetime(retrieved_at)
+                    if pd.notna(retrieved_at)
+                    else "Non renseigné"
+                ),
+            }
+        )
+    return pd.DataFrame(result)
 
 
 def _team_matches_history_table(matches_df: pd.DataFrame, team_id: int, team_options: dict[int, str]) -> pd.DataFrame:
@@ -1324,12 +1393,13 @@ def show():
         score_prediction,
     )
 
-    overview_tab, form_tab, tactical_tab, h2h_tab, stats_tab, prediction_tab = st.tabs(
+    overview_tab, form_tab, tactical_tab, h2h_tab, xg_tab, stats_tab, prediction_tab = st.tabs(
         [
             "Vue d'ensemble",
             "Forme",
             "Compositions & tactique",
             "Face-à-face",
+            "xG",
             "Statistiques",
             "Prédiction",
         ]
@@ -1524,36 +1594,80 @@ def show():
             )
             _render_h2h_list(h2h_table)
 
-    with stats_tab:
-        statistics_guide.render("statistics")
-        st.subheader("Contexte statistique")
+    with xg_tab:
+        statistics_guide.render("xg")
+        st.subheader("Expected Goals (xG)")
+        st.caption(
+            "Comparaison fondée sur les huit matchs les plus récents possédant "
+            "les xG des deux équipes. Ces valeurs sont observées après les matchs."
+        )
         if home_xg_summary["matches"] or away_xg_summary["matches"]:
-            st.markdown("#### xG observés — 8 derniers matchs disponibles")
-            xg_columns = st.columns(6)
-            for offset, name, summary in (
-                (0, home_view["team_name"], home_xg_summary),
-                (3, away_view["team_name"], away_xg_summary),
+            comparison_columns = st.columns(2)
+            for column, name, summary in (
+                (comparison_columns[0], home_view["team_name"], home_xg_summary),
+                (comparison_columns[1], away_view["team_name"], away_xg_summary),
             ):
-                xg_columns[offset].metric(
-                    f"xG / match · {name}",
-                    summary["xg_for"] if summary["xg_for"] is not None else "—",
-                    help="Qualité moyenne des occasions créées sur les huit derniers matchs couverts.",
-                )
-                xg_columns[offset + 1].metric(
-                    "xGA / match",
-                    summary["xg_against"] if summary["xg_against"] is not None else "—",
-                    help="Qualité moyenne des occasions concédées à l’adversaire.",
-                )
-                difference = summary["difference"]
-                xg_columns[offset + 2].metric(
-                    "Différentiel xG",
-                    f"{difference:+.2f}" if difference is not None else "—",
-                    help=(
-                        "xG par match moins xGA par match. Une valeur positive est favorable. "
-                        f"{summary['matches']} match(s) avec xG sur "
-                        f"{summary['window_matches']} dans la fenêtre."
-                    ),
-                )
+                with column:
+                    with st.container(border=True):
+                        st.markdown(f"### {name}")
+                        metrics = st.columns(2)
+                        metrics[0].metric(
+                            "xG / match",
+                            summary["xg_for"] if summary["xg_for"] is not None else "—",
+                            help="Qualité moyenne des occasions créées.",
+                        )
+                        metrics[1].metric(
+                            "xGA / match",
+                            summary["xg_against"] if summary["xg_against"] is not None else "—",
+                            help="Qualité moyenne des occasions concédées.",
+                        )
+                        difference = summary["difference"]
+                        metrics[0].metric(
+                            "Différentiel xG",
+                            f"{difference:+.2f}" if difference is not None else "—",
+                            help="xG par match moins xGA par match. Positif = favorable.",
+                        )
+                        coverage = round(float(summary["coverage"] or 0) * 100)
+                        metrics[1].metric(
+                            "Couverture",
+                            f"{coverage} %",
+                            help=(
+                                f"{summary['matches']} match(s) avec deux xG sur "
+                                f"{summary['window_matches']} match(s) récents."
+                            ),
+                        )
+
+            home_difference = home_xg_summary.get("difference")
+            away_difference = away_xg_summary.get("difference")
+            if home_difference is not None and away_difference is not None:
+                gap = round(float(home_difference) - float(away_difference), 2)
+                if abs(gap) < 0.1:
+                    st.info("Les différentiels xG récents des deux équipes sont très proches.")
+                else:
+                    favored = (
+                        home_view["team_name"] if gap > 0 else away_view["team_name"]
+                    )
+                    st.info(
+                        f"Avantage récent au différentiel xG : {favored} "
+                        f"({abs(gap):.2f} xG par match d’écart)."
+                    )
+
+            st.markdown("#### Détail des matchs couverts")
+            home_xg_tab, away_xg_tab = st.tabs(
+                [home_view["team_name"], away_view["team_name"]]
+            )
+            for tab, team_id, name in (
+                (home_xg_tab, home_team, home_view["team_name"]),
+                (away_xg_tab, away_team, away_view["team_name"]),
+            ):
+                with tab:
+                    xg_history = _team_xg_history_table(
+                        matches_df, team_id, team_options, limit=8
+                    )
+                    if xg_history.empty:
+                        st.info(f"Aucun match avec xG complet pour {name}.")
+                    else:
+                        st.dataframe(xg_history, hide_index=True, width="stretch")
             retrievals = [
                 value
                 for value in (
@@ -1570,6 +1684,10 @@ def show():
             )
         else:
             st.info("Aucun xG historique n’est encore stocké pour ces équipes.")
+
+    with stats_tab:
+        statistics_guide.render("statistics")
+        st.subheader("Contexte statistique")
         completed_matches = matches_df.dropna(
             subset=["home_goals", "away_goals"]
         )

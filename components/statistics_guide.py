@@ -49,6 +49,14 @@ GLOSSARY = {
         ("Attaque du radar", "Indice visuel fondé sur les buts marqués.", "Buts par match ramenés sur une échelle 0–100.", "Ce n’est pas un xG ni une probabilité."),
         ("Défense du radar", "Indice visuel inversant les buts encaissés.", "Moins de buts encaissés donne une valeur plus élevée, bornée à 100.", "Sert à comparer les profils, pas à prédire seul le score."),
     ],
+    "xg": [
+        ("xG", "Qualité cumulée des occasions créées.", "Somme des probabilités de but attribuées aux tirs par API-Football.", "Un total de 2,0 xG indique des occasions valant environ deux buts en moyenne, pas la certitude de marquer deux fois."),
+        ("xG / match", "Qualité moyenne des occasions créées.", "Somme des xG produits ÷ matchs couverts, sur les 8 plus récents.", "Plus élevé = davantage ou de meilleures occasions."),
+        ("xGA / match", "Qualité moyenne des occasions concédées.", "xG produits par les adversaires ÷ matchs couverts.", "Plus faible = moins d’occasions dangereuses concédées."),
+        ("Différentiel xG", "Équilibre entre occasions créées et concédées.", "xG par match − xGA par match.", "Positif = l’équipe crée de meilleures occasions qu’elle n’en concède."),
+        ("Couverture", "Part des matchs récents possédant deux valeurs xG.", "Matchs avec xG domicile et extérieur ÷ fenêtre de 8 matchs.", "Une faible couverture rend les moyennes moins représentatives."),
+        ("Buts projetés", "Estimation du modèle avant la rencontre.", "Paramètres calculés par le modèle Poisson à partir de l’historique.", "Ce ne sont pas les xG observés après les matchs fournis par l’API."),
+    ],
     "prediction": [
         ("Buts projetés", "Nombre moyen de buts estimé avant le match pour chaque équipe.", "Paramètres de la matrice de scores Poisson, calculés avec l’historique antérieur.", "Ce ne sont pas les xG observés fournis après un match."),
         ("Score probable", "Score exact ayant la plus forte probabilité individuelle.", "Cellule la plus probable de la matrice de scores.", "Même le score classé premier peut rester peu probable."),
