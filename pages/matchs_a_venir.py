@@ -11,12 +11,13 @@ from sqlalchemy import text
 from components import charts, ranking_summary, statistics_guide, tactical, ui
 from database.database import engine
 from services.api_football import ApiFootballClient
+from services.api_response_store import archive_response
 from services import analysis_store, cross_insight_service, final_prediction_service, lineup_service, pdf_report_service, prediction_helpers, ranking_service, xg_service
 from services import schema_guard, sync_registry
 from services.season_format import season_period
 
 
-api_client = ApiFootballClient()
+api_client = ApiFootballClient(response_archiver=archive_response)
 PREVIEW_CACHE_VERSION = "api-refinement-v4"
 
 

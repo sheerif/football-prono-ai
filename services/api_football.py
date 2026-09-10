@@ -3,6 +3,7 @@ import datetime
 import os
 import threading
 import time
+from collections.abc import Callable
 
 import requests
 from dotenv import load_dotenv
@@ -125,6 +126,7 @@ class ApiFootballClient:
         *,
         api_key: str | None = None,
         session: requests.Session | None = None,
+        response_archiver: Callable | None = None,
     ):
         self.base = BASE_URL
         self.api_key = (
@@ -134,6 +136,7 @@ class ApiFootballClient:
         ).strip()
         self.headers = {"x-apisports-key": self.api_key}
         self.session = session or _build_session(_retry_count())
+        self.response_archiver = response_archiver
         self.last_rate_limit = {}
         self.request_count = 0
 
@@ -190,30 +193,47 @@ class ApiFootballClient:
             if daily_remaining is not None and daily_remaining <= 0:
                 _block_daily_requests()
         try:
+            payload = resp.json()
+        except ValueError as json_exc:
+            payload = {
+                "_archive_error": "Réponse JSON invalide",
+                "_raw_text": str(getattr(resp, "text", "")),
+            }
+            self._archive(path, params, payload, response_headers, resp)
+            raise RuntimeError(
+                "API-Football a renvoyé une réponse JSON invalide."
+            ) from json_exc
+
+        # Une réponse reçue doit être durable avant toute interprétation métier,
+        # y compris lorsqu'API-Football renvoie une erreur ou un quota épuisé.
+        self._archive(path, params, payload, response_headers, resp)
+
+        try:
             resp.raise_for_status()
         except HTTPError as exc:
             if getattr(resp, "status_code", None) != 429:
                 raise
-            try:
-                rejected_payload = resp.json()
-            except ValueError:
-                rejected_payload = {}
-            detail = self._error_detail(rejected_payload) or str(exc)
+            detail = self._error_detail(payload) or str(exc)
             if _is_daily_quota_error(detail):
                 _block_daily_requests()
             raise RuntimeError(f"API-Football quota 429 : {detail}") from exc
-        try:
-            payload = resp.json()
-        except ValueError as exc:
-            raise RuntimeError(
-                "API-Football a renvoyé une réponse JSON invalide."
-            ) from exc
         detail = self._error_detail(payload)
         if detail:
             if _is_daily_quota_error(detail):
                 _block_daily_requests()
             raise RuntimeError(f"API-Football a refusé la requête : {detail}")
         return payload
+
+    def _archive(self, path, params, payload, response_headers, response) -> None:
+        if self.response_archiver is None:
+            return
+        self.response_archiver(
+            endpoint=str(path),
+            params=dict(params or {}),
+            payload=payload,
+            response_headers=response_headers,
+            http_status=getattr(response, "status_code", None),
+        )
 
     def get_leagues(self, country=None):
         params = {"country": country} if country else None

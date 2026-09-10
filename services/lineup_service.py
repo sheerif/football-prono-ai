@@ -9,9 +9,10 @@ from sqlalchemy import text
 from database import models
 from database.database import SessionLocal, engine
 from services.api_football import ApiFootballClient
+from services.api_response_store import archive_response
 
 
-client = ApiFootballClient()
+client = ApiFootballClient(response_archiver=archive_response)
 _schema_ready = False
 
 FORMATION_PLANS = {

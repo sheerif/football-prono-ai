@@ -9,9 +9,10 @@ from sqlalchemy import text
 from database.database import engine
 from services import import_service, lineup_service, player_service, sync_registry, xg_service
 from services.api_football import ApiFootballClient
+from services.api_response_store import archive_response
 
 
-client = ApiFootballClient()
+client = ApiFootballClient(response_archiver=archive_response)
 
 
 def _nonnegative_float_env(name: str, default: float) -> float:

@@ -46,6 +46,57 @@ class ApiFootballClientTests(unittest.TestCase):
         )
         response.raise_for_status.assert_called_once_with()
 
+    def test_network_response_is_archived_before_it_is_returned(self):
+        response = Mock()
+        response.status_code = 200
+        response.headers = {"x-ratelimit-requests-remaining": "7499"}
+        response.json.return_value = {"response": [{"id": 7}]}
+        session = Mock()
+        session.get.return_value = response
+        archiver = Mock()
+        client = ApiFootballClient(
+            api_key="test-key",
+            session=session,
+            response_archiver=archiver,
+        )
+
+        payload = client.get_teams(61, 2026)
+
+        self.assertEqual(payload, {"response": [{"id": 7}]})
+        archiver.assert_called_once_with(
+            endpoint="/teams",
+            params={"league": 61, "season": 2026},
+            payload=payload,
+            response_headers=response.headers,
+            http_status=200,
+        )
+
+    def test_error_payload_is_archived_before_business_error(self):
+        events = []
+        response = Mock()
+        response.status_code = 200
+        response.headers = {}
+        response.json.return_value = {
+            "errors": {"requests": "request limit for the day"}
+        }
+        response.raise_for_status.side_effect = lambda: events.append("http")
+        session = Mock()
+        session.get.return_value = response
+
+        def archive(**_kwargs):
+            events.append("archive")
+
+        client = ApiFootballClient(
+            api_key="test-key",
+            session=session,
+            response_archiver=archive,
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "request limit for the day"):
+            client.get_leagues()
+
+        self.assertEqual(events, ["archive", "http"])
+
     def test_api_payload_errors_are_not_treated_as_empty_data(self):
         response = Mock()
         response.json.return_value = {"errors": {"rateLimit": "quota reached"}}

@@ -1,6 +1,7 @@
 import logging
 from typing import List
 from .api_football import ApiFootballClient
+from .api_response_store import archive_response
 from database.database import engine, persistence_mode, SessionLocal
 from database import models
 import datetime
@@ -14,14 +15,14 @@ from requests.exceptions import HTTPError
 from services.season_format import season_range
 
 logger = logging.getLogger(__name__)
-client = ApiFootballClient()
+client = ApiFootballClient(response_archiver=archive_response)
 DEFAULT_LEAGUE_IDS = [61, 39, 140, 135, 78, 2]
 DEFAULT_START_SEASON = 2016
 # Do not pin the application to a historic season.  The API's current
 # football season is represented by the current calendar year and can still
 # be overridden explicitly with AUTO_REFRESH_END_SEASON.
 DEFAULT_END_SEASON = datetime.datetime.now(datetime.UTC).year
-REMOTE_SCHEMA_VERSION = "2026.09.09.1"
+REMOTE_SCHEMA_VERSION = "2026.09.10.1"
 _db_initialized = False
 _db_init_lock = threading.Lock()
 
@@ -75,7 +76,8 @@ def init_db():
         _ensure_update_log_table()
         _ensure_league_seasons_table()
         _ensure_fixture_api_cache_tables()
-        from services import schema_guard, sync_registry
+        from services import api_response_store, schema_guard, sync_registry
+        api_response_store.ensure_table()
         schema_guard.ensure_performance_indexes()
         sync_registry.ensure_table()
         config = get_auto_refresh_config()
