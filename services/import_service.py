@@ -444,6 +444,58 @@ def _json_dump(value) -> str:
         return str(value)
 
 
+_UPDATE_EVENT_LABELS = {
+    "championnats_en_cours": "Mise à jour des championnats en cours",
+    "historique_auto": "Synchronisation de l’historique",
+    "import_manuel": "Import manuel",
+    "synchronisation_conseils_api": "Synchronisation des conseils API",
+    "synchronisation_xg": "Synchronisation des xG",
+    "synchronisation_globale": "Synchronisation globale",
+}
+
+
+def update_log_message(
+    event_type: str,
+    status: str,
+    *,
+    reason=None,
+    error=None,
+    details=None,
+) -> str:
+    """Produit une explication lisible, même pour les anciens journaux incomplets."""
+    for value in (error, reason):
+        if value is not None and str(value).strip() not in {"", "None", "null"}:
+            return str(value).strip()
+
+    parsed_details = details
+    if isinstance(parsed_details, str):
+        try:
+            parsed_details = json.loads(parsed_details)
+        except (TypeError, ValueError):
+            parsed_details = None
+    if isinstance(parsed_details, dict):
+        for key in ("reason", "message"):
+            value = parsed_details.get(key)
+            if value is not None and str(value).strip() not in {"", "None", "null"}:
+                return str(value).strip()
+
+    label = _UPDATE_EVENT_LABELS.get(
+        str(event_type), str(event_type).replace("_", " ").capitalize()
+    )
+    normalized_status = str(status).casefold()
+    if normalized_status in {"effectuée", "terminee", "terminée", "done", "complete"}:
+        return f"{label} terminée avec succès."
+    if normalized_status in {"ignorée", "ignoree", "ignored"}:
+        return f"{label} ignorée : les données étaient déjà à jour, aucun appel API nécessaire."
+    if normalized_status in {"partielle", "partial"}:
+        return f"{label} partiellement terminée ; consultez les détails de la tâche."
+    if normalized_status in {"en_attente_quota", "waiting_quota"}:
+        return f"{label} suspendue jusqu’au renouvellement du quota API."
+    if normalized_status in {"erreur", "error"}:
+        return f"{label} interrompue par une erreur non détaillée."
+    return f"{label} — statut : {status}."
+
+
 def record_update_log(
     event_type: str,
     status: str,
@@ -457,6 +509,12 @@ def record_update_log(
     error: str | None = None,
 ) -> int:
     _ensure_update_log_table()
+    reason = reason or update_log_message(
+        event_type,
+        status,
+        error=error,
+        details=details,
+    )
     finished_at = finished_at or utc_now().isoformat()
     started_at = started_at or finished_at
     duration_seconds = None

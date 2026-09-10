@@ -214,6 +214,25 @@ class DatabaseRuntimeTests(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertEqual(count, 1)
 
+    def test_update_log_message_explains_rows_without_comment(self):
+        success = import_service.update_log_message(
+            "championnats_en_cours", "effectuée"
+        )
+        ignored = import_service.update_log_message(
+            "championnats_en_cours", "ignorée"
+        )
+        detailed = import_service.update_log_message(
+            "historique_auto",
+            "ignorée",
+            details='{"reason":"Synchronisation récente, aucun appel API relancé."}',
+        )
+
+        self.assertIn("succès", success)
+        self.assertIn("déjà à jour", ignored)
+        self.assertEqual(
+            detailed, "Synchronisation récente, aucun appel API relancé."
+        )
+
     def test_sqlite_connections_enable_integrity_and_lock_protection(self):
         if engine.dialect.name != "sqlite":
             self.skipTest("SQLite-specific runtime settings")

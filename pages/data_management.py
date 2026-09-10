@@ -75,7 +75,7 @@ def _recent_logs(limit: int = 6) -> pd.DataFrame:
     try:
         logs = pd.read_sql(
             """
-            SELECT event_type, status, started_at, finished_at, reason, error
+            SELECT event_type, status, started_at, finished_at, reason, details, error
             FROM update_log
             ORDER BY finished_at DESC, id DESC
             LIMIT :limit
@@ -94,7 +94,13 @@ def _recent_logs(limit: int = 6) -> pd.DataFrame:
                 "Statut": row.status,
                 "Début": _format_datetime(row.started_at),
                 "Fin": _format_datetime(row.finished_at),
-                "Message": row.error or row.reason or "",
+                "Message": import_service.update_log_message(
+                    row.event_type,
+                    row.status,
+                    reason=row.reason,
+                    error=row.error,
+                    details=row.details,
+                ),
             }
             for row in logs.itertuples()
         ]
