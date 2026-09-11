@@ -121,6 +121,19 @@ queries intentionally use SQLite features such as `datetime(...)`, `PRAGMA`
 and `ON CONFLICT`. Set `DATABASE_URL` to a SQLite URL (the default is
 `sqlite:///football.db`). Other SQLAlchemy engines are not currently supported.
 
+Lorsque Turso est activé, le mode par défaut est désormais `replica` : le SDK
+Turso copie la base dans `football-cache.db`, toutes les lectures de l'interface
+restent locales et les écritures sont poussées vers la base distante après leur
+validation locale. Les changements effectués par un autre processus sont
+récupérés de manière incrémentale, au maximum une fois par heure par défaut.
+Ce délai se règle avec `TURSO_SYNC_PULL_INTERVAL_SECONDS`.
+
+Le mode `TURSO_ACCESS_MODE=direct` reste disponible pour les traitements
+éphémères. Le workflow GitHub de minuit l'utilise afin de ne pas télécharger
+une copie complète de la base à chaque démarrage du runner. Ainsi, la navigation
+ne consomme plus de lignes lues sur Turso ; seuls les transferts de
+synchronisation et les écritures utiles atteignent le cloud.
+
 ## Checks
 
 ```bash

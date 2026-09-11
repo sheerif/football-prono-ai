@@ -21,6 +21,9 @@ jobs:
     env:
       API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
       TURSO_ENABLED: "true"
+      # Le runner est détruit après chaque exécution : une réplique locale
+      # retéléchargerait inutilement toute la base chaque nuit.
+      TURSO_ACCESS_MODE: "direct"
       TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
       TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
       AUTO_REFRESH_START_SEASON: "2016"

@@ -13,12 +13,15 @@ _turso_requested = os.getenv("TURSO_ENABLED", "false").lower() in {
 }
 _turso_config_error = None
 _turso_enabled = False
+_turso_access_mode = (os.getenv("TURSO_ACCESS_MODE") or "replica").strip().lower()
 
 if _turso_requested:
     if not _turso_url or not _turso_token:
         _turso_config_error = "URL ou jeton Turso manquant."
     elif not _turso_url.startswith(("libsql://", "sqlite+libsql://")):
         _turso_config_error = "TURSO_DATABASE_URL doit commencer par libsql://."
+    elif _turso_access_mode not in {"replica", "direct"}:
+        _turso_config_error = "TURSO_ACCESS_MODE doit valoir replica ou direct."
     else:
         _turso_enabled = True
 
@@ -32,7 +35,52 @@ else:
 _url = make_url(DATABASE_URL)
 _is_sqlite = _url.get_backend_name() == "sqlite"
 _is_local_sqlite = _url.drivername == "sqlite" and not _turso_enabled
-if _turso_enabled:
+_turso_replica_enabled = _turso_enabled and _turso_access_mode == "replica"
+_local_replica_path = os.path.abspath(
+    os.getenv("TURSO_LOCAL_DATABASE_PATH", "football-cache.db")
+)
+
+
+def _integer_env(name: str, default: int, minimum: int) -> int:
+    try:
+        return max(minimum, int(os.getenv(name, str(default))))
+    except (TypeError, ValueError):
+        return default
+
+
+if _turso_replica_enabled:
+    from database import turso_sync_dbapi
+
+    _pull_interval = _integer_env("TURSO_SYNC_PULL_INTERVAL_SECONDS", 3600, 60)
+    _push_retry = _integer_env("TURSO_SYNC_PUSH_RETRY_SECONDS", 300, 60)
+    _strict_push = os.getenv("TURSO_SYNC_STRICT_PUSH", "false").lower() in {
+        "1", "true", "yes", "oui"
+    }
+    engine = create_engine(
+        DATABASE_URL,
+        module=turso_sync_dbapi,
+        creator=lambda: turso_sync_dbapi.connect(
+            _local_replica_path,
+            _turso_url,
+            _turso_token,
+            pull_interval_seconds=_pull_interval,
+            push_retry_seconds=_push_retry,
+            strict_push=_strict_push,
+        ),
+        poolclass=QueuePool,
+        pool_size=5,
+        max_overflow=5,
+        pool_timeout=30,
+        pool_recycle=1800,
+        pool_use_lifo=True,
+        pool_pre_ping=True,
+    )
+
+    @event.listens_for(engine, "checkout")
+    def _refresh_local_replica(dbapi_connection, _connection_record, _proxy):
+        dbapi_connection.pull_if_due()
+
+elif _turso_enabled:
     from database import turso_http_dbapi
 
     # ``sqlite://`` selects SingletonThreadPool by default.  Streamlit runs
@@ -78,6 +126,21 @@ def persistence_mode() -> str:
     if _is_local_sqlite:
         return "sqlite_local"
     return _url.get_backend_name()
+
+
+def persistence_topology() -> str:
+    if _turso_replica_enabled:
+        return "local_replica"
+    if _turso_enabled:
+        return "remote_direct"
+    return persistence_mode()
+
+
+def persistence_status() -> dict:
+    if not _turso_replica_enabled:
+        return {"topology": persistence_topology()}
+    status = turso_sync_dbapi.replica_status(_local_replica_path)
+    return {"topology": "local_replica", **status}
 
 
 def persistence_configuration_error() -> str | None:

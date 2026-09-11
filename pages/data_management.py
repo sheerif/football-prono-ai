@@ -9,6 +9,7 @@ from database.database import (
     engine,
     persistence_configuration_error,
     persistence_mode,
+    persistence_status,
 )
 from services import (
     background_jobs,
@@ -228,7 +229,24 @@ def show():
             "une synchronisation exhaustive pour conserver les téléchargements."
         )
     else:
-        st.success("Base Turso distante connectée : données et reprises persistantes.")
+        storage_status = persistence_status()
+        if storage_status.get("topology") == "local_replica":
+            st.success(
+                "Réplique SQLite locale active : lectures locales rapides et "
+                "sauvegarde synchronisée dans Turso."
+            )
+            if storage_status.get("pending_push"):
+                st.warning(
+                    "Des écritures sont conservées localement et attendent leur "
+                    "prochaine sauvegarde Turso."
+                )
+            if storage_status.get("last_error"):
+                st.caption(
+                    "Dernière synchronisation Turso différée : "
+                    f"{storage_status['last_error']}"
+                )
+        else:
+            st.success("Base Turso distante connectée en mode traitement direct.")
 
     counts = _summary_counts()
     database_kpis = [

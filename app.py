@@ -15,7 +15,7 @@ if not auth.is_authenticated():
 	auth.login_page()
 	st.stop()
 
-@st.cache_resource(show_spinner=False)
+@st.cache_resource(show_spinner="Préparation de la base locale synchronisée…")
 def _init_db_once():
 	import_service.init_db()
 

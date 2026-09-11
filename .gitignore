@@ -6,6 +6,9 @@ __pycache__/
 .Python
 
 football.db
+football-cache.db
+football-cache.db-changes
+football-cache.db-info
 *.db-wal
 *.db-shm
 *.db-journal
