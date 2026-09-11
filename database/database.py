@@ -13,7 +13,22 @@ _turso_requested = os.getenv("TURSO_ENABLED", "false").lower() in {
 }
 _turso_config_error = None
 _turso_enabled = False
-_turso_access_mode = (os.getenv("TURSO_ACCESS_MODE") or "replica").strip().lower()
+# A full embedded replica currently weighs about 180 MB.  That is useful on a
+# workstation or a CI runner, but it exceeds the memory available to a
+# Streamlit Community Cloud process while the replica is bootstrapped.  Keep
+# the cloud-safe, low-memory transport as the default and make replication an
+# explicit opt-in for machines with enough RAM.
+_turso_access_mode = (os.getenv("TURSO_ACCESS_MODE") or "direct").strip().lower()
+_streamlit_cloud = os.path.isdir("/mount/src") or bool(
+    os.getenv("STREAMLIT_SHARING_MODE")
+)
+_force_cloud_direct = os.getenv(
+    "STREAMLIT_FORCE_DIRECT_DATABASE", "true"
+).strip().lower() in {"1", "true", "yes", "oui"}
+if _streamlit_cloud and _force_cloud_direct:
+    # Also neutralize an old TURSO_ACCESS_MODE=replica secret that may still be
+    # present in the deployed application.
+    _turso_access_mode = "direct"
 
 if _turso_requested:
     if not _turso_url or not _turso_token:
@@ -152,6 +167,21 @@ def persistence_status() -> dict:
         return {"topology": persistence_topology()}
     status = turso_sync_dbapi.replica_status(_local_replica_path)
     return {"topology": "local_replica", **status}
+
+
+def persistence_revision() -> int:
+    """Return a tiny change marker without reading application data."""
+    if _turso_replica_enabled:
+        return int(persistence_status().get("revision") or 0)
+    try:
+        with engine.connect() as conn:
+            value = conn.exec_driver_sql(
+                "SELECT id FROM update_log ORDER BY id DESC LIMIT 1"
+            ).scalar_one_or_none()
+        return int(value or 0)
+    except Exception:
+        # The table may not exist during the very first schema creation.
+        return 0
 
 
 def start_realtime_replica_sync() -> bool:

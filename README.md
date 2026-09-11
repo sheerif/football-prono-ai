@@ -121,22 +121,22 @@ queries intentionally use SQLite features such as `datetime(...)`, `PRAGMA`
 and `ON CONFLICT`. Set `DATABASE_URL` to a SQLite URL (the default is
 `sqlite:///football.db`). Other SQLAlchemy engines are not currently supported.
 
-Lorsque Turso est activé, le mode par défaut est désormais `replica` : le SDK
-Turso copie la base dans `football-cache-v2.db`, toutes les lectures de l'interface
-restent locales et les écritures sont poussées vers la base distante après leur
-validation locale. Les changements effectués par un autre processus sont
-récupérés de manière incrémentale par un suivi d'arrière-plan toutes les dix
-secondes par défaut. Une page ouverte se recharge seulement lorsqu'un pull a
-réellement apporté de nouvelles données. Le délai se règle avec
-`TURSO_REALTIME_SYNC_SECONDS` ; la valeur `0` désactive ce suivi. Le pull de
-secours sur une connexion reste réglé par `TURSO_SYNC_PULL_INTERVAL_SECONDS`.
+Lorsque Turso est activé, le mode par défaut est `direct`. C'est le mode adapté
+à Streamlit Community Cloud : il ne charge pas la réplique complète d'environ
+180 Mo en mémoire. Les résultats lourds de l'interface sont gardés cinq minutes
+dans le cache Streamlit. Une lecture indexée d'une seule ligne vérifie toutes
+les quinze secondes si une mise à jour a terminé ; le cache est invalidé et la
+page rechargée uniquement lorsque ce marqueur change.
 
-Le mode `TURSO_ACCESS_MODE=direct` reste disponible pour un diagnostic ou une
-maintenance exceptionnelle. Le workflow GitHub de minuit utilise lui aussi une
-réplique locale, conservée dans le cache GitHub entre deux exécutions. Ainsi,
-ni la navigation ni les calculs de synchronisation ne scannent les tables
-distantes ; seuls les transferts différentiels et les écritures utiles
-atteignent le cloud.
+Le mode `TURSO_ACCESS_MODE=replica` reste disponible sur un PC ou un runner
+disposant d'assez de mémoire. Il copie alors la base dans
+`football-cache-v2.db`, lit localement et pousse les écritures vers Turso. Le
+workflow GitHub de minuit utilise cette réplique locale et la conserve dans le
+cache GitHub entre deux exécutions. `STREAMLIT_FORCE_DIRECT_DATABASE=true`
+neutralise aussi un ancien secret `replica` encore présent sur Streamlit Cloud.
+Sur Streamlit, les mises à jour au démarrage sont désactivées par défaut
+(`STREAMLIT_STARTUP_UPDATES=false`) afin de ne pas doubler ce traitement
+planifié ni consommer inutilement la RAM et le quota API.
 
 ## Checks
 

@@ -2,6 +2,7 @@ import datetime
 import math
 import os
 import threading
+import time
 import traceback
 import uuid
 
@@ -13,6 +14,7 @@ _jobs: dict[str, dict] = {}
 _startup_started = False
 _full_progress_cache: tuple[datetime.datetime, dict] | None = None
 _quota_status_cache: tuple[datetime.datetime, dict] | None = None
+_full_state_read_cache: tuple[float, dict | None] | None = None
 FULL_SYNC_CONTROL_KEY = "full-sync:exhaustive"
 ACTIVE_JOB_STATUSES = {"running", "waiting_quota"}
 DATA_JOB_KINDS = {
@@ -178,6 +180,20 @@ def full_sync_state() -> dict | None:
             metadata.update(durable)
             state = {**state, "metadata": metadata}
     return state
+
+
+def cached_full_sync_state(ttl_seconds: int = 30) -> dict | None:
+    """Share the durable control read between Streamlit's 1-second fragments."""
+    global _full_state_read_cache
+    now = time.monotonic()
+    with _lock:
+        cached = _full_state_read_cache
+        if cached and now - cached[0] < max(1, int(ttl_seconds)):
+            return dict(cached[1]) if cached[1] is not None else None
+    state = full_sync_state()
+    with _lock:
+        _full_state_read_cache = (now, dict(state) if state is not None else None)
+    return dict(state) if state is not None else None
 
 
 def _durable_full_progress_snapshot(*, force: bool = False) -> dict:
@@ -720,8 +736,42 @@ def resume_pending_full_sync() -> str | None:
     return start_full_sync(resumed=True)
 
 
+def resume_pending_full_sync_if_due() -> str | None:
+    """Cloud-friendly resume check, backed by the shared durable-state cache."""
+    if data_job_running():
+        return None
+    state = cached_full_sync_state()
+    if not state or state.get("status") not in {"running", "waiting_quota"}:
+        return None
+    metadata = state.get("metadata") or {}
+    retry_at_raw = metadata.get("next_retry_at")
+    if state.get("status") == "waiting_quota" and retry_at_raw:
+        try:
+            if datetime.datetime.fromisoformat(retry_at_raw) > datetime.datetime.now(
+                datetime.UTC
+            ).replace(tzinfo=None):
+                return None
+        except (TypeError, ValueError):
+            pass
+    return start_full_sync(resumed=True)
+
+
 def start_startup_updates_once(connection_log_id: int | None = None) -> str | None:
     global _startup_started
+    # The daily GitHub workflow is the single automatic writer for Turso.  A
+    # Community Cloud restart must not launch the same memory/API-heavy import
+    # again.  It can still be explicitly enabled when desired.
+    from database.database import persistence_topology
+
+    startup_setting = os.getenv("STREAMLIT_STARTUP_UPDATES")
+    if startup_setting is None:
+        startup_enabled = persistence_topology() != "remote_direct"
+    else:
+        startup_enabled = startup_setting.strip().lower() in {
+            "1", "true", "yes", "oui"
+        }
+    if not startup_enabled:
+        return None
     with _lock:
         if _startup_started:
             return None

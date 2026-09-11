@@ -31,26 +31,30 @@ LEAGUE_PRESETS = {
 }
 
 
+@st.cache_data(ttl=300, show_spinner=False)
 def _summary_counts() -> dict[str, int]:
     try:
-        leagues = pd.read_sql("SELECT COUNT(*) AS count FROM leagues", engine).iloc[0]["count"]
-        teams = pd.read_sql("SELECT COUNT(*) AS count FROM teams", engine).iloc[0]["count"]
-        matches = pd.read_sql("SELECT COUNT(*) AS count FROM matches", engine).iloc[0]["count"]
-        standings = pd.read_sql("SELECT COUNT(*) AS count FROM standings", engine).iloc[0]["count"]
-        players = pd.read_sql("SELECT COUNT(*) AS count FROM players", engine).iloc[0]["count"]
-        lineups = pd.read_sql(
+        row = pd.read_sql(
             """
             SELECT
+                (SELECT COUNT(*) FROM leagues) AS leagues,
+                (SELECT COUNT(*) FROM teams) AS teams,
+                (SELECT COUNT(*) FROM matches) AS matches,
+                (SELECT COUNT(*) FROM standings) AS standings,
+                (SELECT COUNT(*) FROM players) AS players,
                 (SELECT COUNT(*) FROM fixture_lineups)
-                + (SELECT COUNT(*) FROM projected_lineups) AS count
+                    + (SELECT COUNT(*) FROM projected_lineups) AS lineups,
+                (SELECT COUNT(*) FROM match_analysis_snapshots) AS analyses,
+                (SELECT COUNT(DISTINCT fixture_id)
+                 FROM fixture_team_statistics) AS xg_matches
             """,
             engine,
-        ).iloc[0]["count"]
-        analyses = pd.read_sql("SELECT COUNT(*) AS count FROM match_analysis_snapshots", engine).iloc[0]["count"]
-        xg_matches = pd.read_sql(
-            "SELECT COUNT(DISTINCT fixture_id) AS count FROM fixture_team_statistics",
-            engine,
-        ).iloc[0]["count"]
+        ).iloc[0]
+        leagues, teams, matches, standings = (
+            row["leagues"], row["teams"], row["matches"], row["standings"]
+        )
+        players, lineups = row["players"], row["lineups"]
+        analyses, xg_matches = row["analyses"], row["xg_matches"]
     except Exception:
         leagues = teams = matches = standings = players = lineups = analyses = xg_matches = 0
     return {
@@ -111,7 +115,9 @@ def _recent_logs(limit: int = 6) -> pd.DataFrame:
 @st.fragment(run_every="1s")
 def _render_jobs():
     """Rafraîchit la progression des tâches de fond en temps réel."""
-    resume_pending = getattr(background_jobs, "resume_pending_full_sync", None)
+    resume_pending = getattr(
+        background_jobs, "resume_pending_full_sync_if_due", None
+    ) or getattr(background_jobs, "resume_pending_full_sync", None)
     if callable(resume_pending):
         resume_pending()
     jobs = background_jobs.list_jobs()
@@ -281,7 +287,9 @@ def show():
             "maintenir les informations courantes à jour."
         )
         api_key_missing = not (os.getenv("API_FOOTBALL_KEY") or "").strip()
-        state_loader = getattr(background_jobs, "full_sync_state", None)
+        state_loader = getattr(
+            background_jobs, "cached_full_sync_state", None
+        ) or getattr(background_jobs, "full_sync_state", None)
         full_state = state_loader() if callable(state_loader) else None
         quota_waiting = bool(
             full_state and full_state.get("status") == "waiting_quota"

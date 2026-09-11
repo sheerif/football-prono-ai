@@ -19,13 +19,16 @@ def _normalize_matches_df(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+@st.cache_data(ttl=300, show_spinner=False)
 def _load_matches() -> pd.DataFrame:
     try:
-        return _normalize_matches_df(pd.read_sql("SELECT * FROM matches", engine))
+        columns = ", ".join(MATCH_COLUMNS)
+        return _normalize_matches_df(pd.read_sql(f"SELECT {columns} FROM matches", engine))
     except Exception:
         return pd.DataFrame(columns=MATCH_COLUMNS)
 
 
+@st.cache_data(ttl=300, show_spinner=False)
 def _load_league_seasons() -> pd.DataFrame:
     try:
         return pd.read_sql("SELECT league_id, season FROM league_seasons", engine)
@@ -92,6 +95,7 @@ def _format_percent(value) -> str:
         return "0.0 %"
 
 
+@st.cache_data(ttl=300, show_spinner=False)
 def _load_data_health() -> dict:
     queries = {
         "upcoming": """
@@ -140,6 +144,7 @@ def _load_data_health() -> dict:
     return health
 
 
+@st.cache_data(ttl=300, show_spinner=False)
 def _upcoming_by_league() -> pd.DataFrame:
     try:
         rows = pd.read_sql(

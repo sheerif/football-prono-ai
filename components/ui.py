@@ -1091,19 +1091,19 @@ def run_direct_page(title: str, show_func):
     show_func()
 
 
-@st.fragment(run_every="5s")
+@st.fragment(run_every="15s")
 def render_live_data_refresh():
-    """Recharge la page uniquement lorsqu'un pull a réellement changé la base."""
-    from database.database import persistence_status
+    """Poll one indexed row and reload only when persisted data has changed."""
+    from database.database import persistence_revision
 
-    status = persistence_status()
-    if status.get("topology") != "local_replica":
-        return
-    revision = int(status.get("revision") or 0)
-    state_key = "_local_replica_displayed_revision"
+    revision = persistence_revision()
+    state_key = "_displayed_data_revision"
     displayed_revision = st.session_state.get(state_key)
     st.session_state[state_key] = revision
     if displayed_revision is not None and revision > int(displayed_revision):
+        # Cached result sets stay cheap between changes, then are invalidated
+        # exactly once when an import has committed new persistent data.
+        st.cache_data.clear()
         st.rerun()
 
 
@@ -1112,7 +1112,9 @@ def render_background_jobs():
     """Actualise le suivi sans attendre une interaction sur la page."""
     from services import background_jobs
 
-    resume_pending = getattr(background_jobs, "resume_pending_full_sync", None)
+    resume_pending = getattr(
+        background_jobs, "resume_pending_full_sync_if_due", None
+    ) or getattr(background_jobs, "resume_pending_full_sync", None)
     if callable(resume_pending):
         resume_pending()
     jobs = background_jobs.active_jobs()
@@ -1122,7 +1124,9 @@ def render_background_jobs():
         if job.get("status") == "partial"
         and (job.get("details") or {}).get("quota_reached")
     ][:1]
-    state_loader = getattr(background_jobs, "full_sync_state", None)
+    state_loader = getattr(
+        background_jobs, "cached_full_sync_state", None
+    ) or getattr(background_jobs, "full_sync_state", None)
     full_state = state_loader() if callable(state_loader) else None
     waiting_quota = bool(
         full_state and full_state.get("status") == "waiting_quota"

@@ -1,3 +1,6 @@
+import functools
+import threading
+
 from sqlalchemy import text, inspect
 
 from database import models
@@ -16,7 +19,24 @@ PERFORMANCE_INDEX_NAMES = {
     "ix_xg_ingestion_audit_run",
 }
 
+_guard_lock = threading.RLock()
+_completed_guards: set[str] = set()
 
+
+def _once_per_process(func):
+    """Avoid repeating remote schema introspection on every Streamlit rerun."""
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        with _guard_lock:
+            if func.__name__ in _completed_guards:
+                return None
+            result = func(*args, **kwargs)
+            _completed_guards.add(func.__name__)
+            return result
+    return wrapper
+
+
+@_once_per_process
 def ensure_match_score_columns() -> None:
     with engine.begin() as conn:
         inspector = inspect(conn)
@@ -35,6 +55,7 @@ def ensure_match_score_columns() -> None:
                 conn.execute(text(f"ALTER TABLE matches ADD COLUMN {column_name} {column_type}"))
 
 
+@_once_per_process
 def ensure_performance_indexes() -> None:
     """Create indexes added after the initial tables without rebuilding data."""
     indexes = (
@@ -47,6 +68,7 @@ def ensure_performance_indexes() -> None:
         index.create(bind=engine, checkfirst=True)
 
 
+@_once_per_process
 def ensure_fixture_api_cache_tables() -> None:
     with engine.begin() as conn:
         conn.execute(
