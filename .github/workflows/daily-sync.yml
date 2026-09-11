@@ -22,7 +22,7 @@ jobs:
       API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
       TURSO_ENABLED: "true"
       TURSO_ACCESS_MODE: "replica"
-      TURSO_LOCAL_DATABASE_PATH: ${{ runner.temp }}/football-cache.db
+      TURSO_LOCAL_DATABASE_PATH: /tmp/football-cache.db
       TURSO_SYNC_PULL_INTERVAL_SECONDS: "3600"
       TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
       TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
@@ -43,10 +43,10 @@ jobs:
         uses: actions/cache@v6
         with:
           path: |
-            ${{ runner.temp }}/football-cache.db
-            ${{ runner.temp }}/football-cache.db-changes
-            ${{ runner.temp }}/football-cache.db-info
-            ${{ runner.temp }}/football-cache.db-wal
+            /tmp/football-cache.db
+            /tmp/football-cache.db-changes
+            /tmp/football-cache.db-info
+            /tmp/football-cache.db-wal
           key: turso-replica-${{ runner.os }}-${{ github.run_id }}
           restore-keys: |
             turso-replica-${{ runner.os }}-
