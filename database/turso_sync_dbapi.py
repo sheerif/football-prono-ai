@@ -285,15 +285,32 @@ def connect(
                 state.last_pull_monotonic = time.monotonic()
                 state.last_pull_at = _utc_now()
                 state.last_error = None
-        if realtime_interval_seconds > 0 and not state.realtime_started:
-            _start_realtime_worker(
-                state,
-                url,
-                auth_token,
-                interval_seconds=max(5, int(realtime_interval_seconds)),
-                push_retry_seconds=max(60, int(push_retry_seconds)),
-            )
         return connection
+
+
+def start_realtime_sync(
+    path: str,
+    url: str,
+    auth_token: str,
+    *,
+    interval_seconds: int = 10,
+    push_retry_seconds: int = 300,
+) -> bool:
+    """Démarre le pull continu après l'initialisation complète du schéma."""
+    if interval_seconds <= 0:
+        return False
+    state = _state_for(path)
+    with state.lock:
+        if not state.initialized or state.realtime_started:
+            return False
+        _start_realtime_worker(
+            state,
+            url,
+            auth_token,
+            interval_seconds=max(5, int(interval_seconds)),
+            push_retry_seconds=max(60, int(push_retry_seconds)),
+        )
+    return True
 
 
 def _start_realtime_worker(

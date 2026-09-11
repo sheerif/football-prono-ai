@@ -1053,6 +1053,7 @@ def run_direct_page(title: str, show_func):
         pass
 
     from components import auth, sidebar
+    from database.database import start_realtime_replica_sync
     from services import background_jobs, import_service, schema_guard
 
     inject_app_style()
@@ -1063,6 +1064,7 @@ def run_direct_page(title: str, show_func):
 
     import_service.init_db()
     schema_guard.ensure_match_score_columns()
+    start_realtime_replica_sync()
     background_jobs.start_startup_updates_once()
 
     current_nav = {

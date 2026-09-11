@@ -3,7 +3,11 @@ import datetime
 import os
 
 from services import background_jobs, import_service, schema_guard
-from database.database import persistence_configuration_error, persistence_mode
+from database.database import (
+	persistence_configuration_error,
+	persistence_mode,
+	start_realtime_replica_sync,
+)
 
 from components import auth, sidebar, ui
 from pages import dashboard, data_management, api_widgets, matchs_a_venir, analyse_match, prediction_ia
@@ -23,6 +27,7 @@ def _init_db_once():
 try:
 	_init_db_once()
 	schema_guard.ensure_match_score_columns()
+	start_realtime_replica_sync()
 except Exception:
 	mode = persistence_mode()
 	config_error = persistence_configuration_error()

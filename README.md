@@ -122,7 +122,7 @@ and `ON CONFLICT`. Set `DATABASE_URL` to a SQLite URL (the default is
 `sqlite:///football.db`). Other SQLAlchemy engines are not currently supported.
 
 Lorsque Turso est activé, le mode par défaut est désormais `replica` : le SDK
-Turso copie la base dans `football-cache.db`, toutes les lectures de l'interface
+Turso copie la base dans `football-cache-v2.db`, toutes les lectures de l'interface
 restent locales et les écritures sont poussées vers la base distante après leur
 validation locale. Les changements effectués par un autre processus sont
 récupérés de manière incrémentale par un suivi d'arrière-plan toutes les dix

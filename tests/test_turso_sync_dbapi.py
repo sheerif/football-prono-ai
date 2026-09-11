@@ -138,6 +138,16 @@ class TursoSyncDbapiTests(unittest.TestCase):
         self.assertEqual(status["revision"], 1)
         engine.dispose()
 
+    def test_realtime_worker_is_not_started_during_database_connection(self):
+        engine = self._engine()
+        with engine.connect():
+            pass
+
+        status = turso_sync_dbapi.replica_status(self.path)
+        self.assertTrue(status["initialized"])
+        self.assertFalse(status["realtime_started"])
+        engine.dispose()
+
 
 if __name__ == "__main__":
     unittest.main()

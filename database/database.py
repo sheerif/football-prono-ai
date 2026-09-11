@@ -37,7 +37,7 @@ _is_sqlite = _url.get_backend_name() == "sqlite"
 _is_local_sqlite = _url.drivername == "sqlite" and not _turso_enabled
 _turso_replica_enabled = _turso_enabled and _turso_access_mode == "replica"
 _local_replica_path = os.path.abspath(
-    os.getenv("TURSO_LOCAL_DATABASE_PATH", "football-cache.db")
+    os.getenv("TURSO_LOCAL_DATABASE_PATH", "football-cache-v2.db")
 )
 
 
@@ -152,6 +152,18 @@ def persistence_status() -> dict:
         return {"topology": persistence_topology()}
     status = turso_sync_dbapi.replica_status(_local_replica_path)
     return {"topology": "local_replica", **status}
+
+
+def start_realtime_replica_sync() -> bool:
+    if not _turso_replica_enabled or _realtime_interval <= 0:
+        return False
+    return turso_sync_dbapi.start_realtime_sync(
+        _local_replica_path,
+        _turso_url,
+        _turso_token,
+        interval_seconds=_realtime_interval,
+        push_retry_seconds=_push_retry,
+    )
 
 
 def persistence_configuration_error() -> str | None:

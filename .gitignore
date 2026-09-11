@@ -9,6 +9,9 @@ football.db
 football-cache.db
 football-cache.db-changes
 football-cache.db-info
+football-cache-v2.db
+football-cache-v2.db-changes
+football-cache-v2.db-info
 *.db-wal
 *.db-shm
 *.db-journal
