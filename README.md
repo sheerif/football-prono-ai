@@ -128,11 +128,12 @@ validation locale. Les changements effectués par un autre processus sont
 récupérés de manière incrémentale, au maximum une fois par heure par défaut.
 Ce délai se règle avec `TURSO_SYNC_PULL_INTERVAL_SECONDS`.
 
-Le mode `TURSO_ACCESS_MODE=direct` reste disponible pour les traitements
-éphémères. Le workflow GitHub de minuit l'utilise afin de ne pas télécharger
-une copie complète de la base à chaque démarrage du runner. Ainsi, la navigation
-ne consomme plus de lignes lues sur Turso ; seuls les transferts de
-synchronisation et les écritures utiles atteignent le cloud.
+Le mode `TURSO_ACCESS_MODE=direct` reste disponible pour un diagnostic ou une
+maintenance exceptionnelle. Le workflow GitHub de minuit utilise lui aussi une
+réplique locale, conservée dans le cache GitHub entre deux exécutions. Ainsi,
+ni la navigation ni les calculs de synchronisation ne scannent les tables
+distantes ; seuls les transferts différentiels et les écritures utiles
+atteignent le cloud.
 
 ## Checks
 
