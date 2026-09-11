@@ -24,6 +24,8 @@ jobs:
       TURSO_ACCESS_MODE: "replica"
       TURSO_LOCAL_DATABASE_PATH: /tmp/football-cache.db
       TURSO_SYNC_PULL_INTERVAL_SECONDS: "3600"
+      # Le runner pousse lui-même ses écritures et n'affiche aucune interface.
+      TURSO_REALTIME_SYNC_SECONDS: "0"
       TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
       TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
       AUTO_REFRESH_START_SEASON: "2016"

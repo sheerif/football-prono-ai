@@ -46,6 +46,7 @@ background_jobs.start_startup_updates_once(st.session_state.get("connection_log_
 
 sidebar.render_app_rail("Tableau de bord")
 
+ui.render_live_data_refresh()
 dashboard.show()
 
 with st.sidebar:

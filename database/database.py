@@ -48,11 +48,21 @@ def _integer_env(name: str, default: int, minimum: int) -> int:
         return default
 
 
+def _nonnegative_integer_env(name: str, default: int) -> int:
+    try:
+        return max(0, int(os.getenv(name, str(default))))
+    except (TypeError, ValueError):
+        return default
+
+
 if _turso_replica_enabled:
     from database import turso_sync_dbapi
 
     _pull_interval = _integer_env("TURSO_SYNC_PULL_INTERVAL_SECONDS", 3600, 60)
     _push_retry = _integer_env("TURSO_SYNC_PUSH_RETRY_SECONDS", 300, 60)
+    _realtime_interval = _nonnegative_integer_env(
+        "TURSO_REALTIME_SYNC_SECONDS", 10
+    )
     _strict_push = os.getenv("TURSO_SYNC_STRICT_PUSH", "false").lower() in {
         "1", "true", "yes", "oui"
     }
@@ -66,6 +76,7 @@ if _turso_replica_enabled:
             pull_interval_seconds=_pull_interval,
             push_retry_seconds=_push_retry,
             strict_push=_strict_push,
+            realtime_interval_seconds=_realtime_interval,
         ),
         poolclass=QueuePool,
         pool_size=5,

@@ -88,6 +88,8 @@ class _ReplicaState:
     last_pull_at: str | None = None
     last_push_at: str | None = None
     last_error: str | None = None
+    revision: int = 0
+    realtime_started: bool = False
 
 
 _states: dict[str, _ReplicaState] = {}
@@ -208,7 +210,7 @@ class Connection:
             if not force and now - state.last_pull_monotonic < self._pull_interval_seconds:
                 return False
             try:
-                self._raw_connection.pull()
+                changed = bool(self._raw_connection.pull())
             except Exception as exc:
                 state.last_error = f"pull: {exc}"
                 logger.warning("Synchronisation descendante Turso différée : %s", exc)
@@ -216,6 +218,8 @@ class Connection:
             state.last_pull_monotonic = time.monotonic()
             state.last_pull_at = _utc_now()
             state.last_error = None
+            if changed:
+                state.revision += 1
             return True
 
     def _push_pending(self, *, force: bool) -> bool:
@@ -252,6 +256,7 @@ def connect(
     pull_interval_seconds: int = 3600,
     push_retry_seconds: int = 300,
     strict_push: bool = False,
+    realtime_interval_seconds: int = 0,
     **_kwargs,
 ):
     local_path = os.path.abspath(path)
@@ -280,7 +285,71 @@ def connect(
                 state.last_pull_monotonic = time.monotonic()
                 state.last_pull_at = _utc_now()
                 state.last_error = None
+        if realtime_interval_seconds > 0 and not state.realtime_started:
+            _start_realtime_worker(
+                state,
+                url,
+                auth_token,
+                interval_seconds=max(5, int(realtime_interval_seconds)),
+                push_retry_seconds=max(60, int(push_retry_seconds)),
+            )
         return connection
+
+
+def _start_realtime_worker(
+    state: _ReplicaState,
+    url: str,
+    auth_token: str,
+    *,
+    interval_seconds: int,
+    push_retry_seconds: int,
+) -> None:
+    """Maintient la copie locale à jour sans faire de requête SQL distante."""
+    state.realtime_started = True
+
+    def worker() -> None:
+        retry_delay = interval_seconds
+        while True:
+            raw_connection = None
+            try:
+                raw_connection = turso.sync.connect(
+                    state.path,
+                    remote_url=url,
+                    auth_token=auth_token,
+                    bootstrap_if_empty=True,
+                )
+                connection = Connection(
+                    raw_connection,
+                    state,
+                    pull_interval_seconds=interval_seconds,
+                    push_retry_seconds=push_retry_seconds,
+                    strict_push=False,
+                )
+                while True:
+                    connection.pull_if_due(force=True)
+                    if state.last_error:
+                        retry_delay = min(300, max(interval_seconds, retry_delay * 2))
+                    else:
+                        retry_delay = interval_seconds
+                    time.sleep(retry_delay)
+            except Exception as exc:
+                with state.lock:
+                    state.last_error = f"temps réel: {exc}"
+                logger.warning("Synchronisation Turso temps réel différée : %s", exc)
+                retry_delay = min(300, max(interval_seconds, retry_delay * 2))
+                time.sleep(retry_delay)
+            finally:
+                if raw_connection is not None:
+                    try:
+                        raw_connection.close()
+                    except Exception:
+                        pass
+
+    threading.Thread(
+        target=worker,
+        name="turso-replica-live-sync",
+        daemon=True,
+    ).start()
 
 
 def replica_status(path: str) -> dict[str, Any]:
@@ -293,6 +362,8 @@ def replica_status(path: str) -> dict[str, Any]:
             "last_pull_at": state.last_pull_at,
             "last_push_at": state.last_push_at,
             "last_error": state.last_error,
+            "revision": state.revision,
+            "realtime_started": state.realtime_started,
         }
 
 

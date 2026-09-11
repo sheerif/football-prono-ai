@@ -16,6 +16,7 @@ class _LocalSyncConnection:
         self.push_calls = 0
         self.pull_calls = 0
         self.fail_push = False
+        self.pull_changed = False
 
     def __getattr__(self, name):
         return getattr(self.connection, name)
@@ -27,6 +28,9 @@ class _LocalSyncConnection:
 
     def pull(self):
         self.pull_calls += 1
+        changed = self.pull_changed
+        self.pull_changed = False
+        return changed
 
 
 class TursoSyncDbapiTests(unittest.TestCase):
@@ -118,6 +122,20 @@ class TursoSyncDbapiTests(unittest.TestCase):
         status = turso_sync_dbapi.replica_status(self.path)
         self.assertTrue(status["pending_push"])
         self.assertIn("cloud unavailable", status["last_error"])
+        engine.dispose()
+
+    def test_changed_pull_increments_visible_replica_revision(self):
+        engine = self._engine()
+        with engine.connect():
+            pass
+        raw = self.connections[0]
+        raw.pull_changed = True
+        wrapped = engine.raw_connection().dbapi_connection
+
+        wrapped.pull_if_due(force=True)
+
+        status = turso_sync_dbapi.replica_status(self.path)
+        self.assertEqual(status["revision"], 1)
         engine.dispose()
 
 

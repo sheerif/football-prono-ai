@@ -125,8 +125,11 @@ Lorsque Turso est activé, le mode par défaut est désormais `replica` : le SDK
 Turso copie la base dans `football-cache.db`, toutes les lectures de l'interface
 restent locales et les écritures sont poussées vers la base distante après leur
 validation locale. Les changements effectués par un autre processus sont
-récupérés de manière incrémentale, au maximum une fois par heure par défaut.
-Ce délai se règle avec `TURSO_SYNC_PULL_INTERVAL_SECONDS`.
+récupérés de manière incrémentale par un suivi d'arrière-plan toutes les dix
+secondes par défaut. Une page ouverte se recharge seulement lorsqu'un pull a
+réellement apporté de nouvelles données. Le délai se règle avec
+`TURSO_REALTIME_SYNC_SECONDS` ; la valeur `0` désactive ce suivi. Le pull de
+secours sur une connexion reste réglé par `TURSO_SYNC_PULL_INTERVAL_SECONDS`.
 
 Le mode `TURSO_ACCESS_MODE=direct` reste disponible pour un diagnostic ou une
 maintenance exceptionnelle. Le workflow GitHub de minuit utilise lui aussi une

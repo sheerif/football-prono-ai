@@ -1085,7 +1085,24 @@ def run_direct_page(title: str, show_func):
         auth.logout_button()
         render_background_jobs()
 
+    render_live_data_refresh()
     show_func()
+
+
+@st.fragment(run_every="5s")
+def render_live_data_refresh():
+    """Recharge la page uniquement lorsqu'un pull a réellement changé la base."""
+    from database.database import persistence_status
+
+    status = persistence_status()
+    if status.get("topology") != "local_replica":
+        return
+    revision = int(status.get("revision") or 0)
+    state_key = "_local_replica_displayed_revision"
+    displayed_revision = st.session_state.get(state_key)
+    st.session_state[state_key] = revision
+    if displayed_revision is not None and revision > int(displayed_revision):
+        st.rerun()
 
 
 @st.fragment(run_every="1s")
