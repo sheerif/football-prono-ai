@@ -1,17 +1,38 @@
 import unittest
 import datetime
 import json
+import sys
 from unittest.mock import Mock, patch
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
 from database import models
+from database import database as database_runtime
 from database.database import engine
 from services import background_jobs, import_service
 
 
 class DatabaseRuntimeTests(unittest.TestCase):
+    def test_adapter_import_retries_after_streamlit_hot_reload_keyerror(self):
+        adapter = object()
+        module_name = "database.temporary_adapter"
+        sys.modules[module_name] = Mock()
+        try:
+            with patch.object(
+                database_runtime.importlib,
+                "import_module",
+                side_effect=[KeyError(module_name), adapter],
+            ) as importer:
+                loaded = database_runtime._load_database_adapter(
+                    "temporary_adapter"
+                )
+        finally:
+            sys.modules.pop(module_name, None)
+
+        self.assertIs(loaded, adapter)
+        self.assertEqual(importer.call_count, 2)
+
     def test_repeated_team_in_same_batch_is_inserted_once(self):
         test_engine = create_engine("sqlite://")
         models.Base.metadata.create_all(test_engine)

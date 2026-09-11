@@ -1,4 +1,6 @@
+import importlib
 import os
+import sys
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, event
 from sqlalchemy.engine import make_url
@@ -70,8 +72,24 @@ def _nonnegative_integer_env(name: str, default: int) -> int:
         return default
 
 
+def _load_database_adapter(name: str):
+    """Load a DB-API sibling safely across a Streamlit hot deployment.
+
+    Streamlit can invalidate a newly introduced module while the old process
+    is still rerunning.  Python then raises a bare ``KeyError`` from its import
+    machinery.  Dropping that half-loaded entry and retrying once avoids
+    requiring a manual reboot for this deployment transition.
+    """
+    qualified_name = f"database.{name}"
+    try:
+        return importlib.import_module(qualified_name)
+    except KeyError:
+        sys.modules.pop(qualified_name, None)
+        return importlib.import_module(qualified_name)
+
+
 if _turso_replica_enabled:
-    from database import turso_sync_dbapi
+    turso_sync_dbapi = _load_database_adapter("turso_sync_dbapi")
 
     _pull_interval = _integer_env("TURSO_SYNC_PULL_INTERVAL_SECONDS", 3600, 60)
     _push_retry = _integer_env("TURSO_SYNC_PUSH_RETRY_SECONDS", 300, 60)
@@ -107,7 +125,7 @@ if _turso_replica_enabled:
         dbapi_connection.pull_if_due()
 
 elif _turso_enabled:
-    from database import turso_http_dbapi
+    turso_http_dbapi = _load_database_adapter("turso_http_dbapi")
 
     # ``sqlite://`` selects SingletonThreadPool by default.  Streamlit runs
     # fragments and background synchronisations on several threads; that pool
