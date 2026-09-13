@@ -135,7 +135,9 @@ Si le push échoue, elles restent marquées comme étant en attente tant que le
 conteneur vit. Le workflow GitHub de minuit utilise également une réplique
 locale, conservée dans le cache GitHub entre deux exécutions. Les mises à jour
 au démarrage de Streamlit et les journaux de simple connexion sont désactivés
-par défaut afin de ne pas doubler ce traitement ni générer d'écritures inutiles.
+par défaut. La reprise d'une ancienne synchronisation exhaustive est elle aussi
+réservée au workflow planifié, afin de ne pas doubler ce traitement ni générer
+d'appels ou d'écritures inutiles depuis l'interface.
 
 Le mode `TURSO_ACCESS_MODE=direct` reste disponible en désactivant
 `STREAMLIT_USE_SEEDED_REPLICA`, mais il consomme des lignes lues et n'est plus
