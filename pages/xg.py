@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
@@ -170,7 +172,11 @@ def _team_view(frame: pd.DataFrame, team_id: int, limit: int) -> pd.DataFrame:
     return pd.DataFrame(result)
 
 
-def _team_rankings(frame: pd.DataFrame, minimum_matches: int = 3) -> pd.DataFrame:
+def _team_rankings(
+    frame: pd.DataFrame,
+    minimum_matches: int = 3,
+    progress_callback: Callable[[int, int], None] | None = None,
+) -> pd.DataFrame:
     if frame.empty:
         return pd.DataFrame()
     complete = frame[frame["xg_complete"]]
@@ -179,9 +185,12 @@ def _team_rankings(frame: pd.DataFrame, minimum_matches: int = 3) -> pd.DataFram
         set(complete["home_team_id"].dropna().astype(int))
         | set(complete["away_team_id"].dropna().astype(int))
     )
-    for team_id in team_ids:
+    total_teams = len(team_ids)
+    for index, team_id in enumerate(team_ids, start=1):
         view = _team_view(complete, team_id, limit=len(complete))
         if len(view) < minimum_matches:
+            if progress_callback:
+                progress_callback(index, total_teams)
             continue
         names = pd.concat(
             [
@@ -200,6 +209,8 @@ def _team_rankings(frame: pd.DataFrame, minimum_matches: int = 3) -> pd.DataFram
                 "Finition vs xG": round(view["Finition vs xG"].mean(), 2),
             }
         )
+        if progress_callback:
+            progress_callback(index, total_teams)
     if not rows:
         return pd.DataFrame()
     return pd.DataFrame(rows).sort_values("Différentiel xG", ascending=False)
@@ -275,8 +286,22 @@ def show() -> None:
         "Cette page lit uniquement les xG déjà enregistrés dans Turso. "
         "Elle ne consomme aucune requête API-Football."
     )
+    progress = st.progress(0.0, text="0 % — Préparation du tableau de bord xG")
+    progress_status = st.empty()
+
+    def update_progress(ratio: float, label: str, detail: str) -> None:
+        bounded = max(0.0, min(1.0, float(ratio)))
+        progress.progress(
+            bounded,
+            text=f"{int(round(bounded * 100))} % — {label}",
+        )
+        progress_status.caption(f"Traitement xG · {detail}")
+
+    update_progress(0.08, "Lecture des championnats", "étape 1/8")
     leagues = _load_leagues()
     if leagues.empty:
+        progress.progress(1.0, text="Traitement interrompu — aucune donnée disponible")
+        progress_status.warning("Aucun championnat exploitable n’a été trouvé.")
         st.warning("Aucun match terminé n’est disponible dans la base.")
         return
 
@@ -294,6 +319,7 @@ def show() -> None:
             format_func=lambda value: labels[int(value)],
             key="xg_league",
         )
+        update_progress(0.16, "Lecture des saisons", "étape 2/8")
         available_seasons = _load_seasons(league_id)
         selected_seasons = st.multiselect(
             "Saisons sportives",
@@ -311,17 +337,27 @@ def show() -> None:
         )
 
     if not selected_seasons:
+        progress.progress(1.0, text="Traitement en attente d’une sélection")
+        progress_status.info("Sélectionnez au moins une saison pour lancer l’analyse.")
         st.warning("Sélectionnez au moins une saison sportive.")
         return
-    progress = st.progress(0.0, text="0 % — Préparation des xG")
-    progress.progress(0.35, text="35 % — Lecture des matchs et de leur provenance")
+    update_progress(
+        0.28,
+        "Lecture des matchs et de leur provenance",
+        f"étape 3/8 · {len(selected_seasons)} saison(s)",
+    )
     frame = _load_scope(league_id, selected_seasons)
-    progress.progress(0.7, text="70 % — Calcul de la couverture et des moyennes")
     if frame.empty:
         progress.progress(1.0, text="100 % — Aucune donnée dans ce périmètre")
+        progress_status.warning("La sélection ne contient aucun match terminé.")
         st.warning("Aucun match terminé pour cette sélection.")
         return
 
+    update_progress(
+        0.46,
+        "Calcul de la couverture xG",
+        f"étape 4/8 · {len(frame)} ligne(s) analysée(s)",
+    )
     complete = frame[frame["xg_complete"]]
     total = int(frame["fixture_id"].nunique())
     complete_count = int(complete["fixture_id"].nunique())
@@ -329,7 +365,24 @@ def show() -> None:
         ((frame["home_xg"].notna()) ^ (frame["away_xg"].notna())).sum()
     )
     coverage = round(complete_count / max(1, total) * 100, 1)
-    progress.progress(1.0, text="100 % — Analyse xG prête")
+    seasonal = _coverage_by_season(frame)
+    teams = _team_options(frame)
+
+    update_progress(0.60, "Préparation des équipes", "étape 5/8")
+
+    def update_ranking_progress(current: int, count: int) -> None:
+        ratio = 0.62 + (0.18 * current / max(1, count))
+        update_progress(
+            ratio,
+            "Calcul du classement xG",
+            f"étape 6/8 · équipe {current}/{count}",
+        )
+
+    rankings = _team_rankings(
+        frame,
+        progress_callback=update_ranking_progress,
+    )
+    update_progress(0.82, "Construction des graphiques", "étape 7/8")
 
     ui.section_label("Couverture de la base")
     ui.kpi_grid(
@@ -347,7 +400,6 @@ def show() -> None:
             "Utilisez « Mise à jour » pour poursuivre la synchronisation différentielle."
         )
 
-    seasonal = _coverage_by_season(frame)
     if not seasonal.empty:
         coverage_chart = px.bar(
             seasonal,
@@ -367,7 +419,6 @@ def show() -> None:
         st.plotly_chart(coverage_chart, width="stretch")
 
     ui.section_label("Comparer les équipes")
-    teams = _team_options(frame)
     selected_teams = st.multiselect(
         "Équipes à afficher (deux maximum)",
         list(teams),
@@ -388,7 +439,6 @@ def show() -> None:
                 )
 
     ui.section_label("Classement xG du championnat")
-    rankings = _team_rankings(frame)
     if rankings.empty:
         st.info("Au moins trois matchs xG par équipe sont nécessaires pour le classement.")
     else:
@@ -409,6 +459,7 @@ def show() -> None:
         st.plotly_chart(ranking_chart, width="stretch")
         st.dataframe(rankings, hide_index=True, width="stretch")
 
+    update_progress(0.92, "Préparation de la traçabilité", "étape 8/8")
     ui.section_label("Définition et traçabilité")
     statistics_guide.render("xg", expanded=True)
     if complete.empty:
@@ -432,6 +483,12 @@ def show() -> None:
                 "Chaque empreinte SHA-256 relie la valeur affichée à la réponse brute "
                 "API-Football conservée dans la base."
             )
+
+    progress.progress(1.0, text="100 % — Tableau de bord xG prêt")
+    progress_status.success(
+        f"Traitement terminé : {total} match(s), {complete_count} avec xG complets, "
+        f"{len(teams)} équipe(s)."
+    )
 
 
 if __name__ == "__main__":

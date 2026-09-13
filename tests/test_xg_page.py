@@ -69,6 +69,18 @@ class XgPageTests(unittest.TestCase):
         self.assertEqual(int(coverage.iloc[0]["matchs_xg"]), 2)
         self.assertEqual(float(coverage.iloc[0]["couverture"]), 66.7)
 
+    def test_ranking_reports_progress_for_every_team(self):
+        updates = []
+
+        xg._team_rankings(
+            self.frame,
+            minimum_matches=1,
+            progress_callback=lambda current, total: updates.append((current, total)),
+        )
+
+        self.assertTrue(updates)
+        self.assertEqual(updates[-1], (updates[-1][1], updates[-1][1]))
+
 
 if __name__ == "__main__":
     unittest.main()

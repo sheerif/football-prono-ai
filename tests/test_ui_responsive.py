@@ -75,6 +75,10 @@ class ResponsiveUiContractTests(unittest.TestCase):
                 "Préparation du rapport",
             ),
             "pages/data_management.py": ("ui.progress_bar_text(job)",),
+            "pages/xg.py": (
+                "Préparation du tableau de bord xG",
+                "Calcul du classement xG",
+            ),
         }
         for relative_path, markers in required_markers.items():
             source = (ROOT / relative_path).read_text(encoding="utf-8")
