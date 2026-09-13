@@ -159,6 +159,9 @@ if _turso_replica_enabled:
 
     _pull_interval = _integer_env("TURSO_SYNC_PULL_INTERVAL_SECONDS", 3600, 60)
     _push_retry = _integer_env("TURSO_SYNC_PUSH_RETRY_SECONDS", 300, 60)
+    _blocked_retry = _integer_env(
+        "TURSO_SYNC_BLOCKED_RETRY_SECONDS", 21600, 300
+    )
     _realtime_interval = _nonnegative_integer_env(
         "TURSO_REALTIME_SYNC_SECONDS", 10
     )
@@ -176,6 +179,7 @@ if _turso_replica_enabled:
             _turso_token,
             pull_interval_seconds=_pull_interval,
             push_retry_seconds=_push_retry,
+            blocked_retry_seconds=_blocked_retry,
             strict_push=_strict_push,
             realtime_interval_seconds=_realtime_interval,
         ),
@@ -279,6 +283,7 @@ def start_realtime_replica_sync() -> bool:
         _turso_token,
         interval_seconds=_realtime_interval,
         push_retry_seconds=_push_retry,
+        blocked_retry_seconds=_blocked_retry,
     )
 
 

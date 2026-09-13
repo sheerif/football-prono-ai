@@ -77,6 +77,21 @@ def _changes_data(operation: str) -> bool:
     return keyword not in {"", "SELECT", "EXPLAIN", "PRAGMA"}
 
 
+def _is_cloud_quota_blocked(exc: Exception) -> bool:
+    """Recognize Turso quota responses without depending on an SDK exception type."""
+    message = str(exc).lower()
+    return any(
+        marker in message
+        for marker in (
+            'code: "blocked"',
+            "reads are blocked",
+            "read operations are forbidden",
+            "rows read limit",
+            "rows read usage exceeded",
+        )
+    )
+
+
 @dataclass
 class _ReplicaState:
     path: str
@@ -88,6 +103,8 @@ class _ReplicaState:
     last_pull_at: str | None = None
     last_push_at: str | None = None
     last_error: str | None = None
+    cloud_blocked_until_monotonic: float = 0.0
+    cloud_blocked_at: str | None = None
     revision: int = 0
     realtime_started: bool = False
 
@@ -142,6 +159,7 @@ class Connection:
         *,
         pull_interval_seconds: int,
         push_retry_seconds: int,
+        blocked_retry_seconds: int,
         strict_push: bool,
     ):
         object.__setattr__(self, "_raw_connection", raw_connection)
@@ -149,6 +167,7 @@ class Connection:
         object.__setattr__(self, "_dirty", False)
         object.__setattr__(self, "_pull_interval_seconds", pull_interval_seconds)
         object.__setattr__(self, "_push_retry_seconds", push_retry_seconds)
+        object.__setattr__(self, "_blocked_retry_seconds", blocked_retry_seconds)
         object.__setattr__(self, "_strict_push", strict_push)
         object.__setattr__(self, "_closed", False)
 
@@ -176,7 +195,10 @@ class Connection:
             self._state.pending_push = True
             self._dirty = False
         if self._state.pending_push:
-            pushed = self._push_pending(force=True)
+            # A commit must never turn a long import into one failed cloud
+            # request per row.  The first pending write is attempted at once;
+            # subsequent failures respect the retry/circuit-breaker delay.
+            pushed = self._push_pending(force=False)
             if not pushed and self._strict_push:
                 raise OperationalError(
                     "Écriture conservée localement, mais sauvegarde Turso en attente."
@@ -205,6 +227,8 @@ class Connection:
         now = time.monotonic()
         state = self._state
         with state.lock:
+            if now < state.cloud_blocked_until_monotonic:
+                return False
             if state.pending_push and not self._push_pending(force=False):
                 return False
             if not force and now - state.last_pull_monotonic < self._pull_interval_seconds:
@@ -216,11 +240,18 @@ class Connection:
                 # so every SQL checkout does not hammer a blocked cloud quota.
                 state.last_pull_monotonic = time.monotonic()
                 state.last_error = f"pull: {exc}"
+                if _is_cloud_quota_blocked(exc):
+                    state.cloud_blocked_until_monotonic = (
+                        time.monotonic() + self._blocked_retry_seconds
+                    )
+                    state.cloud_blocked_at = _utc_now()
                 logger.warning("Synchronisation descendante Turso différée : %s", exc)
                 return False
             state.last_pull_monotonic = time.monotonic()
             state.last_pull_at = _utc_now()
             state.last_error = None
+            state.cloud_blocked_until_monotonic = 0.0
+            state.cloud_blocked_at = None
             if changed:
                 state.revision += 1
             return True
@@ -231,6 +262,10 @@ class Connection:
         with state.lock:
             if not state.pending_push:
                 return True
+            # Even a forced synchronization must respect a confirmed cloud
+            # quota block.  Local commits remain available in the meantime.
+            if now < state.cloud_blocked_until_monotonic:
+                return False
             if (
                 not force
                 and now - state.last_push_attempt_monotonic < self._push_retry_seconds
@@ -241,13 +276,21 @@ class Connection:
                 self._raw_connection.push()
             except Exception as exc:
                 state.last_error = f"push: {exc}"
+                if _is_cloud_quota_blocked(exc):
+                    state.cloud_blocked_until_monotonic = (
+                        time.monotonic() + self._blocked_retry_seconds
+                    )
+                    state.cloud_blocked_at = _utc_now()
                 logger.warning(
                     "Écriture locale conservée ; sauvegarde Turso différée : %s", exc
                 )
                 return False
             state.pending_push = False
+            state.last_push_attempt_monotonic = 0.0
             state.last_push_at = _utc_now()
             state.last_error = None
+            state.cloud_blocked_until_monotonic = 0.0
+            state.cloud_blocked_at = None
             return True
 
 
@@ -258,6 +301,7 @@ def connect(
     *,
     pull_interval_seconds: int = 3600,
     push_retry_seconds: int = 300,
+    blocked_retry_seconds: int = 21600,
     strict_push: bool = False,
     realtime_interval_seconds: int = 0,
     **_kwargs,
@@ -280,6 +324,7 @@ def connect(
             state,
             pull_interval_seconds=max(60, int(pull_interval_seconds)),
             push_retry_seconds=max(60, int(push_retry_seconds)),
+            blocked_retry_seconds=max(300, int(blocked_retry_seconds)),
             strict_push=bool(strict_push),
         )
         if not state.initialized:
@@ -300,6 +345,7 @@ def start_realtime_sync(
     *,
     interval_seconds: int = 10,
     push_retry_seconds: int = 300,
+    blocked_retry_seconds: int = 21600,
 ) -> bool:
     """Démarre le pull continu après l'initialisation complète du schéma."""
     if interval_seconds <= 0:
@@ -314,6 +360,7 @@ def start_realtime_sync(
             auth_token,
             interval_seconds=max(5, int(interval_seconds)),
             push_retry_seconds=max(60, int(push_retry_seconds)),
+            blocked_retry_seconds=max(300, int(blocked_retry_seconds)),
         )
     return True
 
@@ -325,6 +372,7 @@ def _start_realtime_worker(
     *,
     interval_seconds: int,
     push_retry_seconds: int,
+    blocked_retry_seconds: int,
 ) -> None:
     """Maintient la copie locale à jour sans faire de requête SQL distante."""
     state.realtime_started = True
@@ -345,6 +393,7 @@ def _start_realtime_worker(
                     state,
                     pull_interval_seconds=interval_seconds,
                     push_retry_seconds=push_retry_seconds,
+                    blocked_retry_seconds=blocked_retry_seconds,
                     strict_push=False,
                 )
                 while True:
@@ -377,6 +426,9 @@ def _start_realtime_worker(
 def replica_status(path: str) -> dict[str, Any]:
     state = _state_for(path)
     with state.lock:
+        blocked_seconds = max(
+            0, int(state.cloud_blocked_until_monotonic - time.monotonic())
+        )
         return {
             "path": state.path,
             "initialized": state.initialized,
@@ -384,6 +436,9 @@ def replica_status(path: str) -> dict[str, Any]:
             "last_pull_at": state.last_pull_at,
             "last_push_at": state.last_push_at,
             "last_error": state.last_error,
+            "cloud_blocked": blocked_seconds > 0,
+            "cloud_blocked_at": state.cloud_blocked_at,
+            "cloud_retry_in_seconds": blocked_seconds,
             "revision": state.revision,
             "realtime_started": state.realtime_started,
         }

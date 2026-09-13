@@ -16,6 +16,7 @@ class _LocalSyncConnection:
         self.push_calls = 0
         self.pull_calls = 0
         self.fail_push = False
+        self.push_error = "cloud unavailable"
         self.fail_pull = False
         self.pull_changed = False
 
@@ -25,7 +26,7 @@ class _LocalSyncConnection:
     def push(self):
         self.push_calls += 1
         if self.fail_push:
-            raise RuntimeError("cloud unavailable")
+            raise RuntimeError(self.push_error)
 
     def pull(self):
         self.pull_calls += 1
@@ -139,6 +140,35 @@ class TursoSyncDbapiTests(unittest.TestCase):
 
         status = turso_sync_dbapi.replica_status(self.path)
         self.assertEqual(status["revision"], 1)
+        engine.dispose()
+
+    def test_quota_block_opens_circuit_and_keeps_followup_commits_local(self):
+        engine = self._engine()
+        with engine.begin() as connection:
+            connection.execute(text("CREATE TABLE sample(id INTEGER PRIMARY KEY)"))
+        raw = self.connections[0]
+        raw.fail_push = True
+        raw.push_error = (
+            'Operation was blocked: SQL read operations are forbidden '
+            '(reads are blocked); code: "BLOCKED"'
+        )
+
+        with engine.begin() as connection:
+            connection.execute(text("INSERT INTO sample(id) VALUES (1)"))
+        calls_after_block = raw.push_calls
+        with engine.begin() as connection:
+            connection.execute(text("INSERT INTO sample(id) VALUES (2)"))
+
+        self.assertEqual(raw.push_calls, calls_after_block)
+        with engine.connect() as connection:
+            self.assertEqual(
+                connection.execute(text("SELECT COUNT(*) FROM sample")).scalar_one(),
+                2,
+            )
+        status = turso_sync_dbapi.replica_status(self.path)
+        self.assertTrue(status["pending_push"])
+        self.assertTrue(status["cloud_blocked"])
+        self.assertGreater(status["cloud_retry_in_seconds"], 0)
         engine.dispose()
 
     def test_failed_pull_is_throttled_instead_of_retried_on_every_read(self):

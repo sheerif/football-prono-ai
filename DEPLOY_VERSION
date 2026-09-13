@@ -1,3 +1,3 @@
-2026.09.13-streamlit-seeded-local-replica
+2026.09.13-streamlit-turso-quota-circuit-breaker
 
-Ce marqueur force le redéploiement avec la réplique SQLite préchargée.
+Ce marqueur force le redéploiement avec le fallback SQLite et le coupe-circuit quota Turso.
