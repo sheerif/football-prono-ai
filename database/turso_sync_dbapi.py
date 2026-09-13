@@ -268,6 +268,7 @@ class Connection:
                 return False
             if (
                 not force
+                and state.last_push_attempt_monotonic > 0
                 and now - state.last_push_attempt_monotonic < self._push_retry_seconds
             ):
                 return False

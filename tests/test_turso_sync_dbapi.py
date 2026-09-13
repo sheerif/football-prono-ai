@@ -108,6 +108,17 @@ class TursoSyncDbapiTests(unittest.TestCase):
         )
         engine.dispose()
 
+    def test_first_push_is_not_delayed_on_a_fresh_machine(self):
+        # GitHub runners and freshly rebooted Streamlit instances can have a
+        # monotonic uptime below the ordinary 300-second retry interval.
+        with patch.object(turso_sync_dbapi.time, "monotonic", return_value=42.0):
+            engine = self._engine()
+            with engine.begin() as connection:
+                connection.execute(text("CREATE TABLE sample(id INTEGER PRIMARY KEY)"))
+
+        self.assertEqual(self.connections[0].push_calls, 1)
+        engine.dispose()
+
     def test_failed_cloud_push_keeps_local_data_and_pending_state(self):
         engine = self._engine()
         with engine.begin() as connection:
