@@ -127,6 +127,51 @@ class TursoHttpDbapiTests(unittest.TestCase):
         closed_client.execute.assert_not_called()
         replacement.execute.assert_called_once()
 
+    def test_transient_server_error_recreates_client_and_retries(self):
+        failed_client = Mock(closed=False)
+        failed_client.execute.side_effect = RuntimeError(
+            "SERVER_ERROR: HTTP status 503"
+        )
+        replacement = Mock(closed=False)
+        replacement.execute.return_value = _Result(
+            columns=("value",), rows=[(1,)]
+        )
+        with (
+            patch.object(
+                turso_http_dbapi.libsql_client,
+                "create_client_sync",
+                side_effect=[failed_client, replacement],
+            ) as create_client,
+            patch.object(turso_http_dbapi.time, "sleep") as sleep,
+        ):
+            connection = turso_http_dbapi.connect(
+                "libsql://football-prono.example.turso.io",
+                "secret-token",
+            )
+            row = connection.execute("SELECT 1").fetchone()
+
+        self.assertEqual(row, (1,))
+        self.assertEqual(create_client.call_count, 2)
+        failed_client.close.assert_called_once()
+        sleep.assert_called_once()
+
+    def test_authentication_error_is_not_retried(self):
+        client = Mock(closed=False)
+        client.execute.side_effect = RuntimeError("HTTP status 401 unauthorized")
+        with patch.object(
+            turso_http_dbapi.libsql_client,
+            "create_client_sync",
+            return_value=client,
+        ) as create_client:
+            connection = turso_http_dbapi.connect(
+                "libsql://football-prono.example.turso.io",
+                "bad-token",
+            )
+            with self.assertRaises(turso_http_dbapi.OperationalError):
+                connection.execute("SELECT 1")
+
+        create_client.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

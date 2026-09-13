@@ -45,7 +45,14 @@ except Exception:
 
 if "connection_started_at" not in st.session_state:
 	st.session_state["connection_started_at"] = datetime.datetime.now(datetime.UTC).replace(tzinfo=None).isoformat()
-	st.session_state["connection_log_id"] = import_service.record_connection(st.session_state["connection_started_at"])
+	# Ce journal est informatif : une indisponibilité Turso momentanée ne doit
+	# jamais empêcher l'utilisateur d'ouvrir le site.
+	try:
+		st.session_state["connection_log_id"] = import_service.record_connection(
+			st.session_state["connection_started_at"]
+		)
+	except Exception:
+		st.session_state["connection_log_id"] = None
 
 background_jobs.start_startup_updates_once(st.session_state.get("connection_log_id"))
 

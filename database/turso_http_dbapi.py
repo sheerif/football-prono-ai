@@ -11,6 +11,7 @@ from __future__ import annotations
 import sqlite3
 import math
 import threading
+import time
 from collections.abc import Mapping
 from typing import Any, Iterable
 
@@ -54,9 +55,26 @@ def _normalize_parameters(parameters: Any) -> Any:
     return tuple(_normalize_value(value) for value in parameters)
 
 
-def _is_client_closed_error(exc: Exception) -> bool:
+def _is_transient_error(exc: Exception) -> bool:
+    """Return whether a request can safely be attempted on a fresh client."""
     message = str(exc).casefold()
-    return "client_closed" in message or "client is closed" in message
+    if any(
+        marker in message
+        for marker in (
+            "unauthorized", "forbidden", "authentication", "invalid token",
+            "status 401", "status 403", "quota", "rate limit", "status 429",
+        )
+    ):
+        return False
+    return isinstance(exc, (TimeoutError, ConnectionError, OSError)) or any(
+        marker in message
+        for marker in (
+            "client_closed", "client is closed", "connection reset",
+            "connection refused", "temporarily unavailable", "timed out",
+            "timeout", "server_error", "status 500", "status 502",
+            "status 503", "status 504",
+        )
+    )
 
 
 class Cursor:
@@ -73,18 +91,12 @@ class Cursor:
     def execute(self, operation: str, parameters: Any = None):
         self._ensure_open()
         normalized = _normalize_parameters(parameters)
-        client = self.connection._client_for_request()
         try:
-            result = client.execute(operation, normalized)
+            result = self.connection._request_with_retry(
+                "execute", operation, normalized
+            )
         except Exception as exc:
-            if not self.connection._recover_closed_client(client, exc):
-                raise OperationalError(str(exc)) from exc
-            try:
-                result = self.connection._client_for_request().execute(
-                    operation, normalized
-                )
-            except Exception as retry_exc:
-                raise OperationalError(str(retry_exc)) from retry_exc
+            raise OperationalError(str(exc)) from exc
         self._load_result(result)
         return self
 
@@ -97,16 +109,10 @@ class Cursor:
         if not statements:
             self.rowcount = 0
             return self
-        client = self.connection._client_for_request()
         try:
-            results = client.batch(statements)
+            results = self.connection._request_with_retry("batch", statements)
         except Exception as exc:
-            if not self.connection._recover_closed_client(client, exc):
-                raise OperationalError(str(exc)) from exc
-            try:
-                results = self.connection._client_for_request().batch(statements)
-            except Exception as retry_exc:
-                raise OperationalError(str(retry_exc)) from retry_exc
+            raise OperationalError(str(exc)) from exc
         self.rowcount = sum(int(result.rows_affected or 0) for result in results)
         self.lastrowid = results[-1].last_insert_rowid
         self.description = None
@@ -191,8 +197,16 @@ class Connection:
     def close(self):
         with self._client_lock:
             if not self._closed:
-                self._client.close()
-                self._closed = True
+                try:
+                    self._client.close()
+                finally:
+                    self._closed = True
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
 
     def create_function(self, *_args, **_kwargs):
         # Les fonctions SQL personnalisées de la dialecte SQLite ne sont pas
@@ -218,18 +232,33 @@ class Connection:
             self._ensure_open()
             client = self._client
             if getattr(client, "closed", False) is True:
-                self._client = self._new_client()
-                client = self._client
+                client = self._replace_client(client)
             return client
 
-    def _recover_closed_client(self, failed_client, exc: Exception) -> bool:
-        if not _is_client_closed_error(exc):
-            return False
+    def _replace_client(self, failed_client):
         with self._client_lock:
             self._ensure_open()
             if self._client is failed_client:
+                try:
+                    failed_client.close()
+                except Exception:
+                    pass
                 self._client = self._new_client()
-        return True
+            return self._client
+
+    def _request_with_retry(self, method: str, *args):
+        last_error = None
+        for attempt in range(3):
+            client = self._client_for_request()
+            try:
+                return getattr(client, method)(*args)
+            except Exception as exc:
+                last_error = exc
+                if not _is_transient_error(exc) or attempt >= 2:
+                    raise
+                self._replace_client(client)
+                time.sleep(0.15 * (attempt + 1))
+        raise last_error
 
 
 def connect(url: str, auth_token: str, timeout: float = 15.0, **_kwargs):
