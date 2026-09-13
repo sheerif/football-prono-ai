@@ -1,6 +1,11 @@
 import importlib
+import gzip
+import hashlib
+import json
 import os
 import sys
+import uuid
+from pathlib import Path
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, event
 from sqlalchemy.engine import make_url
@@ -24,10 +29,22 @@ _turso_access_mode = (os.getenv("TURSO_ACCESS_MODE") or "direct").strip().lower(
 _streamlit_cloud = os.path.isdir("/mount/src") or bool(
     os.getenv("STREAMLIT_SHARING_MODE")
 )
+_seed_archive_path = Path(__file__).with_name("seed") / "football-cache-v3.db.gz"
+_seed_info_path = Path(__file__).with_name("seed") / "football-cache-v3.db-info.json"
+_seed_sha256 = "d7930409149acf6c211702cab896144fe2aa715380c711e3db06d87fc8c948b8"
+_use_cloud_seed = (
+    _streamlit_cloud
+    and _seed_archive_path.is_file()
+    and _seed_info_path.is_file()
+    and os.getenv("STREAMLIT_USE_SEEDED_REPLICA", "true").strip().lower()
+    in {"1", "true", "yes", "oui"}
+)
 _force_cloud_direct = os.getenv(
     "STREAMLIT_FORCE_DIRECT_DATABASE", "true"
 ).strip().lower() in {"1", "true", "yes", "oui"}
-if _streamlit_cloud and _force_cloud_direct:
+if _use_cloud_seed:
+    _turso_access_mode = "replica"
+elif _streamlit_cloud and _force_cloud_direct:
     # Also neutralize an old TURSO_ACCESS_MODE=replica secret that may still be
     # present in the deployed application.
     _turso_access_mode = "direct"
@@ -53,9 +70,14 @@ _url = make_url(DATABASE_URL)
 _is_sqlite = _url.get_backend_name() == "sqlite"
 _is_local_sqlite = _url.drivername == "sqlite" and not _turso_enabled
 _turso_replica_enabled = _turso_enabled and _turso_access_mode == "replica"
-_local_replica_path = os.path.abspath(
-    os.getenv("TURSO_LOCAL_DATABASE_PATH", "football-cache-v2.db")
-)
+if _use_cloud_seed:
+    # A new name prevents an incomplete replica from an older deployment from
+    # being reused by a hot Streamlit process.
+    _local_replica_path = "/tmp/football-cache-v3.db"
+else:
+    _local_replica_path = os.path.abspath(
+        os.getenv("TURSO_LOCAL_DATABASE_PATH", "football-cache-v2.db")
+    )
 
 
 def _integer_env(name: str, default: int, minimum: int) -> int:
@@ -88,7 +110,51 @@ def _load_database_adapter(name: str):
         return importlib.import_module(qualified_name)
 
 
+def _seed_cloud_replica() -> None:
+    """Restore a verified replica without loading the database into memory."""
+    if not _use_cloud_seed:
+        return
+    database_path = Path(_local_replica_path)
+    info_path = Path(f"{_local_replica_path}-info")
+    if database_path.is_file() and database_path.stat().st_size > 0 and info_path.is_file():
+        return
+
+    database_path.parent.mkdir(parents=True, exist_ok=True)
+    for suffix in ("", "-info", "-changes", "-wal-revert", "-wal", "-shm"):
+        try:
+            Path(f"{_local_replica_path}{suffix}").unlink()
+        except FileNotFoundError:
+            pass
+
+    temporary_path = Path(f"{_local_replica_path}.seed.tmp")
+    digest = hashlib.sha256()
+    try:
+        with gzip.open(_seed_archive_path, "rb") as source, temporary_path.open(
+            "wb"
+        ) as destination:
+            while chunk := source.read(1024 * 1024):
+                digest.update(chunk)
+                destination.write(chunk)
+        if digest.hexdigest() != _seed_sha256:
+            raise RuntimeError("L’instantané SQLite embarqué est endommagé.")
+
+        info = json.loads(_seed_info_path.read_text(encoding="utf-8"))
+        info["client_unique_id"] = f"streamlit-{uuid.uuid4()}"
+        temporary_info = Path(f"{_local_replica_path}-info.seed.tmp")
+        temporary_info.write_text(
+            json.dumps(info, ensure_ascii=False, separators=(",", ":")),
+            encoding="utf-8",
+        )
+        os.replace(temporary_path, database_path)
+        os.replace(temporary_info, info_path)
+        Path(f"{_local_replica_path}-changes").touch()
+    finally:
+        temporary_path.unlink(missing_ok=True)
+        Path(f"{_local_replica_path}-info.seed.tmp").unlink(missing_ok=True)
+
+
 if _turso_replica_enabled:
+    _seed_cloud_replica()
     turso_sync_dbapi = _load_database_adapter("turso_sync_dbapi")
 
     _pull_interval = _integer_env("TURSO_SYNC_PULL_INTERVAL_SECONDS", 3600, 60)
@@ -96,6 +162,8 @@ if _turso_replica_enabled:
     _realtime_interval = _nonnegative_integer_env(
         "TURSO_REALTIME_SYNC_SECONDS", 10
     )
+    if _streamlit_cloud and _realtime_interval:
+        _realtime_interval = max(300, _realtime_interval)
     _strict_push = os.getenv("TURSO_SYNC_STRICT_PUSH", "false").lower() in {
         "1", "true", "yes", "oui"
     }

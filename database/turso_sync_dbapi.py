@@ -212,6 +212,9 @@ class Connection:
             try:
                 changed = bool(self._raw_connection.pull())
             except Exception as exc:
+                # A failed pull is still an attempted pull.  Remember its time
+                # so every SQL checkout does not hammer a blocked cloud quota.
+                state.last_pull_monotonic = time.monotonic()
                 state.last_error = f"pull: {exc}"
                 logger.warning("Synchronisation descendante Turso différée : %s", exc)
                 return False
@@ -268,7 +271,9 @@ def connect(
             local_path,
             remote_url=url,
             auth_token=auth_token,
-            bootstrap_if_empty=True,
+            # An existing verified replica must remain readable when Turso is
+            # offline or a cloud quota is temporarily exhausted.
+            bootstrap_if_empty=not existed,
         )
         connection = Connection(
             raw_connection,
@@ -333,7 +338,7 @@ def _start_realtime_worker(
                     state.path,
                     remote_url=url,
                     auth_token=auth_token,
-                    bootstrap_if_empty=True,
+                    bootstrap_if_empty=False,
                 )
                 connection = Connection(
                     raw_connection,

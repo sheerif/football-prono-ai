@@ -16,6 +16,7 @@ class _LocalSyncConnection:
         self.push_calls = 0
         self.pull_calls = 0
         self.fail_push = False
+        self.fail_pull = False
         self.pull_changed = False
 
     def __getattr__(self, name):
@@ -28,6 +29,8 @@ class _LocalSyncConnection:
 
     def pull(self):
         self.pull_calls += 1
+        if self.fail_pull:
+            raise RuntimeError("rows read limit reached")
         changed = self.pull_changed
         self.pull_changed = False
         return changed
@@ -136,6 +139,25 @@ class TursoSyncDbapiTests(unittest.TestCase):
 
         status = turso_sync_dbapi.replica_status(self.path)
         self.assertEqual(status["revision"], 1)
+        engine.dispose()
+
+    def test_failed_pull_is_throttled_instead_of_retried_on_every_read(self):
+        engine = self._engine()
+        with engine.connect():
+            pass
+        raw = self.connections[0]
+        raw.fail_pull = True
+        wrapped = engine.raw_connection().dbapi_connection
+
+        wrapped.pull_if_due(force=True)
+        calls_after_failure = raw.pull_calls
+        wrapped.pull_if_due()
+
+        self.assertEqual(raw.pull_calls, calls_after_failure)
+        self.assertIn(
+            "rows read limit reached",
+            turso_sync_dbapi.replica_status(self.path)["last_error"],
+        )
         engine.dispose()
 
     def test_realtime_worker_is_not_started_during_database_connection(self):
