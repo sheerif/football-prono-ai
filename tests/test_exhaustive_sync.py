@@ -251,19 +251,32 @@ class ExhaustiveSyncTests(unittest.TestCase):
         self.assertEqual(result, "new-job")
         starter.assert_called_once_with(resumed=True)
 
-    def test_streamlit_cloud_does_not_automatically_resume_full_sync(self):
-        starter = Mock()
+    def test_due_full_sync_resumes_automatically_on_cloud(self):
+        starter = Mock(return_value="resumed-job")
+        past = (
+            datetime.datetime.now(datetime.UTC).replace(tzinfo=None)
+            - datetime.timedelta(minutes=1)
+        ).isoformat()
         with (
             patch.object(
                 background_jobs, "_running_on_streamlit_cloud", return_value=True
             ),
             patch.dict("os.environ", {}, clear=True),
+            patch.object(background_jobs, "data_job_running", return_value=False),
+            patch.object(
+                background_jobs,
+                "cached_full_sync_state",
+                return_value={
+                    "status": "waiting_quota",
+                    "metadata": {"next_retry_at": past},
+                },
+            ),
             patch.object(background_jobs, "start_full_sync", starter),
         ):
             result = background_jobs.resume_pending_full_sync_if_due()
 
-        self.assertIsNone(result)
-        starter.assert_not_called()
+        self.assertEqual(result, "resumed-job")
+        starter.assert_called_once_with(resumed=True)
 
     def test_sync_resumes_after_due_time_without_status_confirmation(self):
         starter = Mock(return_value="resumed-job")

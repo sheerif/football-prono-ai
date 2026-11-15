@@ -30,13 +30,6 @@ def _running_on_streamlit_cloud() -> bool:
     return os.path.isdir("/mount/src") or bool(os.getenv("STREAMLIT_SHARING_MODE"))
 
 
-def _cloud_automation_enabled(variable: str) -> bool:
-    configured = os.getenv(variable)
-    if configured is None:
-        return not _running_on_streamlit_cloud()
-    return configured.strip().lower() in {"1", "true", "yes", "oui"}
-
-
 def _now() -> str:
     return datetime.datetime.now(datetime.UTC).replace(tzinfo=None).isoformat()
 
@@ -748,9 +741,7 @@ def resume_pending_full_sync() -> str | None:
 
 
 def resume_pending_full_sync_if_due() -> str | None:
-    """Cloud-friendly resume check, backed by the shared durable-state cache."""
-    if not _cloud_automation_enabled("STREAMLIT_RESUME_FULL_SYNC"):
-        return None
+    """Resume a due sync from the local durable checkpoint on the next rerun."""
     if data_job_running():
         return None
     state = cached_full_sync_state()
