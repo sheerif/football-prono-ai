@@ -181,7 +181,7 @@ def recommend_market(
     pair = "".join(sorted((OUTCOME_CODES[ordered[0]], OUTCOME_CODES[ordered[1]]), key=("1", "N", "2").index))
     market = {"1N": "1X", "N2": "X2", "12": "12"}[pair]
     double_chances = compute_double_chances(values)
-    if double_chances[market] >= 65 and risk["level"] != "élevé":
+    if double_chances[market] >= 65 and risk_score < 65:
         return {"market": market, "probability": double_chances[market], "reason": "Match trop serré pour une victoire sèche."}
     return {"market": "PRUDENCE", "probability": None, "reason": "Aucun marché ne présente une sécurité suffisante."}
 
