@@ -1,4 +1,5 @@
 import unittest
+import datetime
 from unittest.mock import patch
 
 from services import background_jobs, import_service
@@ -120,6 +121,44 @@ class BackgroundProgressTests(unittest.TestCase):
         self.assertTrue(status["api_refused"])
         self.assertFalse(status["available"])
         self.assertTrue(background_jobs._quota_is_exhausted(status))
+
+    def test_cached_quota_status_uses_latest_api_response_headers(self):
+        now = datetime.datetime.now(datetime.UTC)
+        cached = {
+            "verified": True,
+            "current": 10,
+            "limit": 100,
+            "remaining": 90,
+            "available": True,
+            "checked_at": "old",
+        }
+        live_headers = {
+            "daily_limit": "100",
+            "daily_remaining": "81",
+            "minute_limit": "10",
+            "minute_remaining": "8",
+            "checked_at": "2026-11-15T12:34:56",
+        }
+        with (
+            patch.object(background_jobs, "_quota_status_cache", (now, cached)),
+            patch.object(background_jobs.import_service.client, "last_rate_limit", live_headers),
+            patch.object(
+                background_jobs.import_service.client,
+                "last_quota_status_error",
+                "",
+            ),
+            patch.object(
+                background_jobs.import_service.client,
+                "get_status",
+            ) as get_status,
+        ):
+            status = background_jobs.api_quota_status()
+
+        get_status.assert_not_called()
+        self.assertEqual(status["current"], 19)
+        self.assertEqual(status["remaining"], 81)
+        self.assertEqual(status["minute_remaining"], 8)
+        self.assertEqual(status["checked_at"], live_headers["checked_at"])
 
     def test_waiting_state_uses_durable_database_progress(self):
         with (

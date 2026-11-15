@@ -138,6 +138,8 @@ class ApiFootballClient:
         self.session = session or _build_session(_retry_count())
         self.response_archiver = response_archiver
         self.last_rate_limit = {}
+        self.last_quota_status_error = ""
+        self.last_quota_status_checked_at = None
         self.request_count = 0
 
     @staticmethod
@@ -161,16 +163,103 @@ class ApiFootballClient:
                     "jusqu'à minuit UTC pour éviter une requête refusée supplémentaire."
                 )
             key = _cache_key(self.api_key, path, params)
-            cached = _cached_response(key)
+            # Status must always be fresh; cached football data avoids a real
+            # download and therefore does not need a quota preflight.
+            cached = None if path == "/status" else _cached_response(key)
             if cached is not None:
                 return cached
-            payload = self._get_unlocked(path, params)
-            _remember_response(key, payload)
+            if path != "/status":
+                self._preflight_quota()
+            payload = self._get_unlocked(
+                path,
+                params,
+                count_request=path != "/status",
+            )
+            if path != "/status":
+                _remember_response(key, payload)
             return payload
 
-    def _get_unlocked(self, path, params=None):
+    def _preflight_quota(self) -> None:
+        """Refresh quota immediately before every uncached data request."""
+        payload = self._get_unlocked(
+            "/status",
+            count_request=False,
+            archive_response=False,
+            allow_api_errors=True,
+        )
+        self.last_quota_status_checked_at = (
+            self.last_rate_limit.get("checked_at")
+        )
+        detail = self._error_detail(payload)
+        if detail:
+            self.last_quota_status_error = detail
+            if _is_daily_quota_error(detail):
+                _block_daily_requests()
+            raise RuntimeError(f"API-Football quota status: {detail}")
+        self.last_quota_status_error = ""
+
+        response = payload.get("response") or {}
+        if isinstance(response, list):
+            response = response[0] if response else {}
+        requests = response.get("requests") or {}
+        try:
+            current = int(requests.get("current"))
+            daily_limit = int(requests.get("limit_day"))
+        except (TypeError, ValueError):
+            current = daily_limit = None
+
+        headers = self.last_rate_limit or {}
+        try:
+            daily_remaining = int(headers.get("daily_remaining"))
+        except (TypeError, ValueError):
+            daily_remaining = None
+        try:
+            minute_remaining = int(headers.get("minute_remaining"))
+        except (TypeError, ValueError):
+            minute_remaining = None
+
+        if (
+            daily_remaining is not None
+            and daily_remaining <= 0
+        ) or (
+            current is not None
+            and daily_limit is not None
+            and daily_limit > 0
+            and current >= daily_limit
+        ):
+            _block_daily_requests()
+            self.last_quota_status_error = "Quota API journalier épuisé."
+            raise RuntimeError(
+                "Quota API journalier épuisé : aucun téléchargement lancé."
+            )
+        if minute_remaining is not None and minute_remaining <= 0:
+            retry_after = headers.get("retry_after") or "60"
+            self.last_quota_status_error = "Quota API par minute atteint."
+            raise RuntimeError(
+                "Quota API par minute atteint : aucun téléchargement lancé. "
+                f"Réessayez dans {retry_after} seconde(s)."
+            )
+        if (
+            (daily_limit is None or daily_limit <= 0)
+            and daily_remaining is None
+        ):
+            self.last_quota_status_error = "Réponse /status sans compteur de quota."
+            raise RuntimeError(
+                "Impossible de vérifier le quota API : téléchargement annulé par prudence."
+            )
+
+    def _get_unlocked(
+        self,
+        path,
+        params=None,
+        *,
+        count_request=True,
+        archive_response=True,
+        allow_api_errors=False,
+    ):
         url = f"{self.base}{path}"
-        self.request_count += 1
+        if count_request:
+            self.request_count += 1
         resp = self.session.get(
             url,
             headers=self.headers,
@@ -185,6 +274,9 @@ class ApiFootballClient:
                 "minute_limit": response_headers.get("X-RateLimit-Limit"),
                 "minute_remaining": response_headers.get("X-RateLimit-Remaining"),
                 "retry_after": response_headers.get("Retry-After"),
+                "checked_at": datetime.datetime.now(datetime.UTC).replace(
+                    tzinfo=None
+                ).isoformat(),
             }
             try:
                 daily_remaining = int(self.last_rate_limit["daily_remaining"])
@@ -199,28 +291,49 @@ class ApiFootballClient:
                 "_archive_error": "Réponse JSON invalide",
                 "_raw_text": str(getattr(resp, "text", "")),
             }
-            self._archive(path, params, payload, response_headers, resp)
+            if archive_response:
+                self._archive(path, params, payload, response_headers, resp)
             raise RuntimeError(
                 "API-Football a renvoyé une réponse JSON invalide."
             ) from json_exc
 
         # Une réponse reçue doit être durable avant toute interprétation métier,
         # y compris lorsqu'API-Football renvoie une erreur ou un quota épuisé.
-        self._archive(path, params, payload, response_headers, resp)
+        if archive_response:
+            self._archive(path, params, payload, response_headers, resp)
+        if path == "/status":
+            self.last_quota_status_checked_at = self.last_rate_limit.get(
+                "checked_at"
+            )
+            self.last_quota_status_error = self._error_detail(payload)
 
         try:
             resp.raise_for_status()
         except HTTPError as exc:
-            if getattr(resp, "status_code", None) != 429:
-                raise
             detail = self._error_detail(payload) or str(exc)
             if _is_daily_quota_error(detail):
                 _block_daily_requests()
+            if path == "/status" or "quota" in detail.casefold() or "rate limit" in detail.casefold():
+                self.last_quota_status_error = detail
+                self.last_quota_status_checked_at = self.last_rate_limit.get(
+                    "checked_at"
+                )
+            if allow_api_errors:
+                return payload
+            if getattr(resp, "status_code", None) != 429:
+                raise
             raise RuntimeError(f"API-Football quota 429 : {detail}") from exc
         detail = self._error_detail(payload)
         if detail:
             if _is_daily_quota_error(detail):
                 _block_daily_requests()
+            if "quota" in detail.casefold() or "rate limit" in detail.casefold():
+                self.last_quota_status_error = detail
+                self.last_quota_status_checked_at = self.last_rate_limit.get(
+                    "checked_at"
+                )
+            if allow_api_errors:
+                return payload
             raise RuntimeError(f"API-Football a refusé la requête : {detail}")
         return payload
 

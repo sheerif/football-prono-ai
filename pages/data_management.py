@@ -113,6 +113,46 @@ def _recent_logs(limit: int = 6) -> pd.DataFrame:
     )
 
 
+@st.fragment(run_every="2s")
+def _render_api_quota_status():
+    if not (os.getenv("API_FOOTBALL_KEY") or "").strip():
+        return
+    quota = background_jobs.api_quota_status()
+    if quota.get("api_refused"):
+        if quota.get("verified"):
+            counter_label = (
+                f"Les en-têtes indiquent {quota['remaining']} appel(s) quotidien(s) "
+                f"restant(s) sur {quota['limit']}"
+            )
+        else:
+            counter_label = "Le compteur exact n’a pas été fourni"
+        st.warning(
+            "L’API refuse actuellement les appels de synchronisation. "
+            f"{counter_label}. Aucun appel de données ne sera lancé avant un nouveau contrôle."
+        )
+    elif quota.get("verified"):
+        remaining = quota["remaining"]
+        quota_label = (
+            "Quota API épuisé"
+            if remaining <= 0
+            else f"Quota API : {remaining} appel(s) quotidien(s) restant(s)"
+        )
+        minute_label = (
+            f"{quota['minute_remaining']} appel(s) restant(s) cette minute · "
+            if quota.get("minute_remaining") is not None
+            else ""
+        )
+        st.caption(
+            f"{quota_label} · {quota['current']}/{quota['limit']} utilisés · "
+            f"{minute_label}vérifié à {quota['checked_at']} UTC."
+        )
+    else:
+        st.caption(
+            "Quota API non vérifiable pour le moment ; le contrôle sera "
+            "retenté avant chaque téléchargement."
+        )
+
+
 @st.fragment(run_every="1s")
 def _render_jobs():
     """Rafraîchit la progression des tâches de fond en temps réel."""
@@ -305,41 +345,7 @@ def show():
     _render_jobs()
     data_job_active = background_jobs.data_job_running()
 
-    if (os.getenv("API_FOOTBALL_KEY") or "").strip():
-        quota = background_jobs.api_quota_status()
-        if quota.get("api_refused"):
-            if quota.get("verified"):
-                counter_label = (
-                    f"Les en-têtes indiquent {quota['remaining']} appel(s) quotidien(s) "
-                    f"restant(s) sur {quota['limit']}"
-                )
-            else:
-                counter_label = "Le compteur exact n’a pas été fourni"
-            st.warning(
-                "L’API refuse actuellement les appels de synchronisation. "
-                f"{counter_label}. Aucun appel de données ne sera lancé avant un nouveau contrôle."
-            )
-        elif quota.get("verified"):
-            remaining = quota["remaining"]
-            quota_label = (
-                "Quota API épuisé"
-                if remaining <= 0
-                else f"Quota API : {remaining} appel(s) restant(s)"
-            )
-            minute_label = (
-                f"{quota['minute_remaining']} appel(s) restant(s) cette minute · "
-                if quota.get("minute_remaining") is not None
-                else ""
-            )
-            st.caption(
-                f"{quota_label} · {quota['current']}/{quota['limit']} utilisés · "
-                f"{minute_label}vérifié à {quota['checked_at']} UTC."
-            )
-        else:
-            st.caption(
-                "Quota API non vérifiable pour le moment ; le contrôle sera "
-                "retenté avant chaque synchronisation."
-            )
+    _render_api_quota_status()
 
     ui.section_label("Synchronisation globale")
     with st.container(border=True):

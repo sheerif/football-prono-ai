@@ -265,6 +265,62 @@ def _best_progress_snapshot(job_id: str) -> dict:
     return current
 
 
+def _merge_latest_rate_limit_headers(status: dict) -> dict:
+    """Refresh displayed counters from the most recent API response headers."""
+    result = dict(status)
+    client = import_service.client
+    headers = client.last_rate_limit or {}
+    daily_limit = _optional_int(headers.get("daily_limit"))
+    daily_remaining = _optional_int(headers.get("daily_remaining"))
+    minute_limit = _optional_int(headers.get("minute_limit"))
+    minute_remaining = _optional_int(headers.get("minute_remaining"))
+    if daily_limit is not None and daily_remaining is not None:
+        result.update(
+            verified=True,
+            limit=daily_limit,
+            remaining=max(0, daily_remaining),
+            current=max(0, daily_limit - daily_remaining),
+        )
+    if minute_limit is not None:
+        result["minute_limit"] = minute_limit
+    if minute_remaining is not None:
+        result["minute_remaining"] = max(0, minute_remaining)
+
+    latest_error = str(getattr(client, "last_quota_status_error", "") or "")
+    if latest_error:
+        result["error"] = latest_error
+        result["api_refused"] = any(
+            token in latest_error.casefold()
+            for token in ("quota", "request limit", "rate limit", "429")
+        )
+    elif result.get("api_refused"):
+        latest_check = (
+            getattr(client, "last_quota_status_checked_at", None)
+            or headers.get("checked_at")
+        )
+        if latest_check and str(latest_check) > str(result.get("checked_at") or ""):
+            result.pop("error", None)
+            result["api_refused"] = False
+    else:
+        result.pop("error", None)
+        result["api_refused"] = False
+    result["available"] = bool(
+        result.get("verified")
+        and int(result.get("remaining") or 0) > 0
+        and (
+            result.get("minute_remaining") is None
+            or int(result["minute_remaining"]) > 0
+        )
+        and not result.get("api_refused")
+    )
+    result["checked_at"] = (
+        headers.get("checked_at")
+        or getattr(client, "last_quota_status_checked_at", None)
+        or result.get("checked_at")
+    )
+    return result
+
+
 def api_quota_status(*, force: bool = False) -> dict:
     """Lit uniquement les compteurs du endpoint /status, sans exposer le compte."""
     global _quota_status_cache
@@ -274,7 +330,7 @@ def api_quota_status(*, force: bool = False) -> dict:
         and _quota_status_cache
         and (now - _quota_status_cache[0]).total_seconds() < 60
     ):
-        return dict(_quota_status_cache[1])
+        return _merge_latest_rate_limit_headers(_quota_status_cache[1])
     try:
         payload = import_service.client.get_status()
         response = payload.get("response") or {}
@@ -332,6 +388,7 @@ def api_quota_status(*, force: bool = False) -> dict:
             "error": error,
             "checked_at": now.replace(tzinfo=None).isoformat(),
         }
+    result = _merge_latest_rate_limit_headers(result)
     _quota_status_cache = (now, dict(result))
     return result
 
