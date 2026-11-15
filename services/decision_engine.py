@@ -81,18 +81,34 @@ def compute_consensus(
 
     favorites = [_favorite(distribution) for _, distribution, _ in sources]
     base_favorite = favorites[0]
+    independent_count = len(sources) - 1
+    source_names = [label for label, _, _ in sources]
+    favorite_map = dict(zip(source_names, favorites, strict=True))
+    quality = max(0.0, min(1.0, float(data_quality)))
+
+    # A statistical model alone is not independent consensus evidence.
+    if independent_count == 0:
+        return {
+            "score": None,
+            "level": "interne",
+            "sources": source_names,
+            "favorites": favorite_map,
+            "agreement_ratio": None,
+            "proximity": None,
+            "source_count": 1,
+            "independent_source_count": 0,
+            "source_states": source_states,
+        }
+
     agreements = sum(favorite == base_favorite for favorite in favorites) / len(favorites)
     distances = [
         sum(abs(model[index] - distribution[index]) for index in range(3)) / 2
         for _, distribution, _ in sources[1:]
     ]
-    proximity = 1.0 if not distances else max(0.0, 1.0 - sum(distances) / len(distances) / 45.0)
-    reliability = sum(weight for _, _, weight in sources) / len(sources)
-    quality = max(0.0, min(1.0, float(data_quality)))
-    score = 100 * (0.45 * agreements + 0.30 * proximity + 0.15 * reliability + 0.10 * quality)
-    if len(sources) == 1:
-        level = "interne"
-    elif agreements == 1 and proximity >= 0.72:
+    proximity = max(0.0, 1.0 - sum(distances) / len(distances) / 45.0)
+    reliability = sum(weight for _, _, weight in sources[1:]) / independent_count
+    score = 100 * (0.50 * agreements + 0.30 * proximity + 0.15 * reliability + 0.05 * quality)
+    if agreements == 1 and proximity >= 0.72:
         level = "convergence_forte"
     elif agreements >= 0.5:
         level = "convergence_partielle"
@@ -101,10 +117,12 @@ def compute_consensus(
     return {
         "score": round(max(0.0, min(100.0, score)), 2),
         "level": level,
-        "sources": [label for label, _, _ in sources],
-        "favorites": dict(zip([label for label, _, _ in sources], favorites, strict=True)),
+        "sources": source_names,
+        "favorites": favorite_map,
         "agreement_ratio": round(agreements, 4),
         "proximity": round(proximity, 4),
+        "source_count": len(sources),
+        "independent_source_count": independent_count,
         "source_states": source_states,
     }
 
@@ -118,15 +136,19 @@ def compute_risk(
 ) -> dict[str, object]:
     """Calcule un risque explicable, indépendant de la probabilité principale."""
     margin, _ = ranking_service.compute_margin(prediction)
-    margin_risk = 1.0 - min(1.0, margin / 20.0)
-    divergence_risk = 1.0 - float(consensus.get("agreement_ratio") or 0.0)
+    margin_risk = 1.0 - min(1.0, max(0.0, margin) / 20.0)
+    agreement = consensus.get("agreement_ratio")
+    divergence_risk = 1.0 - max(0.0, min(1.0, float(agreement))) if agreement is not None else 0.5
     quality_risk = 1.0 - max(0.0, min(1.0, float(data_quality)))
     stability_risk = 1.0 - max(0.0, min(1.0, float(stability_score)))
+    independent_count = int(consensus.get("independent_source_count") or 0)
+    evidence_risk = 1.0 if independent_count == 0 else 0.5 if independent_count == 1 else 0.0
     score = 100 * (
-        0.40 * margin_risk
-        + 0.30 * divergence_risk
+        0.35 * margin_risk
+        + 0.25 * divergence_risk
         + 0.15 * quality_risk
         + 0.15 * stability_risk
+        + 0.10 * evidence_risk
     )
     level = "très élevé" if score >= 80 else "élevé" if score >= 65 else "modéré" if score >= 35 else "faible"
     return {"score": round(max(0.0, min(100.0, score)), 2), "level": level}
@@ -140,10 +162,21 @@ def recommend_market(
     values = _distribution(prediction)
     if values is None:
         return {"market": "PRUDENCE", "probability": None, "reason": "Distribution indisponible."}
+    try:
+        risk_score = float(risk.get("score", 100))
+    except (TypeError, ValueError):
+        risk_score = 100.0
+    risk_level = str(risk.get("level") or "très élevé").strip().lower()
+    if not math.isfinite(risk_score) or risk_score >= 65 or risk_level in {"élevé", "très élevé"}:
+        return {
+            "market": "PRUDENCE",
+            "probability": None,
+            "reason": "Risque trop élevé : aucune recommandation de marché n'est émise.",
+        }
     ordered = sorted(range(3), key=values.__getitem__, reverse=True)
     margin = values[ordered[0]] - values[ordered[1]]
     favorite = OUTCOME_CODES[ordered[0]]
-    if values[ordered[0]] >= 55 and margin >= 12 and risk["level"] != "élevé":
+    if values[ordered[0]] >= 55 and margin >= 12 and risk_score < 65:
         return {"market": favorite, "probability": values[ordered[0]], "reason": "Scénario principal suffisamment détaché."}
     pair = "".join(sorted((OUTCOME_CODES[ordered[0]], OUTCOME_CODES[ordered[1]]), key=("1", "N", "2").index))
     market = {"1N": "1X", "N2": "X2", "12": "12"}[pair]
@@ -171,7 +204,11 @@ def calculate(
         api_source=api_source,
         data_quality=data_quality,
     )
-    agreement_score = max(0.60, float(consensus["score"]) / 100)
+    consensus_score = consensus["score"]
+    agreement_score = (
+        0.50 if consensus_score is None
+        else max(0.0, min(1.0, float(consensus_score) / 100))
+    )
     prediction = ranking_service.attach_ranking(
         statistical_prediction,
         data_quality=data_quality,
@@ -198,7 +235,7 @@ def calculate(
     prediction.update(
         {
             "double_chances": compute_double_chances(prediction),
-            "consensus_score": consensus["score"],
+            "consensus_score": consensus_score,
             "consensus_level": consensus["level"],
             "risk_score": risk["score"],
             "risk_level": risk["level"],
