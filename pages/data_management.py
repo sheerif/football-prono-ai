@@ -119,17 +119,23 @@ def _render_api_quota_status():
         return
     quota = background_jobs.api_quota_status()
     if quota.get("api_refused"):
-        if quota.get("verified"):
-            counter_label = (
-                f"Les en-têtes indiquent {quota['remaining']} appel(s) quotidien(s) "
-                f"restant(s) sur {quota['limit']}"
-            )
+        error = str(quota.get("error") or "").casefold()
+        if "minute" in error or "per minute" in error:
+            refusal_label = "La limite API par minute est atteinte."
+        elif "day" in error or "daily" in error or "journalier" in error:
+            refusal_label = "Le quota API quotidien est atteint."
         else:
-            counter_label = "Le compteur exact n’a pas été fourni"
+            refusal_label = "L’API a refusé le contrôle du quota."
         st.warning(
-            "L’API refuse actuellement les appels de synchronisation. "
-            f"{counter_label}. Aucun appel de données ne sera lancé avant un nouveau contrôle."
+            f"{refusal_label} Aucun téléchargement de données ne sera lancé."
         )
+        if quota.get("verified") and int(quota.get("remaining") or 0) > 0:
+            st.caption(
+                "Les en-têtes HTTP annoncent encore "
+                f"{quota['remaining']} appel(s) sur {quota['limit']}, "
+                "mais ce compteur contredit le refus explicite de l’API et "
+                "n’est pas considéré comme une disponibilité réelle."
+            )
     elif quota.get("verified"):
         remaining = quota["remaining"]
         quota_label = (
