@@ -41,6 +41,40 @@ class DecisionEngineTests(unittest.TestCase):
         self.assertIn(result["risk"]["level"], {"modéré", "élevé"})
         self.assertNotEqual(result["recommendation"]["market"], "1")
 
+    def test_single_model_is_not_misrepresented_as_consensus(self):
+        result = decision_engine.calculate(
+            {"home_probability": 55, "draw_probability": 25, "away_probability": 20},
+            data_quality=0.9,
+            stability_score=0.9,
+        )
+        self.assertEqual(result["consensus"]["level"], "interne")
+        self.assertIsNone(result["consensus"]["score"])
+        self.assertIsNone(result["consensus"]["agreement_ratio"])
+        self.assertEqual(result["consensus"]["independent_source_count"], 0)
+        self.assertEqual(result["prediction"]["agreement_score"], 0.5)
+
+    def test_very_high_risk_always_blocks_market_recommendation(self):
+        prediction = {
+            "home_probability": 70,
+            "draw_probability": 20,
+            "away_probability": 10,
+        }
+        for risk in (
+            {"score": 82, "level": "très élevé"},
+            {"score": 70, "level": "élevé"},
+            {"score": 90, "level": "modéré"},
+        ):
+            result = decision_engine.recommend_market(prediction, risk)
+            self.assertEqual(result["market"], "PRUDENCE")
+            self.assertIsNone(result["probability"])
+
+    def test_invalid_risk_score_fails_closed(self):
+        result = decision_engine.recommend_market(
+            {"home_probability": 70, "draw_probability": 20, "away_probability": 10},
+            {"score": float("nan"), "level": "faible"},
+        )
+        self.assertEqual(result["market"], "PRUDENCE")
+
     def test_missing_or_invalid_ai_is_not_a_contradictory_signal(self):
         result = decision_engine.calculate(
             {"home_probability": 55, "draw_probability": 25, "away_probability": 20},
