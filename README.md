@@ -7,13 +7,9 @@ et suivi persistant des mises à jour.
 Les scores 1/N/2 sont des estimations internes issues de règles statistiques.
 Ils ne constituent ni une fiabilité calibrée ni un conseil de pari.
 
-Lorsqu’un conseil API-Football informatif est disponible pour une rencontre
-programmée, l’analyse lui attribue un poids adaptatif et minoritaire de 10 à
-30 %, selon sa précision et la richesse des comparaisons fournies. Les réponses
-neutres 33/33/33 sont ignorées. Les probabilités, l’accord ou le désaccord et
-les comparaisons API (forme, attaque, défense, Poisson, face-à-face et buts)
-restent visibles. La page « Mise à jour » synchronise tous les conseils futurs
-sans retélécharger ceux déjà enregistrés.
+Lorsqu’un conseil API-Football est disponible, il est présenté comme un signal
+distinct pour comparaison. Il ne modifie pas la distribution 1/N/2 canonique,
+qui provient de la matrice de scores du modèle statistique.
 
 ## Quick Start
 
@@ -105,12 +101,6 @@ Les réponses identiques demandées simultanément ou dans les 60 secondes sont
 également partagées entre tous les clients sans nouvel appel réseau. Ce délai
 peut être réglé avec `API_FOOTBALL_REQUEST_CACHE_SECONDS`.
 
-Le workflow GitHub Actions `Synchronisation quotidienne` lance également la
-synchronisation à 00 h 05 UTC, même lorsque Streamlit Cloud est endormi. Il
-nécessite les secrets GitHub `API_FOOTBALL_KEY`, `TURSO_DATABASE_URL` et
-`TURSO_AUTH_TOKEN`. Le verrou persistant `full-sync:exhaustive` empêche ce
-workflow de doubler une reprise déjà lancée par Streamlit.
-
 L'audit endpoint par endpoint et les exceptions autorisées sont documentés dans
 [`docs/api-request-audit.md`](docs/api-request-audit.md).
 
@@ -121,27 +111,12 @@ queries intentionally use SQLite features such as `datetime(...)`, `PRAGMA`
 and `ON CONFLICT`. Set `DATABASE_URL` to a SQLite URL (the default is
 `sqlite:///football.db`). Other SQLAlchemy engines are not currently supported.
 
-Sur Streamlit Community Cloud, l'application restaure par défaut une réplique
-SQLite vérifiée depuis l'instantané compressé fourni dans `database/seed`.
-L'extraction se fait par blocs et atteint environ 50 Mio de mémoire, sans le
-bootstrap complet qui dépassait auparavant la RAM disponible. Toutes les
-lectures de pages sont ensuite locales : elles ne consomment plus le quota
-Turso « rows read ». Un pull différentiel est tenté au maximum toutes les cinq
-minutes ; si Turso est indisponible ou si un quota est bloqué, le site continue
-à lire son dernier instantané local.
-
-Les écritures sont d'abord validées dans la réplique puis poussées vers Turso.
-Si le push échoue, elles restent marquées comme étant en attente tant que le
-conteneur vit. Le workflow GitHub de minuit utilise également une réplique
-locale, conservée dans le cache GitHub entre deux exécutions. Les mises à jour
-au démarrage de Streamlit et les journaux de simple connexion sont désactivés
-par défaut. La reprise d'une ancienne synchronisation exhaustive est elle aussi
-réservée au workflow planifié, afin de ne pas doubler ce traitement ni générer
-d'appels ou d'écritures inutiles depuis l'interface.
-
-Le mode `TURSO_ACCESS_MODE=direct` reste disponible en désactivant
-`STREAMLIT_USE_SEEDED_REPLICA`, mais il consomme des lignes lues et n'est plus
-recommandé pour l'interface hébergée.
+La base est stockée localement dans `football.db` par défaut. Configurez
+`DATABASE_URL` pour choisir un autre chemin SQLite. Les imports et les
+modifications restent sur cette base locale : aucune base distante n'est
+contactée. Sur un hébergement au système de fichiers éphémère, les données
+peuvent être perdues au redémarrage ; consultez
+[`docs/backup-restore.md`](docs/backup-restore.md) pour la sauvegarde.
 
 ## Checks
 
@@ -194,11 +169,9 @@ chacun des six onglets d’une prédiction.
 
 ### Sauvegarde et restauration
 
-Le code, la base Turso et les secrets sont sauvegardés séparément. La procédure
-de copie distante, de contrôle et de restauration est documentée dans
-[`docs/backup-restore.md`](docs/backup-restore.md). Le script
-`scripts/backup_turso.sh` crée une copie indépendante de la base sans consommer
-de requête API-Football.
+Le code, la base SQLite locale et les secrets sont sauvegardés séparément. La
+procédure de copie et de restauration est documentée dans
+[`docs/backup-restore.md`](docs/backup-restore.md).
 
 Chaque tentative xG génère également une ligne immuable dans
 `xg_ingestion_audit` avec un identifiant de lot, la fixture, l'endpoint et les

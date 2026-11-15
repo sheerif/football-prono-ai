@@ -1,298 +1,58 @@
-import importlib
-import gzip
-import hashlib
-import json
+"""Configuration de la base SQLite locale de l'application."""
+
+from __future__ import annotations
+
 import os
-import sys
-import uuid
-from pathlib import Path
+
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, event
 from sqlalchemy.engine import make_url
-from sqlalchemy.orm import sessionmaker, declarative_base
-from sqlalchemy.pool import QueuePool
+from sqlalchemy.orm import declarative_base, sessionmaker
 
 load_dotenv()
-_turso_url = (os.getenv("TURSO_DATABASE_URL") or "").strip()
-_turso_token = (os.getenv("TURSO_AUTH_TOKEN") or "").strip()
-_turso_requested = os.getenv("TURSO_ENABLED", "false").lower() in {
-    "1", "true", "yes", "oui"
-}
-_turso_config_error = None
-_turso_enabled = False
-# A full embedded replica currently weighs about 180 MB.  That is useful on a
-# workstation or a CI runner, but it exceeds the memory available to a
-# Streamlit Community Cloud process while the replica is bootstrapped.  Keep
-# the cloud-safe, low-memory transport as the default and make replication an
-# explicit opt-in for machines with enough RAM.
-_turso_access_mode = (os.getenv("TURSO_ACCESS_MODE") or "direct").strip().lower()
-_streamlit_cloud = os.path.isdir("/mount/src") or bool(
-    os.getenv("STREAMLIT_SHARING_MODE")
-)
-_seed_archive_path = Path(__file__).with_name("seed") / "football-cache-v3.db.gz"
-_seed_info_path = Path(__file__).with_name("seed") / "football-cache-v3.db-info.json"
-_seed_sha256 = "d7930409149acf6c211702cab896144fe2aa715380c711e3db06d87fc8c948b8"
-_use_cloud_seed = (
-    _streamlit_cloud
-    and _seed_archive_path.is_file()
-    and _seed_info_path.is_file()
-    and os.getenv("STREAMLIT_USE_SEEDED_REPLICA", "true").strip().lower()
-    in {"1", "true", "yes", "oui"}
-)
-_force_cloud_direct = os.getenv(
-    "STREAMLIT_FORCE_DIRECT_DATABASE", "true"
-).strip().lower() in {"1", "true", "yes", "oui"}
-if _use_cloud_seed:
-    _turso_access_mode = "replica"
-elif _streamlit_cloud and _force_cloud_direct:
-    # Also neutralize an old TURSO_ACCESS_MODE=replica secret that may still be
-    # present in the deployed application.
-    _turso_access_mode = "direct"
-
-if _turso_requested:
-    if not _turso_url or not _turso_token:
-        _turso_config_error = "URL ou jeton Turso manquant."
-    elif not _turso_url.startswith(("libsql://", "sqlite+libsql://")):
-        _turso_config_error = "TURSO_DATABASE_URL doit commencer par libsql://."
-    elif _turso_access_mode not in {"replica", "direct"}:
-        _turso_config_error = "TURSO_ACCESS_MODE doit valoir replica ou direct."
-    else:
-        _turso_enabled = True
-
-if _turso_enabled:
-    DATABASE_URL = "sqlite://"
-else:
-    DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///football.db")
-
-# ``check_same_thread`` is a SQLite-only option; passing it to a PostgreSQL
-# driver prevents the application from starting when DATABASE_URL is changed.
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///football.db")
 _url = make_url(DATABASE_URL)
-_is_sqlite = _url.get_backend_name() == "sqlite"
-_is_local_sqlite = _url.drivername == "sqlite" and not _turso_enabled
-_turso_replica_enabled = _turso_enabled and _turso_access_mode == "replica"
-if _use_cloud_seed:
-    # A new name prevents an incomplete replica from an older deployment from
-    # being reused by a hot Streamlit process.
-    _local_replica_path = "/tmp/football-cache-v3.db"
-else:
-    _local_replica_path = os.path.abspath(
-        os.getenv("TURSO_LOCAL_DATABASE_PATH", "football-cache-v2.db")
-    )
+if (
+    _url.get_backend_name() != "sqlite"
+    or _url.drivername not in {"sqlite", "sqlite+pysqlite"}
+    or _url.host is not None
+):
+    raise RuntimeError("Seule une base SQLite locale est prise en charge.")
+
+engine = create_engine(
+    DATABASE_URL,
+    connect_args={"check_same_thread": False, "timeout": 30},
+    pool_pre_ping=True,
+)
 
 
-def _integer_env(name: str, default: int, minimum: int) -> int:
+@event.listens_for(engine, "connect")
+def _configure_sqlite_connection(dbapi_connection, _connection_record):
+    cursor = dbapi_connection.cursor()
     try:
-        return max(minimum, int(os.getenv(name, str(default))))
-    except (TypeError, ValueError):
-        return default
-
-
-def _nonnegative_integer_env(name: str, default: int) -> int:
-    try:
-        return max(0, int(os.getenv(name, str(default))))
-    except (TypeError, ValueError):
-        return default
-
-
-def _load_database_adapter(name: str):
-    """Load a DB-API sibling safely across a Streamlit hot deployment.
-
-    Streamlit can invalidate a newly introduced module while the old process
-    is still rerunning.  Python then raises a bare ``KeyError`` from its import
-    machinery.  Dropping that half-loaded entry and retrying once avoids
-    requiring a manual reboot for this deployment transition.
-    """
-    qualified_name = f"database.{name}"
-    try:
-        return importlib.import_module(qualified_name)
-    except KeyError:
-        sys.modules.pop(qualified_name, None)
-        return importlib.import_module(qualified_name)
-
-
-def _seed_cloud_replica() -> None:
-    """Restore a verified replica without loading the database into memory."""
-    if not _use_cloud_seed:
-        return
-    database_path = Path(_local_replica_path)
-    info_path = Path(f"{_local_replica_path}-info")
-    if database_path.is_file() and database_path.stat().st_size > 0 and info_path.is_file():
-        return
-
-    database_path.parent.mkdir(parents=True, exist_ok=True)
-    for suffix in ("", "-info", "-changes", "-wal-revert", "-wal", "-shm"):
-        try:
-            Path(f"{_local_replica_path}{suffix}").unlink()
-        except FileNotFoundError:
-            pass
-
-    temporary_path = Path(f"{_local_replica_path}.seed.tmp")
-    digest = hashlib.sha256()
-    try:
-        with gzip.open(_seed_archive_path, "rb") as source, temporary_path.open(
-            "wb"
-        ) as destination:
-            while chunk := source.read(1024 * 1024):
-                digest.update(chunk)
-                destination.write(chunk)
-        if digest.hexdigest() != _seed_sha256:
-            raise RuntimeError("L’instantané SQLite embarqué est endommagé.")
-
-        info = json.loads(_seed_info_path.read_text(encoding="utf-8"))
-        info["client_unique_id"] = f"streamlit-{uuid.uuid4()}"
-        temporary_info = Path(f"{_local_replica_path}-info.seed.tmp")
-        temporary_info.write_text(
-            json.dumps(info, ensure_ascii=False, separators=(",", ":")),
-            encoding="utf-8",
-        )
-        os.replace(temporary_path, database_path)
-        os.replace(temporary_info, info_path)
-        Path(f"{_local_replica_path}-changes").touch()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.execute("PRAGMA busy_timeout=30000")
+        cursor.execute("PRAGMA journal_mode=WAL")
     finally:
-        temporary_path.unlink(missing_ok=True)
-        Path(f"{_local_replica_path}-info.seed.tmp").unlink(missing_ok=True)
-
-
-if _turso_replica_enabled:
-    _seed_cloud_replica()
-    turso_sync_dbapi = _load_database_adapter("turso_sync_dbapi")
-
-    _pull_interval = _integer_env("TURSO_SYNC_PULL_INTERVAL_SECONDS", 3600, 60)
-    _push_retry = _integer_env("TURSO_SYNC_PUSH_RETRY_SECONDS", 300, 60)
-    _blocked_retry = _integer_env(
-        "TURSO_SYNC_BLOCKED_RETRY_SECONDS", 21600, 300
-    )
-    _realtime_interval = _nonnegative_integer_env(
-        "TURSO_REALTIME_SYNC_SECONDS", 10
-    )
-    if _streamlit_cloud and _realtime_interval:
-        _realtime_interval = max(300, _realtime_interval)
-    _strict_push = os.getenv("TURSO_SYNC_STRICT_PUSH", "false").lower() in {
-        "1", "true", "yes", "oui"
-    }
-    engine = create_engine(
-        DATABASE_URL,
-        module=turso_sync_dbapi,
-        creator=lambda: turso_sync_dbapi.connect(
-            _local_replica_path,
-            _turso_url,
-            _turso_token,
-            pull_interval_seconds=_pull_interval,
-            push_retry_seconds=_push_retry,
-            blocked_retry_seconds=_blocked_retry,
-            strict_push=_strict_push,
-            realtime_interval_seconds=_realtime_interval,
-        ),
-        poolclass=QueuePool,
-        pool_size=5,
-        max_overflow=5,
-        pool_timeout=30,
-        pool_recycle=1800,
-        pool_use_lifo=True,
-        pool_pre_ping=True,
-    )
-
-    @event.listens_for(engine, "checkout")
-    def _refresh_local_replica(dbapi_connection, _connection_record, _proxy):
-        dbapi_connection.pull_if_due()
-
-elif _turso_enabled:
-    turso_http_dbapi = _load_database_adapter("turso_http_dbapi")
-
-    # ``sqlite://`` selects SingletonThreadPool by default.  Streamlit runs
-    # fragments and background synchronisations on several threads; that pool
-    # may then close a connection owned by another thread.  A bounded
-    # QueuePool gives each checkout exclusive ownership until it is returned.
-    engine = create_engine(
-        DATABASE_URL,
-        module=turso_http_dbapi,
-        creator=lambda: turso_http_dbapi.connect(_turso_url, _turso_token),
-        poolclass=QueuePool,
-        pool_size=5,
-        max_overflow=10,
-        pool_timeout=30,
-        pool_recycle=300,
-        pool_use_lifo=True,
-        pool_pre_ping=True,
-    )
-else:
-    _connect_args = {"check_same_thread": False, "timeout": 30} if _is_sqlite else {}
-    engine = create_engine(
-        DATABASE_URL,
-        connect_args=_connect_args,
-        pool_pre_ping=True,
-    )
-
-
-if _is_local_sqlite:
-    @event.listens_for(engine, "connect")
-    def _configure_sqlite_connection(dbapi_connection, _connection_record):
-        cursor = dbapi_connection.cursor()
-        try:
-            cursor.execute("PRAGMA foreign_keys=ON")
-            cursor.execute("PRAGMA busy_timeout=30000")
-            cursor.execute("PRAGMA journal_mode=WAL")
-        finally:
-            cursor.close()
-
-
-def persistence_mode() -> str:
-    if _turso_enabled:
-        return "turso"
-    if _is_local_sqlite:
-        return "sqlite_local"
-    return _url.get_backend_name()
-
-
-def persistence_topology() -> str:
-    if _turso_replica_enabled:
-        return "local_replica"
-    if _turso_enabled:
-        return "remote_direct"
-    return persistence_mode()
-
-
-def persistence_status() -> dict:
-    if not _turso_replica_enabled:
-        return {"topology": persistence_topology()}
-    status = turso_sync_dbapi.replica_status(_local_replica_path)
-    return {"topology": "local_replica", **status}
+        cursor.close()
 
 
 def persistence_revision() -> int:
-    """Return a tiny change marker without reading application data."""
-    if _turso_replica_enabled:
-        return int(persistence_status().get("revision") or 0)
+    """Return a small marker used to refresh cached pages after local writes."""
     try:
-        with engine.connect() as conn:
-            value = conn.exec_driver_sql(
+        with engine.connect() as connection:
+            value = connection.exec_driver_sql(
                 "SELECT id FROM update_log ORDER BY id DESC LIMIT 1"
             ).scalar_one_or_none()
         return int(value or 0)
     except Exception:
-        # The table may not exist during the very first schema creation.
+        # The update log may not exist during first-time schema creation.
         return 0
-
-
-def start_realtime_replica_sync() -> bool:
-    if not _turso_replica_enabled or _realtime_interval <= 0:
-        return False
-    return turso_sync_dbapi.start_realtime_sync(
-        _local_replica_path,
-        _turso_url,
-        _turso_token,
-        interval_seconds=_realtime_interval,
-        push_retry_seconds=_push_retry,
-        blocked_retry_seconds=_blocked_retry,
-    )
-
-
-def persistence_configuration_error() -> str | None:
-    return _turso_config_error
 
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
+
 
 def get_db():
     db = SessionLocal()

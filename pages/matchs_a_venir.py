@@ -1263,7 +1263,7 @@ def _build_previews(
                 )
 
             # L'affichage normal privilégie l'aperçu persistant. Recalculer son
-            # empreinte déclenche plusieurs requêtes réseau par match sur Turso.
+            # empreinte déclenche plusieurs requêtes réseau par match.
             # La validation complète reste disponible lors d'une mise à jour
             # explicite afin de ne jamais ralentir une simple consultation.
             if cached and not refresh_stale:

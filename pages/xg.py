@@ -283,7 +283,7 @@ def show() -> None:
         "Explorez la qualité des occasions créées et concédées, leur couverture et leur provenance.",
     )
     st.info(
-        "Cette page lit uniquement les xG déjà enregistrés dans Turso. "
+        "Cette page lit uniquement les xG déjà enregistrés dans la base SQLite locale. "
         "Elle ne consomme aucune requête API-Football."
     )
     progress = st.progress(0.0, text="0 % — Préparation du tableau de bord xG")

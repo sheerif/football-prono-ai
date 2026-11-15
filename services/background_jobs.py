@@ -771,17 +771,9 @@ def resume_pending_full_sync_if_due() -> str | None:
 
 def start_startup_updates_once(connection_log_id: int | None = None) -> str | None:
     global _startup_started
-    # The daily GitHub workflow is the single automatic writer for Turso.  A
-    # Community Cloud restart must not launch the same memory/API-heavy import
-    # again.  It can still be explicitly enabled when desired.
-    from database.database import persistence_topology
-
     startup_setting = os.getenv("STREAMLIT_STARTUP_UPDATES")
     if startup_setting is None:
-        startup_enabled = (
-            not _running_on_streamlit_cloud()
-            and persistence_topology() != "remote_direct"
-        )
+        startup_enabled = not _running_on_streamlit_cloud()
     else:
         startup_enabled = startup_setting.strip().lower() in {
             "1", "true", "yes", "oui"
