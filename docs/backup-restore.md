@@ -30,6 +30,11 @@ perdre les modifications au redémarrage, l'application peut envoyer une copie
 SQLite compressée sur GitHub après chaque import ou synchronisation, y compris
 quand une synchronisation s'arrête sur le quota API.
 
+Après chaque lot d'écritures, SQLite actualise aussi les statistiques de ses
+requêtes et effectue un checkpoint WAL non bloquant. Si les pages inutilisées
+dépassent 2 048 pages et 5 % de la base, une compaction `VACUUM` est lancée
+après le lot. Une base peu fragmentée n'est pas réécrite inutilement.
+
 ## Activer la sauvegarde Git automatique
 
 Dans les secrets Streamlit, ajoutez un jeton GitHub avec le droit **Contents:

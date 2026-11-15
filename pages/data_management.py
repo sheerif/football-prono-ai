@@ -234,8 +234,8 @@ def show():
     )
     if git_backup.backup_is_configured():
         st.caption(
-            "Une copie SQLite compressée est envoyée sur Git après chaque "
-            "synchronisation ou import."
+            "La base est optimisée après chaque synchronisation ou import, "
+            "puis une copie SQLite compressée est envoyée sur Git."
         )
         if st.button("Créer une sauvegarde maintenant", key="create_git_database_backup"):
             try:
@@ -248,6 +248,10 @@ def show():
             except Exception as exc:
                 st.error(f"Échec de la sauvegarde Git : {exc}")
     else:
+        st.caption(
+            "L’optimisation SQLite et la compaction des pages inutilisées "
+            "s’exécutent après chaque synchronisation ou import."
+        )
         st.warning(
             "Sauvegarde Git non configurée. Ajoutez le secret "
             "GITHUB_BACKUP_TOKEN dans les secrets Streamlit pour activer les copies automatiques."
