@@ -112,10 +112,13 @@ and `ON CONFLICT`. Set `DATABASE_URL` to a SQLite URL (the default is
 `sqlite:///football.db`). Other SQLAlchemy engines are not currently supported.
 
 La base est stockée localement dans `football.db` par défaut. Configurez
-`DATABASE_URL` pour choisir un autre chemin SQLite. Les imports et les
-modifications restent sur cette base locale : aucune base distante n'est
-contactée. Sur un hébergement au système de fichiers éphémère, les données
-peuvent être perdues au redémarrage ; consultez
+`DATABASE_URL` pour choisir un autre chemin SQLite. Sur Streamlit Community
+Cloud, une copie SQLite compressée est installée dans `/tmp/football.db` au
+premier démarrage si aucune base n'existe. Les imports et les modifications
+restent locaux : aucune base distante n'est contactée. Streamlit ne garantit
+pas la persistance des fichiers locaux et peut les supprimer à tout moment ;
+après une réinitialisation, l'application repartira de l'instantané fourni.
+Consultez
 [`docs/backup-restore.md`](docs/backup-restore.md) pour la sauvegarde.
 
 ## Checks
