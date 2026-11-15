@@ -70,11 +70,120 @@ def _latest_git_backup_info() -> dict:
     return git_backup.latest_backup_info()
 
 
+def _database_health() -> dict:
+    """Read lightweight live health details for the local SQLite database."""
+    with engine.connect() as connection:
+        connection.exec_driver_sql("SELECT 1").scalar()
+        database_file = connection.exec_driver_sql("PRAGMA database_list").one()[2]
+        journal_mode = connection.exec_driver_sql("PRAGMA journal_mode").scalar()
+        page_size = int(connection.exec_driver_sql("PRAGMA page_size").scalar())
+        page_count = int(connection.exec_driver_sql("PRAGMA page_count").scalar())
+        free_pages = int(connection.exec_driver_sql("PRAGMA freelist_count").scalar())
+        latest_update = connection.exec_driver_sql(
+            "SELECT MAX(finished_at) FROM update_log WHERE finished_at IS NOT NULL"
+        ).scalar()
+    file_size = os.path.getsize(database_file) if database_file and os.path.isfile(database_file) else None
+    return {
+        "database_file": database_file,
+        "file_size": file_size,
+        "journal_mode": str(journal_mode or "inconnu").upper(),
+        "page_size": page_size,
+        "page_count": page_count,
+        "free_pages": free_pages,
+        "latest_update": latest_update,
+    }
+
+
+def _format_bytes(value: int | None) -> str:
+    if value is None:
+        return "Taille indisponible"
+    size = float(value)
+    for unit in ("o", "Ko", "Mo", "Go"):
+        if size < 1024 or unit == "Go":
+            return f"{size:.1f} {unit}" if unit != "o" else f"{int(size)} o"
+        size /= 1024
+
+
+def _render_storage_status() -> None:
+    """Show live database health and the latest remote Git backup state."""
+    st.subheader("État de la base et des sauvegardes")
+    database = None
+    database_error = None
+    try:
+        database = _database_health()
+    except Exception as exc:
+        database_error = str(exc)
+
+    backup = {"status": "not_configured"}
+    backup_error = None
+    if git_backup.backup_is_configured():
+        try:
+            backup = _latest_git_backup_info()
+        except Exception as exc:
+            backup_error = str(exc)
+
+    db_col, backup_col = st.columns(2)
+    with db_col, st.container(border=True):
+        st.markdown("#### Base SQLite locale")
+        if database:
+            st.success("🟢 EN LIGNE · connexion vérifiée")
+            st.caption(
+                f"Fichier : `{database['database_file'] or 'base temporaire'}` · "
+                f"{_format_bytes(database['file_size'])} · "
+                f"journal {database['journal_mode']}"
+            )
+            st.caption(
+                f"Pages utilisées : {database['page_count'] - database['free_pages']:,} · "
+                f"pages libres : {database['free_pages']:,} · "
+                f"espace récupérable : "
+                f"{_format_bytes(database['free_pages'] * database['page_size'])} · "
+                f"dernière activité : {_format_utc_datetime(database['latest_update'])}"
+            )
+        else:
+            st.error("🔴 HORS LIGNE · connexion SQLite impossible")
+            st.caption(database_error or "État de la base indisponible.")
+
+    with backup_col, st.container(border=True):
+        st.markdown("#### Copie Git distante")
+        if backup_error:
+            st.warning("🟠 ÉTAT INCONNU · GitHub ne répond pas")
+            st.caption(backup_error)
+        elif backup.get("status") == "available":
+            st.success("🟢 EN LIGNE · sauvegarde trouvée sur GitHub")
+            st.caption(
+                f"Dépôt : `{backup.get('repository')}` · branche `{backup.get('branch')}`"
+            )
+            st.caption(
+                f"Dernière sauvegarde : {_format_utc_datetime(backup.get('committed_at'))} · "
+                f"commit `{str(backup.get('commit') or '')[:8]}`"
+            )
+        elif backup.get("status") == "not_configured":
+            st.info("⚪ SAUVEGARDE AUTOMATIQUE INACTIVE")
+            st.caption("Le jeton Git n’est pas accessible à l’application.")
+        elif backup.get("status") == "not_found":
+            st.warning("🟠 AUCUNE SAUVEGARDE TROUVÉE")
+            st.caption(
+                f"Dépôt : `{backup.get('repository')}` · branche `{backup.get('branch')}`"
+            )
+        else:
+            st.error("🔴 SAUVEGARDE INCOMPLÈTE · fichier SQLite absent")
+            st.caption(
+                f"Dépôt : `{backup.get('repository')}` · branche `{backup.get('branch')}`"
+            )
+
+
 def _format_datetime(value):
     timestamp = pd.to_datetime(value, errors="coerce")
     if pd.isna(timestamp):
         return value or "-"
     return timestamp.strftime("%d/%m/%Y %H:%M")
+
+
+def _format_utc_datetime(value):
+    timestamp = pd.to_datetime(value, errors="coerce", utc=True)
+    if pd.isna(timestamp):
+        return value or "-"
+    return timestamp.strftime("%d/%m/%Y à %H:%M UTC")
 
 
 def _recent_logs(limit: int = 6) -> pd.DataFrame:
@@ -281,10 +390,6 @@ def show():
         "Lancez une mise à jour et suivez son avancement simplement.",
     )
 
-    st.info(
-        "Base SQLite locale active. Les imports et analyses sont enregistrés "
-        "dans le fichier configuré par DATABASE_URL."
-    )
     if git_backup.backup_is_configured():
         st.caption(
             "La base est optimisée après chaque synchronisation ou import, "
@@ -309,28 +414,8 @@ def show():
             "L’optimisation SQLite et la compaction des pages inutilisées "
             "s’exécutent après chaque synchronisation ou import."
         )
-        st.warning(
-            "Sauvegarde Git non configurée. Ajoutez le secret "
-            "GITHUB_BACKUP_TOKEN dans les secrets Streamlit pour activer les copies automatiques."
-        )
 
-    if git_backup.backup_is_configured():
-        try:
-            backup_info = _latest_git_backup_info()
-            committed_at = backup_info.get("committed_at")
-            if backup_info.get("status") == "available" and committed_at:
-                timestamp = pd.to_datetime(committed_at, utc=True).strftime(
-                    "%d/%m/%Y à %H:%M UTC"
-                )
-                st.caption(f"Dernière sauvegarde Git : {timestamp}.")
-            elif backup_info.get("status") == "not_found":
-                st.caption("Aucune sauvegarde Git trouvée pour le moment.")
-            elif backup_info.get("status") == "missing_file":
-                st.warning(
-                    "La branche de sauvegarde existe, mais le fichier SQLite y manque."
-                )
-        except Exception as exc:
-            st.caption(f"Horodatage de la sauvegarde Git indisponible : {exc}")
+    _render_storage_status()
 
     counts = _summary_counts()
     database_kpis = [
