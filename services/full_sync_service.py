@@ -188,6 +188,35 @@ def _upcoming_matches(days: int | None = None) -> list[dict]:
     return [dict(row) for row in rows]
 
 
+def _in_progress_matches() -> list[dict]:
+    """Return recent fixtures whose API status says the match is underway."""
+    with engine.begin() as conn:
+        rows = conn.execute(
+            text(
+                """
+                SELECT m.fixture_id, m.league_id, m.season, m.date,
+                       m.home_team_id, m.away_team_id, m.home_goals,
+                       m.away_goals, m.status
+                FROM matches m
+                LEFT JOIN fixture_api_details d ON d.fixture_id = m.fixture_id
+                WHERE m.date >= datetime(CURRENT_TIMESTAMP, '-24 hours')
+                  AND m.home_goals IS NULL AND m.away_goals IS NULL
+                  AND (
+                      UPPER(COALESCE(d.status_short, '')) IN
+                          ('1H', 'HT', '2H', 'ET', 'BT', 'P', 'LIVE', 'INT', 'SUSP')
+                      OR UPPER(TRIM(COALESCE(m.status, ''))) IN
+                          ('FIRST HALF', 'HALFTIME', 'HALF-TIME', 'SECOND HALF',
+                           'EXTRA TIME', 'BREAK TIME', 'PENALTY IN PROGRESS',
+                           'MATCH SUSPENDED', 'MATCH INTERRUPTED', 'IN PLAY',
+                           'LIVE', 'INTERRUPTED', 'SUSPENDED')
+                  )
+                ORDER BY m.date DESC, m.fixture_id DESC
+                """
+            )
+        ).mappings().all()
+    return [dict(row) for row in rows]
+
+
 def _all_matches() -> list[dict]:
     """Retourne tout le périmètre connu, nécessaire à une synchro exhaustive."""
     with engine.begin() as conn:
@@ -1069,9 +1098,16 @@ def run_full_sync(progress_callback=None) -> dict:
         )
         return summary
 
+    reported_progress = 0
+
     def progress(current, total, label):
+        nonlocal reported_progress
+        reported_progress = max(
+            reported_progress,
+            min(100, int(round(float(current) / max(1, total) * 100))),
+        )
         if progress_callback:
-            progress_callback(current, max(1, total), label)
+            progress_callback(reported_progress, 100, label)
 
     def add_result(result: str) -> None:
         if result in summary:
@@ -1085,12 +1121,190 @@ def run_full_sync(progress_callback=None) -> dict:
         summary["checkpoint"] = key
         return finalize()
 
-    progress(0, 100, "Priorité xG : recherche des statistiques manquantes...")
     seasons = list(range(config["start_season"], config["end_season"] + 1))
+    recent_count = max(1, int(config.get("recent_seasons") or 1))
+    recent_seasons = set(seasons[-recent_count:])
+    missing_core = set(_missing_core_scopes(config["league_ids"], seasons))
+    try:
+        core_refresh_hours = max(1, int(os.getenv("CORE_SYNC_REFRESH_HOURS", "6")))
+    except (TypeError, ValueError):
+        core_refresh_hours = 6
+    recent_due = {
+        (int(league_id), int(season))
+        for league_id in config["league_ids"]
+        for season in recent_seasons
+        if _registry_refresh_due(
+            f"core:{int(league_id)}:{int(season)}", core_refresh_hours
+        )
+    }
+    priority_core_scopes = sorted(
+        (missing_core | recent_due)
+        & {
+            (int(league_id), int(season))
+            for league_id in config["league_ids"]
+            for season in recent_seasons
+        },
+        key=lambda scope: (-scope[1], scope[0]),
+    )
+    priority_core_keys = {f"core:{league_id}:{season}" for league_id, season in priority_core_scopes}
 
-    # Priorité stricte : les xG déjà identifiables depuis les matchs persistés
-    # passent avant tout autre endpoint, y compris le rafraîchissement courant.
-    # Une reprise après quota revient donc toujours ici en premier.
+    # Refresh the latest seasons first so newly scheduled fixtures are known
+    # before any historical backfill can consume the API quota.
+    for index, (league_id, season) in enumerate(priority_core_scopes, start=1):
+        key = f"core:{league_id}:{season}"
+        if _daily_reserve_reached(
+            tracked_clients["données principales"],
+            initial_request_counts["données principales"],
+        ):
+            return stop_for_quota(key, RuntimeError(_reserve_message()))
+        sync_registry.mark(key, "core_season", "running")
+        try:
+            import_service.import_leagues_cautious(
+                [league_id],
+                seasons=[season],
+                pause=pause,
+                max_retries=config["max_retries"],
+                force_refresh_seasons=[season],
+            )
+            sync_registry.mark(key, "core_season", "complete", item_count=1)
+            summary["downloaded"] += 1
+        except Exception as exc:
+            sync_registry.mark(key, "core_season", "error", message=str(exc))
+            if _is_quota_error(exc):
+                return stop_for_quota(key, exc)
+            summary["errors"].append(f"{key}: {exc}")
+        progress(
+            int(index / max(1, len(priority_core_scopes)) * 8),
+            100,
+            f"Priorité matchs en cours/à venir : ligue {league_id}, saison {season}",
+        )
+
+    live_matches = _in_progress_matches()
+    upcoming = _upcoming_matches()
+    upcoming_ids = {int(match["fixture_id"]) for match in upcoming}
+    live_ids = {int(match["fixture_id"]) for match in live_matches}
+    priority_matches = live_matches + [
+        match for match in upcoming
+        if int(match["fixture_id"]) not in live_ids
+    ]
+    priority_match_ids = {int(match["fixture_id"]) for match in priority_matches}
+    priority_steps = max(1, len(priority_matches) * 3 - len(live_matches))
+    completed_priority_steps = 0
+
+    def advance_priority(label: str) -> None:
+        nonlocal completed_priority_steps
+        completed_priority_steps += 1
+        progress(
+            8 + int(completed_priority_steps / priority_steps * 17),
+            100,
+            label,
+        )
+
+    # Upcoming predictions are the most time-sensitive API resource.
+    for match in upcoming:
+        fixture_id = int(match["fixture_id"])
+        key = f"fixture-prediction:{fixture_id}"
+        if _prediction_present(fixture_id):
+            sync_registry.mark(key, "fixture_prediction", "complete", item_count=1, message="Déjà en base")
+            result = "skipped"
+        else:
+            if _daily_reserve_reached(client, initial_request_counts["matchs/prédictions/xG"]):
+                return stop_for_quota(key, RuntimeError(_reserve_message()))
+            try:
+                result = _fetch_one(
+                    key,
+                    "fixture_prediction",
+                    lambda fid=fixture_id: client.get_predictions(fid),
+                    lambda item, fid=fixture_id: _save_prediction(fid, item),
+                )
+            except Exception as exc:
+                if _is_quota_error(exc):
+                    return stop_for_quota(key, exc)
+                summary["errors"].append(f"{key}: {exc}")
+                result = "error"
+            if result != "skipped":
+                time.sleep(pause)
+        add_result(result)
+        advance_priority(f"Priorité match à venir {fixture_id} : prédiction")
+
+    # Refresh details and lineups for live and upcoming matches before backfills.
+    for match in priority_matches:
+        fixture_id = int(match["fixture_id"])
+        detail_key = f"fixture-detail:{fixture_id}"
+        if _fixture_details_present(fixture_id):
+            sync_registry.mark(detail_key, "fixture_detail", "complete", item_count=1, message="Déjà en base")
+            result = "skipped"
+        elif not _resource_should_download(
+            match,
+            sync_registry.get(detail_key),
+            detail_key,
+            12,
+            terminal_unavailable_after_hours=72,
+            repair_missing_complete=True,
+        ):
+            result = "skipped"
+        else:
+            if _daily_reserve_reached(client, initial_request_counts["matchs/prédictions/xG"]):
+                return stop_for_quota(detail_key, RuntimeError(_reserve_message()))
+            try:
+                result = _fetch_one(
+                    detail_key,
+                    "fixture_detail",
+                    lambda fid=fixture_id: client.get_fixture(fid),
+                    lambda item, fid=fixture_id: _save_fixture_details(fid, item),
+                )
+            except Exception as exc:
+                if _is_quota_error(exc):
+                    return stop_for_quota(detail_key, exc)
+                summary["errors"].append(f"{detail_key}: {exc}")
+                result = "error"
+            if result != "skipped":
+                time.sleep(pause)
+        add_result(result)
+        advance_priority(f"Priorité match {fixture_id} : détails")
+
+        lineup_key = f"fixture-lineup:{fixture_id}"
+        if _lineup_present(fixture_id):
+            sync_registry.mark(lineup_key, "fixture_lineup", "complete", item_count=2, message="Déjà en base")
+            result = "skipped"
+        elif not _resource_should_download(
+            match,
+            sync_registry.get(lineup_key),
+            lineup_key,
+            12,
+            terminal_unavailable_after_hours=72,
+            repair_missing_complete=True,
+        ):
+            result = "skipped"
+        else:
+            if _daily_reserve_reached(
+                tracked_clients["compositions/statistiques joueurs"],
+                initial_request_counts["compositions/statistiques joueurs"],
+            ):
+                return stop_for_quota(lineup_key, RuntimeError(_reserve_message()))
+            try:
+                sync_registry.mark(lineup_key, "fixture_lineup", "running")
+                lineup_result = lineup_service.sync_lineups(fixture_id)
+                count = int(lineup_result.get("teams") or 0)
+                status = "complete" if count >= 2 else ("partial" if count else "unavailable")
+                sync_registry.mark(lineup_key, "fixture_lineup", status, item_count=count)
+                result = "downloaded" if count >= 2 else ("partial" if count else "unavailable")
+            except Exception as exc:
+                sync_registry.mark(lineup_key, "fixture_lineup", "error", message=str(exc))
+                if _is_quota_error(exc):
+                    return stop_for_quota(lineup_key, exc)
+                summary["errors"].append(f"{lineup_key}: {exc}")
+                result = "error"
+            time.sleep(pause)
+        add_result(result)
+        advance_priority(f"Priorité match {fixture_id} : composition")
+
+    progress(25, 100, "Priorité matchs en cours/à venir terminée ; démarrage du rattrapage historique.")
+
+    # The long historical xG backfill runs only after current fixtures have
+    # received their priority refresh.
+    progress(25, 100, "Rattrapage historique xG : recherche des statistiques manquantes...")
+
     xg_result = sync_historical_xg(
         league_ids=config["league_ids"],
         seasons=seasons,
@@ -1098,7 +1312,7 @@ def run_full_sync(progress_callback=None) -> dict:
         pause=pause,
         retry_hours=24,
         progress_callback=lambda current, total, label: progress(
-            int((current / max(1, total)) * 60),
+            25 + int((current / max(1, total)) * 30),
             100,
             label,
         ),
@@ -1130,25 +1344,11 @@ def run_full_sync(progress_callback=None) -> dict:
             )
             return finalize()
 
-    progress(60, 100, "Mise à jour des championnats, équipes, matchs et classements...")
+    progress(55, 100, "Rattrapage historique des championnats, équipes et classements...")
     missing_core = set(_missing_core_scopes(config["league_ids"], seasons))
-    recent_count = max(1, int(config.get("recent_seasons") or 1))
-    recent_seasons = set(seasons[-recent_count:])
-    try:
-        core_refresh_hours = max(1, int(os.getenv("CORE_SYNC_REFRESH_HOURS", "6")))
-    except (TypeError, ValueError):
-        core_refresh_hours = 6
-    recent_due = {
-        (int(league_id), int(season))
-        for league_id in config["league_ids"]
-        for season in recent_seasons
-        if _registry_refresh_due(
-            f"core:{int(league_id)}:{int(season)}", core_refresh_hours
-        )
-    }
     core_scopes = sorted(
-        missing_core
-        | recent_due
+        (missing_core | recent_due) - priority_core_keys,
+        key=lambda scope: (-scope[1], scope[0]),
     )
     for index, (league_id, season) in enumerate(core_scopes, start=1):
         key = f"core:{league_id}:{season}"
@@ -1174,16 +1374,19 @@ def run_full_sync(progress_callback=None) -> dict:
                 return stop_for_quota(key, exc)
             summary["errors"].append(f"{key}: {exc}")
         progress(
-            60 + int((index / max(1, len(core_scopes))) * 10),
+            55 + int((index / max(1, len(core_scopes))) * 8),
             100,
             f"Données principales : ligue {league_id}, saison {season} · "
             f"{summary['downloaded']} téléchargé(s)",
         )
     remaining_core = _missing_core_scopes(config["league_ids"], seasons)
     summary["core"] = "complete" if not remaining_core else "partial"
-    summary["core_downloaded"] = len(core_scopes)
+    summary["core_downloaded"] = len(priority_core_scopes) + len(core_scopes)
     summary["core_skipped"] = max(
-        0, len(config["league_ids"]) * len(seasons) - len(core_scopes)
+        0,
+        len(config["league_ids"]) * len(seasons)
+        - len(priority_core_scopes)
+        - len(core_scopes),
     )
     if remaining_core:
         summary["errors"].append(
@@ -1192,12 +1395,11 @@ def run_full_sync(progress_callback=None) -> dict:
 
     matches = _all_matches()
     upcoming = _upcoming_matches()
-    upcoming_ids = {int(match["fixture_id"]) for match in upcoming}
     matches_by_id = {int(match["fixture_id"]): match for match in matches}
     historical_matches = [
         match
         for match in matches
-        if int(match["fixture_id"]) not in upcoming_ids
+        if int(match["fixture_id"]) not in priority_match_ids
     ]
     recent_player_ids = set(_recent_fixture_ids(upcoming, per_team=5))
     completed_matches = [

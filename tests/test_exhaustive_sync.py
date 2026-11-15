@@ -18,6 +18,41 @@ class _ImmediateThread:
 
 
 class ExhaustiveSyncTests(unittest.TestCase):
+    def test_in_progress_fixture_query_only_returns_recent_live_statuses(self):
+        test_engine = create_engine("sqlite://")
+        with test_engine.begin() as connection:
+            connection.execute(
+                text(
+                    "CREATE TABLE matches (fixture_id INTEGER, league_id INTEGER, "
+                    "season INTEGER, date TEXT, home_team_id INTEGER, "
+                    "away_team_id INTEGER, home_goals INTEGER, away_goals INTEGER, "
+                    "status TEXT)"
+                )
+            )
+            connection.execute(
+                text(
+                    "CREATE TABLE fixture_api_details "
+                    "(fixture_id INTEGER, status_short TEXT)"
+                )
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO matches VALUES "
+                    "(1, 61, 2026, datetime('now', '-1 hour'), 10, 20, NULL, NULL, 'First Half'), "
+                    "(2, 61, 2026, datetime('now', '-3 days'), 10, 20, NULL, NULL, 'Match Suspended'), "
+                    "(3, 61, 2026, datetime('now', '-1 hour'), 10, 20, 1, 0, 'FT')"
+                )
+            )
+            connection.execute(
+                text("INSERT INTO fixture_api_details VALUES (3, 'FT')")
+            )
+
+        with patch.object(full_sync_service, "engine", test_engine):
+            matches = full_sync_service._in_progress_matches()
+
+        self.assertEqual([match["fixture_id"] for match in matches], [1])
+        test_engine.dispose()
+
     def test_missing_core_scopes_are_computed_in_bulk(self):
         test_engine = create_engine("sqlite://")
         with test_engine.begin() as conn:
@@ -387,6 +422,7 @@ class ExhaustiveSyncTests(unittest.TestCase):
         quota_status.assert_not_called()
 
     def test_full_sync_covers_past_and_future_matches(self):
+        events = []
         past = {
             "fixture_id": 1,
             "league_id": 61,
@@ -426,26 +462,35 @@ class ExhaustiveSyncTests(unittest.TestCase):
                 return_value={"status": "unavailable"},
             ),
             patch.object(full_sync_service.import_service, "get_auto_refresh_config", return_value=config),
-            patch.object(full_sync_service.import_service, "import_leagues_cautious"),
+            patch.object(
+                full_sync_service.import_service,
+                "import_leagues_cautious",
+                side_effect=lambda *_args, **_kwargs: events.append("recent_core"),
+            ),
             patch.object(full_sync_service, "_missing_core_scopes", return_value=[]),
             patch.object(full_sync_service, "_all_matches", return_value=[past, future]),
+            patch.object(full_sync_service, "_in_progress_matches", return_value=[]),
             patch.object(full_sync_service, "_upcoming_matches", return_value=[future]),
             patch.object(full_sync_service, "_recent_fixture_ids", return_value=[1]),
             patch.object(full_sync_service, "_player_scopes", return_value=[]),
             patch.object(full_sync_service, "_fixture_details_present", return_value=True),
             patch.object(full_sync_service, "_lineup_present", return_value=True),
-            patch.object(full_sync_service, "_prediction_present", return_value=True),
+            patch.object(
+                full_sync_service,
+                "_prediction_present",
+                side_effect=lambda _fixture_id: (events.append("upcoming_prediction_check") or True),
+            ),
             patch.object(full_sync_service, "_fixture_players_present", return_value=False),
             patch.object(
                 full_sync_service,
                 "sync_historical_xg",
-                return_value={
+                side_effect=lambda **_kwargs: (events.append("historical_xg") or {
                     "downloaded": 0,
                     "skipped": 1,
                     "unavailable": 0,
                     "errors": [],
                     "quota_reached": False,
-                },
+                }),
             ) as sync_xg,
             patch.object(full_sync_service, "prediction_coverage", return_value={}),
             patch.object(full_sync_service.xg_service, "coverage", return_value={}),
@@ -465,6 +510,8 @@ class ExhaustiveSyncTests(unittest.TestCase):
         self.assertEqual(result["mode"], "exhaustive")
         self.assertIn("api_calls_by_family", result)
         self.assertIn("requests_avoided_at_least", result)
+        self.assertLess(events.index("recent_core"), events.index("upcoming_prediction_check"))
+        self.assertLess(events.index("upcoming_prediction_check"), events.index("historical_xg"))
 
     def test_xg_quota_stops_before_less_important_match_endpoints(self):
         played = {
@@ -515,7 +562,7 @@ class ExhaustiveSyncTests(unittest.TestCase):
             result = full_sync_service.run_full_sync()
 
         details.assert_not_called()
-        core_import.assert_not_called()
+        core_import.assert_called_once()
         self.assertTrue(result["quota_reached"])
         self.assertEqual(result["checkpoint"], "fixture-statistics:99")
 
@@ -555,7 +602,7 @@ class ExhaustiveSyncTests(unittest.TestCase):
             patch.object(
                 full_sync_service,
                 "_missing_core_scopes",
-                side_effect=[[(61, 2025)], []],
+                side_effect=[[(61, 2025)], [], []],
             ),
             patch.object(full_sync_service, "_registry_refresh_due", return_value=False),
             patch.object(

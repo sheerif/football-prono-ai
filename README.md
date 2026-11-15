@@ -85,12 +85,13 @@ secours (minimum 60 secondes). Le
 mécanisme ne contourne pas les limites du fournisseur : il étale automatiquement
 le téléchargement sur plusieurs fenêtres de quota.
 
-Les xG passent en premier, avec une réserve quotidienne de 1 500 requêtes par
-défaut pour les matchs courants, classements, compositions, prédictions et
-joueurs. Cette réserve se règle avec `XG_DAILY_RESERVE`. Une fois ce seuil
-atteint, le rattrapage xG s'interrompt pour la journée et la synchronisation
-continue sur les données courantes. `FULL_SYNC_DAILY_RESERVE` permet en plus de
-conserver une réserve en fin de synchronisation (valeur par défaut : `0`).
+Les matchs en cours et à venir passent en premier : l'application actualise
+d'abord les saisons récentes, puis les conseils des rencontres à venir, les
+détails et les compositions des rencontres concernées. Le rattrapage xG et les
+autres données historiques viennent ensuite. `XG_DAILY_RESERVE` conserve par
+défaut 1 500 requêtes lorsque le rattrapage xG est en cours ; cette réserve est
+configurable. `FULL_SYNC_DAILY_RESERVE` permet aussi de conserver une réserve
+en fin de synchronisation (valeur par défaut : `0`).
 La limite du fournisseur reste incontournable ; lorsqu'elle est atteinte, la
 progression est conservée jusqu'à minuit UTC.
 Tous les clients API partagent aussi un coupe-circuit en mémoire : dès qu'une
@@ -155,7 +156,8 @@ un match n'est complet que si les xG des deux équipes sont présents. Les match
 complets sont ignorés sans appel API. Une réponse sans xG est mémorisée ; elle
 peut être contrôlée pendant les 72 heures suivant le match, puis n'est plus
 redemandée automatiquement afin de préserver le quota. La synchronisation
-exhaustive traite les xG manquants en priorité avant les autres endpoints.
+exhaustive traite les données des rencontres en cours et à venir avant le
+rattrapage xG historique.
 `XG_PUBLICATION_GRACE_HOURS` permet d'ajuster cette fenêtre (72 heures par
 défaut, minimum 24 heures).
 
