@@ -65,6 +65,11 @@ def _summary_counts() -> dict[str, int]:
     }
 
 
+@st.cache_data(ttl=300, show_spinner=False)
+def _latest_git_backup_info() -> dict:
+    return git_backup.latest_backup_info()
+
+
 def _format_datetime(value):
     timestamp = pd.to_datetime(value, errors="coerce")
     if pd.isna(timestamp):
@@ -244,6 +249,7 @@ def show():
                 with st.spinner("Création et envoi de la copie SQLite…"):
                     backup = git_backup.backup_to_github(force=True)
                 if backup["status"] == "uploaded":
+                    _latest_git_backup_info.clear()
                     st.success(
                         "Sauvegarde Git effectuée : "
                         f"{backup['repository']} · branche {backup['branch']}"
@@ -261,6 +267,24 @@ def show():
             "Sauvegarde Git non configurée. Ajoutez le secret "
             "GITHUB_BACKUP_TOKEN dans les secrets Streamlit pour activer les copies automatiques."
         )
+
+    if git_backup.backup_is_configured():
+        try:
+            backup_info = _latest_git_backup_info()
+            committed_at = backup_info.get("committed_at")
+            if backup_info.get("status") == "available" and committed_at:
+                timestamp = pd.to_datetime(committed_at, utc=True).strftime(
+                    "%d/%m/%Y à %H:%M UTC"
+                )
+                st.caption(f"Dernière sauvegarde Git : {timestamp}.")
+            elif backup_info.get("status") == "not_found":
+                st.caption("Aucune sauvegarde Git trouvée pour le moment.")
+            elif backup_info.get("status") == "missing_file":
+                st.warning(
+                    "La branche de sauvegarde existe, mais le fichier SQLite y manque."
+                )
+        except Exception as exc:
+            st.caption(f"Horodatage de la sauvegarde Git indisponible : {exc}")
 
     counts = _summary_counts()
     database_kpis = [

@@ -111,6 +111,25 @@ def _backup_head(root: str, branch: str, token: str) -> dict | None:
     }
 
 
+def latest_backup_info() -> dict:
+    """Return the timestamp and commit id of the latest Git backup."""
+    token = _setting("GITHUB_BACKUP_TOKEN")
+    if not token:
+        return {"status": "not_configured"}
+    repository = _setting("GITHUB_BACKUP_REPOSITORY", _DEFAULT_REPOSITORY)
+    branch = _setting("GITHUB_BACKUP_BRANCH", _DEFAULT_BRANCH)
+    head = _backup_head(f"/repos/{repository}", branch, token)
+    if not head:
+        return {"status": "not_found", "repository": repository, "branch": branch}
+    return {
+        "status": "available" if head.get("blob_sha") else "missing_file",
+        "repository": repository,
+        "branch": branch,
+        "committed_at": head.get("committed_at"),
+        "commit": head.get("commit_sha"),
+    }
+
+
 def backup_to_github(*, database_engine=engine, force: bool = False) -> dict:
     """Publish a changed snapshot daily, retaining Git's differential history."""
     token = _setting("GITHUB_BACKUP_TOKEN")

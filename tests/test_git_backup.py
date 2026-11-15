@@ -13,6 +13,13 @@ from services import git_backup
 
 
 class GitBackupTests(unittest.TestCase):
+    class ImmediateThread:
+        def __init__(self, target, **_kwargs):
+            self.target = target
+
+        def start(self):
+            self.target()
+
     def test_uploads_a_consistent_compressed_sqlite_copy_to_rolling_branch(self):
         with tempfile.TemporaryDirectory() as directory:
             database_path = Path(directory) / "source.db"
@@ -151,6 +158,50 @@ class GitBackupTests(unittest.TestCase):
         with patch.object(git_backup, "_setting", return_value=""):
             result = git_backup.backup_to_github()
         self.assertEqual(result, {"status": "not_configured"})
+
+    def test_daily_scheduler_starts_a_non_blocking_backup_check(self):
+        with (
+            patch.object(git_backup, "backup_is_configured", return_value=True),
+            patch.object(git_backup, "_daily_check_in_progress", False),
+            patch.object(git_backup, "_daily_last_attempt_at", None),
+            patch.object(git_backup.threading, "Thread", self.ImmediateThread),
+            patch.object(
+                git_backup, "backup_to_github", return_value={"status": "uploaded"}
+            ) as backup,
+        ):
+            started = git_backup.start_daily_backup_check()
+
+        self.assertTrue(started)
+        backup.assert_called_once_with()
+
+    def test_latest_backup_info_exposes_github_commit_timestamp(self):
+        expected = {
+            "status": "available",
+            "repository": "owner/repository",
+            "branch": "database-backup",
+            "committed_at": "2026-11-15T19:41:45Z",
+            "commit": "commit-sha",
+        }
+        with patch.object(
+            git_backup,
+            "_setting",
+            side_effect=lambda name, default="": {
+                "GITHUB_BACKUP_TOKEN": "test-token",
+                "GITHUB_BACKUP_REPOSITORY": "owner/repository",
+                "GITHUB_BACKUP_BRANCH": "database-backup",
+            }.get(name, default),
+        ), patch.object(
+            git_backup,
+            "_backup_head",
+            return_value={
+                "blob_sha": "blob-sha",
+                "committed_at": expected["committed_at"],
+                "commit_sha": expected["commit"],
+            },
+        ):
+            result = git_backup.latest_backup_info()
+
+        self.assertEqual(result, expected)
 
 
 if __name__ == "__main__":
