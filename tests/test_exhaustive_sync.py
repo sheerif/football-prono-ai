@@ -226,6 +226,11 @@ class ExhaustiveSyncTests(unittest.TestCase):
             patch.object(background_jobs, "_jobs", {}),
             patch.object(background_jobs.threading, "Thread", _ImmediateThread),
             patch.object(background_jobs, "full_sync_state", return_value=None),
+            patch.object(
+                background_jobs,
+                "api_quota_status",
+                return_value={"verified": True, "remaining": 10, "current": 90, "limit": 100},
+            ),
             patch.object(background_jobs, "_full_sync_retry_seconds", return_value=60),
             patch.object(background_jobs.sync_registry, "mark") as mark,
             patch.object(background_jobs.import_service, "record_update_log"),
@@ -247,6 +252,37 @@ class ExhaustiveSyncTests(unittest.TestCase):
             mark.call_args.kwargs["metadata"]["checkpoint"],
             "fixture-statistics:9",
         )
+
+    def test_exhausted_quota_preflight_defers_full_sync_without_data_calls(self):
+        with (
+            patch.object(background_jobs, "_jobs", {}),
+            patch.object(background_jobs.threading, "Thread", _ImmediateThread),
+            patch.object(background_jobs, "full_sync_state", return_value=None),
+            patch.object(
+                background_jobs,
+                "api_quota_status",
+                return_value={
+                    "verified": True,
+                    "available": False,
+                    "current": 100,
+                    "limit": 100,
+                    "remaining": 0,
+                    "checked_at": "2026-11-15T12:00:00",
+                },
+            ),
+            patch.object(background_jobs, "_full_sync_retry_seconds", return_value=60),
+            patch.object(background_jobs.sync_registry, "mark") as mark,
+            patch.object(background_jobs.import_service, "record_update_log"),
+            patch.object(background_jobs, "_backup_after_data_job"),
+            patch.object(full_sync_service, "run_full_sync") as run_full_sync,
+        ):
+            job_id = background_jobs.start_full_sync()
+            job = next(job for job in background_jobs.list_jobs() if job["id"] == job_id)
+
+        run_full_sync.assert_not_called()
+        self.assertEqual(job["status"], "partial")
+        self.assertEqual(job["quota_preflight"]["remaining"], 0)
+        self.assertEqual(mark.call_args.args[2], "waiting_quota")
 
     def test_retry_delay_distinguishes_minute_and_daily_quotas(self):
         now = datetime.datetime(2026, 9, 7, 20, 30, tzinfo=datetime.UTC)

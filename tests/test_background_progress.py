@@ -13,6 +13,57 @@ class _ImmediateThread:
 
 
 class BackgroundProgressTests(unittest.TestCase):
+    def test_quota_preflight_stops_job_before_data_requests_when_exhausted(self):
+        job_id = "quota-preflight-test"
+        status = {
+            "verified": True,
+            "available": False,
+            "current": 100,
+            "limit": 100,
+            "remaining": 0,
+            "checked_at": "2026-11-15T12:00:00",
+        }
+        with (
+            patch.object(
+                background_jobs,
+                "_jobs",
+                {job_id: {"id": job_id, "kind": "manual_import", "details": {}}},
+            ),
+            patch.object(background_jobs, "api_quota_status", return_value=status),
+            patch.object(background_jobs.threading, "Thread") as thread,
+        ):
+            may_start = background_jobs._preflight_api_quota(job_id)
+            job = background_jobs.list_jobs()[0]
+
+        self.assertFalse(may_start)
+        self.assertEqual(job["status"], "partial")
+        self.assertEqual(job["quota_preflight"]["remaining"], 0)
+        self.assertTrue(job["details"]["quota_reached"])
+        thread.assert_called_once()
+
+    def test_quota_preflight_allows_job_when_requests_remain(self):
+        job_id = "quota-preflight-available-test"
+        status = {
+            "verified": True,
+            "available": True,
+            "current": 80,
+            "limit": 100,
+            "remaining": 20,
+        }
+        with (
+            patch.object(
+                background_jobs,
+                "_jobs",
+                {job_id: {"id": job_id, "kind": "manual_import", "details": {}}},
+            ),
+            patch.object(background_jobs, "api_quota_status", return_value=status),
+        ):
+            may_start = background_jobs._preflight_api_quota(job_id)
+            job = background_jobs.list_jobs()[0]
+
+        self.assertTrue(may_start)
+        self.assertEqual(job["quota_preflight"]["remaining"], 20)
+
     def test_quota_status_exposes_only_consumption_counters(self):
         payload = {
             "response": {
@@ -27,13 +78,48 @@ class BackgroundProgressTests(unittest.TestCase):
                 "get_status",
                 return_value=payload,
             ),
+            patch.object(
+                background_jobs.import_service.client,
+                "last_rate_limit",
+                {"minute_limit": "30", "minute_remaining": "0"},
+            ),
         ):
             status = background_jobs.api_quota_status(force=True)
 
         self.assertEqual(status["remaining"], 7375)
-        self.assertTrue(status["available"])
+        self.assertFalse(status["available"])
+        self.assertEqual(status["minute_limit"], 30)
+        self.assertEqual(status["minute_remaining"], 0)
+        self.assertTrue(background_jobs._quota_is_exhausted(status))
         self.assertNotIn("account", status)
         self.assertNotIn("email", status)
+
+    def test_quota_refusal_is_preserved_even_when_headers_show_remaining_calls(self):
+        with (
+            patch.object(background_jobs, "_quota_status_cache", None),
+            patch.object(
+                background_jobs.import_service.client,
+                "get_status",
+                side_effect=RuntimeError("request limit for the day"),
+            ),
+            patch.object(
+                background_jobs.import_service.client,
+                "last_rate_limit",
+                {
+                    "daily_limit": "7500",
+                    "daily_remaining": "7499",
+                    "minute_limit": "300",
+                    "minute_remaining": "299",
+                },
+            ),
+        ):
+            status = background_jobs.api_quota_status(force=True)
+
+        self.assertTrue(status["verified"])
+        self.assertEqual(status["remaining"], 7499)
+        self.assertTrue(status["api_refused"])
+        self.assertFalse(status["available"])
+        self.assertTrue(background_jobs._quota_is_exhausted(status))
 
     def test_waiting_state_uses_durable_database_progress(self):
         with (
@@ -120,6 +206,11 @@ class BackgroundProgressTests(unittest.TestCase):
             patch.object(background_jobs, "_jobs", {}),
             patch.object(background_jobs, "_startup_started", False),
             patch.object(background_jobs.threading, "Thread", _ImmediateThread),
+            patch.object(
+                background_jobs,
+                "api_quota_status",
+                return_value={"verified": True, "remaining": 10, "current": 90, "limit": 100},
+            ),
             patch.object(background_jobs.import_service, "init_db"),
             patch.object(
                 background_jobs.import_service,
@@ -151,6 +242,11 @@ class BackgroundProgressTests(unittest.TestCase):
             patch.object(background_jobs, "_jobs", {}),
             patch.object(background_jobs, "_startup_started", False),
             patch.object(background_jobs.threading, "Thread", _ImmediateThread),
+            patch.object(
+                background_jobs,
+                "api_quota_status",
+                return_value={"verified": True, "remaining": 10, "current": 90, "limit": 100},
+            ),
             patch.object(background_jobs.import_service, "init_db"),
             patch.object(
                 background_jobs.import_service,

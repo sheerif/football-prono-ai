@@ -283,23 +283,121 @@ def api_quota_status(*, force: bool = False) -> dict:
         requests = response.get("requests") or {}
         current = int(requests.get("current") or 0)
         daily_limit = int(requests.get("limit_day") or 0)
+        headers = import_service.client.last_rate_limit or {}
+        minute_limit = _optional_int(headers.get("minute_limit"))
+        minute_remaining = _optional_int(headers.get("minute_remaining"))
         result = {
             "verified": daily_limit > 0,
             "current": current,
             "limit": daily_limit,
             "remaining": max(0, daily_limit - current),
-            "available": daily_limit > current,
+            "minute_limit": minute_limit,
+            "minute_remaining": minute_remaining,
+            "available": daily_limit > current and (
+                minute_remaining is None or minute_remaining > 0
+            ),
             "checked_at": now.replace(tzinfo=None).isoformat(),
         }
     except Exception as exc:
+        headers = import_service.client.last_rate_limit or {}
+        daily_limit = _optional_int(headers.get("daily_limit"))
+        daily_remaining = _optional_int(headers.get("daily_remaining"))
+        minute_limit = _optional_int(headers.get("minute_limit"))
+        minute_remaining = _optional_int(headers.get("minute_remaining"))
+        error = str(exc)
+        error_lower = error.casefold()
+        api_refused = any(
+            token in error_lower
+            for token in ("quota", "request limit", "rate limit", "429")
+        )
+        verified = daily_limit is not None and daily_remaining is not None
         result = {
-            "verified": False,
-            "available": False,
-            "error": str(exc),
+            "verified": verified,
+            "current": (
+                max(0, daily_limit - daily_remaining)
+                if verified
+                else None
+            ),
+            "limit": daily_limit,
+            "remaining": daily_remaining,
+            "minute_limit": minute_limit,
+            "minute_remaining": minute_remaining,
+            "available": bool(
+                verified
+                and daily_remaining > 0
+                and (minute_remaining is None or minute_remaining > 0)
+                and not api_refused
+            ),
+            "api_refused": api_refused,
+            "error": error,
             "checked_at": now.replace(tzinfo=None).isoformat(),
         }
     _quota_status_cache = (now, dict(result))
     return result
+
+
+def _optional_int(value) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _quota_is_exhausted(status: dict) -> bool:
+    if status.get("verified"):
+        if int(status.get("remaining") or 0) <= 0:
+            return True
+    if status.get("minute_remaining") is not None and int(
+        status["minute_remaining"]
+    ) <= 0:
+        return True
+    error = str(status.get("error") or "").casefold()
+    return any(token in error for token in ("quota", "request limit", "rate limit", "429"))
+
+
+def _preflight_api_quota(job_id: str) -> bool:
+    """Check the free daily request count before starting a data job."""
+    status = api_quota_status(force=True)
+    with _lock:
+        job = _jobs.get(job_id)
+        if job:
+            job["quota_preflight"] = status
+
+    if not _quota_is_exhausted(status):
+        return True
+
+    minute_exhausted = (
+        status.get("minute_remaining") is not None
+        and int(status["minute_remaining"]) <= 0
+    ) or _is_minute_quota({"errors": [status.get("error", "")]})
+    if minute_exhausted:
+        message = (
+            "Limite API par minute atteinte. Aucun appel de données n’a été lancé ; "
+            "réessayez dans environ 90 secondes."
+        )
+    elif status.get("verified"):
+        message = (
+            "Quota API épuisé avant la mise à jour : "
+            f"{status['current']}/{status['limit']} requêtes utilisées. "
+            "Aucun appel de données n’a été lancé. Réessayez après le renouvellement du quota."
+        )
+    else:
+        message = (
+            "Quota API déjà signalé comme épuisé. Aucun appel de données n’a été lancé. "
+            "Réessayez après le renouvellement du quota."
+        )
+    with _lock:
+        job = _jobs.get(job_id)
+        details = dict(job.get("details") or {}) if job else {}
+    details.update({"quota_reached": True, "quota_preflight": status})
+    _set_job(
+        job_id,
+        status="partial",
+        message=message,
+        details=details,
+        finished_at=_now(),
+    )
+    return False
 
 
 def _progress(job_id: str, current: int, total: int, label: str):
@@ -373,6 +471,8 @@ def start_manual_import(
     def run():
         started_at = _now()
         try:
+            if not _preflight_api_quota(job_id):
+                return
             _progress(job_id, 0, 1, "Initialisation de la base...")
             import_service.init_db()
             import_service.import_leagues_cautious(
@@ -441,6 +541,8 @@ def start_prediction_sync(days: int | None = None) -> str:
 
         started_at = _now()
         try:
+            if not _preflight_api_quota(job_id):
+                return
             result = full_sync_service.sync_all_upcoming_predictions(
                 days=days,
                 progress_callback=lambda current, total, label: _progress(
@@ -511,6 +613,8 @@ def start_xg_sync(
 
         started_at = _now()
         try:
+            if not _preflight_api_quota(job_id):
+                return
             result = full_sync_service.sync_historical_xg(
                 league_ids=league_ids,
                 seasons=seasons,
@@ -594,6 +698,67 @@ def start_full_sync(*, resumed: bool = False) -> str:
                 message=f"Synchronisation exhaustive · passage {attempt}",
                 error=None,
             )
+            quota_status = api_quota_status(force=True)
+            _set_job(job_id, quota_preflight=quota_status)
+            if _quota_is_exhausted(quota_status):
+                now = datetime.datetime.now(datetime.UTC)
+                minute_exhausted = (
+                    quota_status.get("minute_remaining") is not None
+                    and int(quota_status["minute_remaining"]) <= 0
+                ) or _is_minute_quota({"errors": [quota_status.get("error", "")]})
+                quota_error = (
+                    "rate limit minute"
+                    if minute_exhausted
+                    else quota_status.get("error", "quota journalier atteint")
+                )
+                retry_seconds = _full_sync_retry_seconds(
+                    {"errors": [quota_error]},
+                    now=now,
+                )
+                retry_at = (now + datetime.timedelta(seconds=retry_seconds)).replace(
+                    tzinfo=None
+                )
+                message = (
+                    "Limite API par minute atteinte : aucun appel de données lancé. "
+                    "Nouvelle tentative automatique dans 90 secondes."
+                    if minute_exhausted
+                    else "Quota API déjà épuisé : aucun appel de données lancé. "
+                    "Reprise automatique prévue après le renouvellement du quota."
+                )
+                metadata = {
+                    "persistent": True,
+                    "attempt": attempt,
+                    "job_id": job_id,
+                    "started_at": started_at,
+                    "next_retry_at": retry_at.isoformat(),
+                    "checkpoint": (previous_state.get("metadata") or {}).get(
+                        "checkpoint"
+                    ),
+                    "quota_preflight": quota_status,
+                    **_job_progress_snapshot(job_id),
+                }
+                sync_registry.mark(
+                    FULL_SYNC_CONTROL_KEY,
+                    "full_sync_control",
+                    "waiting_quota",
+                    message=message,
+                    metadata=metadata,
+                )
+                _set_job(
+                    job_id,
+                    status="partial",
+                    message=message,
+                    finished_at=_now(),
+                    details={"quota_reached": True, **metadata},
+                )
+                import_service.record_update_log(
+                    event_type="synchronisation_globale",
+                    status="en_attente_quota",
+                    started_at=started_at,
+                    reason=message,
+                    details={**metadata, "background": True},
+                )
+                return
             sync_registry.mark(
                 FULL_SYNC_CONTROL_KEY,
                 "full_sync_control",
@@ -819,6 +984,8 @@ def start_startup_updates_once(connection_log_id: int | None = None) -> str | No
     def run():
         try:
             started_at = _now()
+            if not _preflight_api_quota(job_id):
+                return
             _progress(job_id, 0, 100, "Initialisation de la base...")
             import_service.init_db()
 

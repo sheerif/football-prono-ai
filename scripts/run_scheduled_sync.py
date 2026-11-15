@@ -17,7 +17,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from database.database import engine
-from services import full_sync_service, import_service, sync_registry
+from services import background_jobs, full_sync_service, import_service, sync_registry
 
 
 CONTROL_KEY = "full-sync:exhaustive"
@@ -46,6 +46,52 @@ def run() -> dict:
 
     started_at = _now().isoformat()
     attempt = int((previous or {}).get("attempts") or 0) + 1
+    quota_status = background_jobs.api_quota_status(force=True)
+    if background_jobs._quota_is_exhausted(quota_status):
+        now = datetime.datetime.now(datetime.UTC)
+        minute_exhausted = (
+            quota_status.get("minute_remaining") is not None
+            and int(quota_status["minute_remaining"]) <= 0
+        ) or background_jobs._is_minute_quota(
+            {"errors": [quota_status.get("error", "")]}
+        )
+        retry_at = (
+            now + datetime.timedelta(seconds=90)
+            if minute_exhausted
+            else (now + datetime.timedelta(days=1)).replace(
+                hour=0, minute=0, second=0, microsecond=0
+            )
+        )
+        retry_at = retry_at.replace(tzinfo=None)
+        message = (
+            "Limite API par minute atteinte : synchronisation reportée."
+            if minute_exhausted
+            else "Quota API quotidien épuisé : synchronisation reportée."
+        )
+        metadata = {
+            "persistent": True,
+            "scheduler": "github-actions",
+            "attempt": attempt,
+            "started_at": started_at,
+            "next_retry_at": retry_at.isoformat(),
+            "quota_preflight": quota_status,
+        }
+        sync_registry.mark(
+            CONTROL_KEY,
+            "full_sync_control",
+            "waiting_quota",
+            message=message,
+            metadata=metadata,
+        )
+        import_service.record_update_log(
+            event_type="synchronisation_planifiee",
+            status="en_attente_quota",
+            started_at=started_at,
+            reason=message,
+            details=metadata,
+        )
+        return {"status": "waiting_quota", **metadata}
+
     sync_registry.mark(
         CONTROL_KEY,
         "full_sync_control",

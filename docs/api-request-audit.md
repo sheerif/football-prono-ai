@@ -9,6 +9,14 @@ incomplète, arrivée à échéance parce qu'elle évolue encore, ou si l'utilis
 demande explicitement un rafraîchissement forcé. La comparaison doit avoir lieu
 avant l'appel API, pas après réception de la réponse.
 
+Avant chaque import ou synchronisation en arrière-plan, l'application appelle
+`/status` et lit `requests.current` et `requests.limit_day`. Si le quota quotidien
+est épuisé, aucun appel de données ne part ; la synchronisation exhaustive est
+reportée jusqu'au renouvellement. L'interface « Mise à jour » affiche également
+le nombre quotidien et, lorsque les en-têtes API le donnent, le quota par minute.
+Selon la documentation API-Football, l'appel `/status` n'est pas compté dans le
+quota quotidien.
+
 ## Résultat par endpoint
 
 | Endpoint | Utilité | Contrôle avant appel | Politique retenue |
