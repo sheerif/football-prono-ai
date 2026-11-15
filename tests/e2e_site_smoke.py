@@ -130,9 +130,32 @@ def main() -> int:
                     print(f"PASS — {page_name}", flush=True)
 
                 page.set_viewport_size({"width": 390, "height": 844})
-                page.wait_for_timeout(500)
+                page.wait_for_timeout(700)
                 _assert_no_streamlit_exception(page, "Affichage mobile — Prédictions")
-                print("PASS — Affichage mobile (390 × 844)", flush=True)
+
+                viewport = page.evaluate(
+                    "() => ({width: window.innerWidth, documentWidth: document.documentElement.scrollWidth})"
+                )
+                if viewport["documentWidth"] > viewport["width"] + 1:
+                    raise AssertionError(
+                        "Défilement horizontal global sur mobile : "
+                        f"{viewport['documentWidth']} px pour un écran de {viewport['width']} px."
+                    )
+
+                nav_buttons = page.locator(
+                    '[data-testid="stSidebar"] .stButton > button'
+                )
+                if nav_buttons.count():
+                    min_height = nav_buttons.first.evaluate(
+                        "(element) => element.getBoundingClientRect().height"
+                    )
+                    if min_height < 40:
+                        raise AssertionError(
+                            f"Zone tactile trop petite dans le menu mobile : {min_height:.0f} px."
+                        )
+
+                print("PASS — Affichage mobile sans débordement horizontal (390 × 844)", flush=True)
+                print("PASS — Zones tactiles du menu mobile", flush=True)
                 browser.close()
         finally:
             process.terminate()
