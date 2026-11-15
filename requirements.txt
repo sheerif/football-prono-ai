@@ -1,7 +1,7 @@
-# Versions directes validées ensemble. Les quatre dernières contraintes
-# corrigent des avis de sécurité dans les dépendances transitives de Streamlit.
+# Versions directes validées ensemble.
+# Les versions de sécurité sont compatibles avec Streamlit 1.67.0.
 # Reconstruction complète demandée après le déploiement du Ranking Score.
-streamlit==1.58.0
+streamlit==1.67.0
 SQLAlchemy==2.0.50
 pandas==3.0.3
 numpy==2.4.6
