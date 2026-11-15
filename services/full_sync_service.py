@@ -1411,9 +1411,7 @@ def run_full_sync(progress_callback=None) -> dict:
 
     total_items = max(
         1,
-        len(matches)
-        + len(upcoming)
-        + len(upcoming)
+        len(historical_matches)
         + len(completed_matches)
         + len(scopes),
     )
@@ -1428,122 +1426,6 @@ def run_full_sync(progress_callback=None) -> dict:
             f"{label} · {summary['downloaded']} téléchargé(s) · "
             f"{summary['skipped']} évité(s)",
         )
-
-    # Les conseils des rencontres à venir passent avant le rattrapage des
-    # détails historiques afin que les informations quotidiennes restent à jour.
-    for match in upcoming:
-        fixture_id = int(match["fixture_id"])
-        key = f"fixture-prediction:{fixture_id}"
-        if _prediction_present(fixture_id):
-            sync_registry.mark(
-                key,
-                "fixture_prediction",
-                "complete",
-                item_count=1,
-                message="Déjà en base",
-            )
-            result = "skipped"
-        else:
-            if _daily_reserve_reached(
-                client, initial_request_counts["matchs/prédictions/xG"]
-            ):
-                return stop_for_quota(key, RuntimeError(_reserve_message()))
-            try:
-                result = _fetch_one(
-                    key,
-                    "fixture_prediction",
-                    lambda fid=fixture_id: client.get_predictions(fid),
-                    lambda item, fid=fixture_id: _save_prediction(fid, item),
-                )
-            except Exception as exc:
-                if _is_quota_error(exc):
-                    return stop_for_quota(key, exc)
-                summary["errors"].append(f"{key}: {exc}")
-                result = "error"
-            if result != "skipped":
-                time.sleep(pause)
-        add_result(result)
-        advance(f"Match {fixture_id}: prédiction API")
-
-    # Détails et compositions des matchs à venir avant tout rattrapage ancien.
-    for match in upcoming:
-        fixture_id = int(match["fixture_id"])
-        detail_key = f"fixture-detail:{fixture_id}"
-        if _fixture_details_present(fixture_id):
-            sync_registry.mark(
-                detail_key,
-                "fixture_detail",
-                "complete",
-                item_count=1,
-                message="Déjà en base",
-            )
-            result = "skipped"
-        elif not _resource_should_download(
-            match,
-            sync_registry.get(detail_key),
-            detail_key,
-            12,
-            terminal_unavailable_after_hours=72,
-            repair_missing_complete=True,
-        ):
-            result = "skipped"
-        else:
-            if _daily_reserve_reached(
-                client, initial_request_counts["matchs/prédictions/xG"]
-            ):
-                return stop_for_quota(detail_key, RuntimeError(_reserve_message()))
-            try:
-                result = _fetch_one(
-                    detail_key,
-                    "fixture_detail",
-                    lambda fid=fixture_id: client.get_fixture(fid),
-                    lambda item, fid=fixture_id: _save_fixture_details(fid, item),
-                )
-            except Exception as exc:
-                if _is_quota_error(exc):
-                    return stop_for_quota(detail_key, exc)
-                summary["errors"].append(f"{detail_key}: {exc}")
-                result = "error"
-            if result != "skipped":
-                time.sleep(pause)
-        add_result(result)
-        advance(f"Match {fixture_id}: détails")
-
-        lineup_key = f"fixture-lineup:{fixture_id}"
-        if _lineup_present(fixture_id):
-            sync_registry.mark(lineup_key, "fixture_lineup", "complete", item_count=2, message="Déjà en base")
-            result = "skipped"
-        elif not _resource_should_download(
-            match,
-            sync_registry.get(lineup_key),
-            lineup_key,
-            12,
-            terminal_unavailable_after_hours=72,
-            repair_missing_complete=True,
-        ):
-            result = "skipped"
-        else:
-            if _daily_reserve_reached(
-                tracked_clients["compositions/statistiques joueurs"],
-                initial_request_counts["compositions/statistiques joueurs"],
-            ):
-                return stop_for_quota(lineup_key, RuntimeError(_reserve_message()))
-            try:
-                sync_registry.mark(lineup_key, "fixture_lineup", "running")
-                lineup_result = lineup_service.sync_lineups(fixture_id)
-                count = int(lineup_result.get("teams") or 0)
-                status = "complete" if count >= 2 else ("partial" if count else "unavailable")
-                sync_registry.mark(lineup_key, "fixture_lineup", status, item_count=count)
-                result = "downloaded" if count >= 2 else ("partial" if count else "unavailable")
-            except Exception as exc:
-                sync_registry.mark(lineup_key, "fixture_lineup", "error", message=str(exc))
-                if _is_quota_error(exc):
-                    return stop_for_quota(lineup_key, exc)
-                summary["errors"].append(f"{lineup_key}: {exc}")
-                result = "error"
-            time.sleep(pause)
-        add_result(result)
-        advance(f"Match {fixture_id}: composition")
 
     for match in completed_matches:
         fixture_id = int(match["fixture_id"])
