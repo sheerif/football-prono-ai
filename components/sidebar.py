@@ -234,6 +234,31 @@ def render_app_rail(current: str):
             img, iframe, [data-testid="stIFrame"] {
                 max-width: 100% !important;
             }
+            /* Prevent long headings, cards and embeds from widening the viewport. */
+            html, body, [data-testid="stApp"], [data-testid="stAppViewContainer"],
+            [data-testid="stMain"], section.main {
+                max-width: 100vw !important;
+                overflow-x: hidden !important;
+            }
+            [data-testid="stAppViewContainer"] .main .block-container,
+            [data-testid="stMarkdownContainer"],
+            [data-testid="stVerticalBlock"],
+            [data-testid="stElementContainer"] {
+                min-width: 0 !important;
+                max-width: 100% !important;
+            }
+            [data-testid="stMarkdownContainer"] h1,
+            [data-testid="stMarkdownContainer"] h2,
+            [data-testid="stMarkdownContainer"] h3,
+            [data-testid="stMarkdownContainer"] p {
+                overflow-wrap: anywhere;
+                word-break: normal;
+            }
+            [data-testid="stMetric"], [data-testid="stAlert"],
+            [data-testid="stNotification"] {
+                min-width: 0 !important;
+                max-width: 100% !important;
+            }
         }
         /* Tablet */
         @media (min-width: 601px) and (max-width: 900px) {

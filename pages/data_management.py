@@ -74,7 +74,13 @@ def _database_health() -> dict:
     """Read lightweight live health details for the local SQLite database."""
     with engine.connect() as connection:
         connection.exec_driver_sql("SELECT 1").scalar()
-        database_file = connection.exec_driver_sql("PRAGMA database_list").one()[2]
+        # SQLite may list several attached databases. Select the main database
+        # explicitly instead of requiring PRAGMA database_list to return one row.
+        database_rows = connection.exec_driver_sql("PRAGMA database_list").all()
+        database_file = next(
+            (row[2] for row in database_rows if row[1] == "main"),
+            None,
+        )
         journal_mode = connection.exec_driver_sql("PRAGMA journal_mode").scalar()
         page_size = int(connection.exec_driver_sql("PRAGMA page_size").scalar())
         page_count = int(connection.exec_driver_sql("PRAGMA page_count").scalar())
