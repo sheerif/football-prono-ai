@@ -11,6 +11,7 @@ from services import import_service, sync_registry
 
 _lock = threading.RLock()
 _jobs: dict[str, dict] = {}
+_backup_started_jobs: set[str] = set()
 _startup_started = False
 _full_progress_cache: tuple[datetime.datetime, dict] | None = None
 _quota_status_cache: tuple[datetime.datetime, dict] | None = None
@@ -35,11 +36,37 @@ def _now() -> str:
 
 
 def _set_job(job_id: str, **updates):
+    should_backup = False
     with _lock:
         job = _jobs.get(job_id)
         if not job:
             return
         job.update(updates)
+        should_backup = (
+            job.get("kind") in DATA_JOB_KINDS
+            and job.get("status") in {"done", "partial", "error"}
+            and job_id not in _backup_started_jobs
+        )
+        if should_backup:
+            _backup_started_jobs.add(job_id)
+            job["backup_status"] = "pending"
+    if should_backup:
+        threading.Thread(
+            target=lambda: _backup_after_data_job(job_id),
+            name=f"football-prono-backup-{job_id[:8]}",
+            daemon=True,
+        ).start()
+
+
+def _backup_after_data_job(job_id: str):
+    """Publish a snapshot after each data task, including quota pauses."""
+    try:
+        from services.git_backup import backup_to_github
+
+        result = backup_to_github()
+        _set_job(job_id, backup_status=result.get("status", "unknown"), backup=result)
+    except Exception as exc:
+        _set_job(job_id, backup_status="error", backup_error=str(exc))
 
 
 def _create_job(kind: str, label: str, details: dict | None = None) -> str:

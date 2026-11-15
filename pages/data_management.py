@@ -9,6 +9,7 @@ from database.database import engine
 from services import (
     background_jobs,
     full_sync_service,
+    git_backup,
     import_service,
     sync_registry,
     xg_service,
@@ -169,6 +170,12 @@ def _render_jobs():
                             details.get("duplicates_avoided", "—"),
                         ),
                         "Message": job.get("error") or job.get("message"),
+                        "Sauvegarde Git": {
+                            "uploaded": "Effectuée",
+                            "pending": "En cours",
+                            "not_configured": "Non configurée",
+                            "error": "Erreur",
+                        }.get(job.get("backup_status"), "—"),
                     }
                 )
             st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
@@ -225,6 +232,26 @@ def show():
         "Base SQLite locale active. Les imports et analyses sont enregistrés "
         "dans le fichier configuré par DATABASE_URL."
     )
+    if git_backup.backup_is_configured():
+        st.caption(
+            "Une copie SQLite compressée est envoyée sur Git après chaque "
+            "synchronisation ou import."
+        )
+        if st.button("Créer une sauvegarde maintenant", key="create_git_database_backup"):
+            try:
+                with st.spinner("Création et envoi de la copie SQLite…"):
+                    backup = git_backup.backup_to_github()
+                st.success(
+                    "Sauvegarde Git effectuée : "
+                    f"{backup['repository']} · branche {backup['branch']}"
+                )
+            except Exception as exc:
+                st.error(f"Échec de la sauvegarde Git : {exc}")
+    else:
+        st.warning(
+            "Sauvegarde Git non configurée. Ajoutez le secret "
+            "GITHUB_BACKUP_TOKEN dans les secrets Streamlit pour activer les copies automatiques."
+        )
 
     counts = _summary_counts()
     database_kpis = [

@@ -1,4 +1,4 @@
-# Sauvegarde et restauration locale
+# Sauvegarde et restauration
 
 L'application utilise une base SQLite locale. Par défaut, le fichier est
 `football.db` à la racine du projet. Il est ignoré par Git et ne doit pas être
@@ -25,19 +25,36 @@ sauvegarde SQLite (`Connection.backup`) plutôt qu'une copie simple du fichier.
 3. Redémarrez l'application et vérifiez les volumes depuis la page « Mise à
    jour ».
 
-Le système de fichiers de certains hébergeurs, notamment Streamlit Community
-Cloud, est éphémère. Une base locale qui y est modifiée peut être perdue au
-redémarrage ou au redéploiement. Gardez une sauvegarde externe régulière si
-vous hébergez l'application dans cet environnement.
+Le système de fichiers de Streamlit Community Cloud est éphémère. Pour ne pas
+perdre les modifications au redémarrage, l'application peut envoyer une copie
+SQLite compressée sur GitHub après chaque import ou synchronisation, y compris
+quand une synchronisation s'arrête sur le quota API.
 
-## Figer le code
+## Activer la sauvegarde Git automatique
 
-Un tag Git permet de retrouver la version associée à une sauvegarde :
+Dans les secrets Streamlit, ajoutez un jeton GitHub avec le droit **Contents:
+Read and write** sur le dépôt `sheerif/football-prono-ai` :
 
-```bash
-git tag -a backup-YYYY-MM-DD -m "Sauvegarde stable YYYY-MM-DD"
-git push origin backup-YYYY-MM-DD
+```toml
+GITHUB_BACKUP_TOKEN = "github_pat_..."
 ```
+
+Le dépôt cible est public : la copie de la base sera donc publique. Par défaut,
+elle est publiée dans la branche `database-backup`, sous `football.db.gz`.
+Cette branche ne contient que la copie courante : chaque sauvegarde la remplace
+et réécrit sa référence, sans ajouter la base à l'historique du code. Pour
+changer la destination, configurez aussi `GITHUB_BACKUP_REPOSITORY` (`proprietaire/depot`)
+et éventuellement `GITHUB_BACKUP_BRANCH` (`database-backup`).
+
+La sauvegarde démarre en arrière-plan après la fin ou la pause d'un import ou
+d'une synchronisation. La page « Mise à jour » indique si le jeton est configuré.
+Une erreur GitHub apparaît dans le détail de la tâche : elle ne supprime ni
+n'interrompt les données conservées localement. Vérifiez périodiquement que la
+branche contient `football.db.gz` et conservez aussi une copie téléchargée sur
+un autre support.
+
+Pour restaurer, téléchargez `football.db.gz` depuis la branche `database-backup`,
+décompressez-le, puis suivez les étapes de la section « Restaurer » ci-dessus.
 
 Ne sauvegardez jamais `.env`, les mots de passe ou les clés API dans Git ou
 une sauvegarde non chiffrée. Un secret exposé doit être révoqué puis remplacé.
