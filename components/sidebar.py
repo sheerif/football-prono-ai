@@ -173,20 +173,66 @@ def render_app_rail(current: str):
             font-size: 0.94rem;
             font-weight: 750;
         }
-        /* Mobile */
+        /* Mobile: controls large enough for touch and content kept inside the viewport. */
         @media (max-width: 600px) {
             [data-testid="stSidebar"] .stButton > button {
-                min-height: 2.18rem;
-                padding: 0.32rem 0.5rem;
-                font-size: 0.86rem;
+                min-height: 2.75rem;
+                padding: 0.48rem 0.6rem;
+                font-size: 0.92rem;
             }
             .app-rail-current {
-                padding: 0.42rem 0.55rem;
-                font-size: 0.86rem;
+                padding: 0.55rem 0.65rem;
+                font-size: 0.92rem;
             }
             .app-rail-brand {
                 gap: 0.5rem;
                 margin-bottom: 0.45rem;
+            }
+            [data-testid="stAppViewContainer"] .main .block-container {
+                width: 100%;
+                max-width: 100%;
+                padding-left: 0.65rem !important;
+                padding-right: 0.65rem !important;
+            }
+            [data-testid="stHorizontalBlock"] {
+                flex-wrap: wrap !important;
+                gap: 0.65rem !important;
+            }
+            [data-testid="stHorizontalBlock"] > [data-testid="column"] {
+                flex: 1 1 100% !important;
+                width: 100% !important;
+                min-width: 0 !important;
+                max-width: 100% !important;
+            }
+            /* Keep wide datasets usable without widening the whole page. */
+            [data-testid="stDataFrame"],
+            [data-testid="stTable"] {
+                max-width: 100% !important;
+                overflow-x: auto !important;
+                -webkit-overflow-scrolling: touch;
+            }
+            [data-testid="stTabs"] [role="tablist"] {
+                max-width: 100%;
+                overflow-x: auto;
+                flex-wrap: nowrap;
+                scrollbar-width: thin;
+            }
+            [data-testid="stTabs"] button[role="tab"] {
+                flex: 0 0 auto;
+                min-height: 2.75rem;
+                white-space: nowrap;
+            }
+            input, textarea, [data-baseweb="select"] {
+                font-size: 16px !important;
+            }
+            .stButton > button,
+            [data-testid="stDownloadButton"] > button,
+            [data-testid="stFormSubmitButton"] > button {
+                min-height: 2.75rem;
+                width: 100%;
+            }
+            img, iframe, [data-testid="stIFrame"] {
+                max-width: 100% !important;
             }
         }
         /* Tablet */
