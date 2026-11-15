@@ -28,3 +28,34 @@ jobs:
         run: |
           python -m pip check
           python -m pip_audit --local --progress-spinner=off
+
+  e2e:
+    name: Browser smoke tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install application dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+      - name: Install Playwright and Chromium
+        run: |
+          python -m pip install playwright
+          python -m playwright install --with-deps chromium
+      - name: Test all application pages in a browser
+        env:
+          APP_USERNAME: ci-test-user
+          APP_PASSWORD: ci-test-password-not-used-in-production
+          DATABASE_URL: sqlite:///ci-e2e-test.db
+          STREAMLIT_STARTUP_UPDATES: "false"
+          AUTO_REFRESH_ON_CONNECTION: "false"
+          AUTO_REFRESH_CURRENT_ON_CONNECTION: "false"
+          STREAMLIT_RECORD_CONNECTIONS: "false"
+          API_FOOTBALL_KEY: ""
+          API_FOOTBALL_WIDGET_KEY: ""
+        run: python tests/e2e_site_smoke.py
