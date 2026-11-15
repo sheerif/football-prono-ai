@@ -44,15 +44,21 @@ Read and write** sur le dépôt `sheerif/football-prono-ai` :
 GITHUB_BACKUP_TOKEN = "github_pat_..."
 ```
 
-Le dépôt cible est public : la copie de la base sera donc publique. Par défaut,
-elle est publiée dans la branche `database-backup`, sous `football.db.gz`.
-Cette branche ne contient que la copie courante : chaque sauvegarde la remplace
-et réécrit sa référence, sans ajouter la base à l'historique du code. Pour
-changer la destination, configurez aussi `GITHUB_BACKUP_REPOSITORY` (`proprietaire/depot`)
+Le dépôt cible est public : les copies de la base seront donc publiques. Par
+défaut, elles sont publiées une fois par jour dans la branche
+`database-backup`, sous `football.db.gz`. Une vérification non bloquante tourne
+à l'ouverture de l'application puis chaque heure. Les nouvelles copies sont
+ajoutées à l'historique de cette branche ; Git ne crée un nouvel objet que si
+le fichier SQLite a changé et compresse les différences entre versions. Les
+anciennes versions restent disponibles pour une restauration. Pour changer la
+destination, configurez aussi `GITHUB_BACKUP_REPOSITORY` (`proprietaire/depot`)
 et éventuellement `GITHUB_BACKUP_BRANCH` (`database-backup`).
 
-La sauvegarde démarre en arrière-plan après la fin ou la pause d'un import ou
-d'une synchronisation. La page « Mise à jour » indique si le jeton est configuré.
+La sauvegarde quotidienne démarre en arrière-plan. Une tâche d'import ou de
+synchronisation peut aussi déclencher une copie si aucune n'a encore été faite
+ce jour-là. Le bouton « Créer une sauvegarde maintenant » force une vérification
+immédiate et ne crée pas de commit si la base est inchangée. La page « Mise à
+jour » indique si le jeton est configuré.
 Une erreur GitHub apparaît dans le détail de la tâche : elle ne supprime ni
 n'interrompt les données conservées localement. Vérifiez périodiquement que la
 branche contient `football.db.gz` et conservez aussi une copie téléchargée sur

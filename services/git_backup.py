@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import base64
 import gzip
+import hashlib
 import json
 import os
 import sqlite3
 import tempfile
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -17,6 +18,9 @@ from urllib.request import Request, urlopen
 from database.database import engine
 
 _backup_lock = threading.Lock()
+_daily_check_lock = threading.Lock()
+_daily_check_in_progress = False
+_daily_last_attempt_at: datetime | None = None
 _API = "https://api.github.com"
 _DEFAULT_REPOSITORY = "sheerif/football-prono-ai"
 _DEFAULT_BRANCH = "database-backup"
@@ -70,15 +74,45 @@ def _create_database_archive(database_engine, archive_path: Path) -> None:
         finally:
             destination.close()
             source.close()
-        with snapshot.open("rb") as source_file, gzip.open(
-            archive_path, "wb", compresslevel=6
-        ) as archive:
-            while chunk := source_file.read(1024 * 1024):
-                archive.write(chunk)
+        with snapshot.open("rb") as source_file, archive_path.open("wb") as raw_archive:
+            with gzip.GzipFile(
+                filename="", mode="wb", fileobj=raw_archive,
+                compresslevel=6, mtime=0,
+            ) as archive:
+                while chunk := source_file.read(1024 * 1024):
+                    archive.write(chunk)
 
 
-def backup_to_github(*, database_engine=engine) -> dict:
-    """Replace the snapshot on an orphan branch so Git history stays rolling."""
+def _git_blob_sha(content: bytes) -> str:
+    header = f"blob {len(content)}\0".encode("ascii")
+    return hashlib.sha1(header + content).hexdigest()
+
+
+def _backup_head(root: str, branch: str, token: str) -> dict | None:
+    try:
+        reference = _request("GET", f"{root}/git/ref/heads/{branch}", token)
+    except RuntimeError as exc:
+        if "(404)" in str(exc):
+            return None
+        raise
+    commit_sha = reference["object"]["sha"]
+    commit = _request("GET", f"{root}/git/commits/{commit_sha}", token)
+    tree_sha = commit["tree"]["sha"]
+    tree = _request("GET", f"{root}/git/trees/{tree_sha}", token)
+    archive = next(
+        (entry for entry in tree.get("tree", []) if entry.get("path") == "football.db.gz"),
+        None,
+    )
+    return {
+        "commit_sha": commit_sha,
+        "tree_sha": tree_sha,
+        "blob_sha": archive.get("sha") if archive else None,
+        "committed_at": (commit.get("committer") or {}).get("date"),
+    }
+
+
+def backup_to_github(*, database_engine=engine, force: bool = False) -> dict:
+    """Publish a changed snapshot daily, retaining Git's differential history."""
     token = _setting("GITHUB_BACKUP_TOKEN")
     if not token:
         return {"status": "not_configured"}
@@ -87,39 +121,109 @@ def backup_to_github(*, database_engine=engine) -> dict:
     if "/" not in repository or not branch or "/" in branch:
         raise ValueError("Configuration du dépôt ou de la branche Git invalide.")
 
-    with _backup_lock, tempfile.TemporaryDirectory(prefix="football-backup-") as temp_dir:
-        archive_path = Path(temp_dir) / "football.db.gz"
-        _create_database_archive(database_engine, archive_path)
-        content = base64.b64encode(archive_path.read_bytes()).decode("ascii")
+    with _backup_lock:
         root = f"/repos/{repository}"
-
-        blob = _request(
-            "POST", f"{root}/git/blobs", token,
-            {"content": content, "encoding": "base64"},
-        )
-        tree = _request(
-            "POST", f"{root}/git/trees", token,
-            {"tree": [{"path": "football.db.gz", "mode": "100644", "type": "blob", "sha": blob["sha"]}]},
-        )
-        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-        commit = _request(
-            "POST", f"{root}/git/commits", token,
-            {"message": f"Sauvegarde SQLite {timestamp}", "tree": tree["sha"]},
-        )
-        ref_endpoint = f"{root}/git/ref/heads/{branch}"
-        try:
-            _request("PATCH", ref_endpoint, token, {"sha": commit["sha"], "force": True})
-        except RuntimeError as exc:
-            if "(404)" not in str(exc):
-                raise
-            _request(
-                "POST", f"{root}/git/refs", token,
-                {"ref": f"refs/heads/{branch}", "sha": commit["sha"]},
+        head = _backup_head(root, branch, token)
+        today_utc = datetime.now(timezone.utc).date()
+        if head and not force and head.get("committed_at"):
+            committed_at = datetime.fromisoformat(
+                head["committed_at"].replace("Z", "+00:00")
             )
-        return {
-            "status": "uploaded",
-            "repository": repository,
-            "branch": branch,
-            "commit": commit["sha"],
-            "size_bytes": archive_path.stat().st_size,
-        }
+            if committed_at.astimezone(timezone.utc).date() >= today_utc:
+                return {
+                    "status": "skipped_daily_limit",
+                    "repository": repository,
+                    "branch": branch,
+                }
+
+        with tempfile.TemporaryDirectory(prefix="football-backup-") as temp_dir:
+            archive_path = Path(temp_dir) / "football.db.gz"
+            _create_database_archive(database_engine, archive_path)
+            archive_bytes = archive_path.read_bytes()
+            if head and head.get("blob_sha") == _git_blob_sha(archive_bytes):
+                return {
+                    "status": "unchanged",
+                    "repository": repository,
+                    "branch": branch,
+                }
+            content = base64.b64encode(archive_bytes).decode("ascii")
+            blob = _request(
+                "POST", f"{root}/git/blobs", token,
+                {"content": content, "encoding": "base64"},
+            )
+            tree_payload = {
+                "tree": [{
+                    "path": "football.db.gz",
+                    "mode": "100644",
+                    "type": "blob",
+                    "sha": blob["sha"],
+                }]
+            }
+            if head:
+                tree_payload["base_tree"] = head["tree_sha"]
+            tree = _request("POST", f"{root}/git/trees", token, tree_payload)
+            timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+            commit_payload = {
+                "message": f"Sauvegarde SQLite {timestamp}",
+                "tree": tree["sha"],
+            }
+            if head:
+                commit_payload["parents"] = [head["commit_sha"]]
+            commit = _request(
+                "POST", f"{root}/git/commits", token, commit_payload
+            )
+            if head:
+                _request(
+                    "PATCH", f"{root}/git/refs/heads/{branch}", token,
+                    {"sha": commit["sha"], "force": False},
+                )
+            else:
+                _request(
+                    "POST", f"{root}/git/refs", token,
+                    {"ref": f"refs/heads/{branch}", "sha": commit["sha"]},
+                )
+            return {
+                "status": "uploaded",
+                "repository": repository,
+                "branch": branch,
+                "commit": commit["sha"],
+                "size_bytes": len(archive_bytes),
+                "differential": bool(head),
+            }
+
+
+def start_daily_backup_check() -> bool:
+    """Start a non-blocking daily check, retrying failures after one hour."""
+    global _daily_check_in_progress, _daily_last_attempt_at
+    if not backup_is_configured():
+        return False
+    now = datetime.now(timezone.utc)
+    with _daily_check_lock:
+        if _daily_check_in_progress:
+            return False
+        if (
+            _daily_last_attempt_at
+            and now - _daily_last_attempt_at < timedelta(hours=1)
+        ):
+            return False
+        _daily_check_in_progress = True
+
+    def run():
+        global _daily_check_in_progress, _daily_last_attempt_at
+        try:
+            backup_to_github()
+        except Exception:
+            import logging
+
+            logging.exception("Échec de la sauvegarde quotidienne SQLite vers GitHub")
+        finally:
+            with _daily_check_lock:
+                _daily_last_attempt_at = datetime.now(timezone.utc)
+                _daily_check_in_progress = False
+
+    threading.Thread(
+        target=run,
+        name="football-prono-daily-backup-check",
+        daemon=True,
+    ).start()
+    return True

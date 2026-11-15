@@ -2,7 +2,7 @@ import streamlit as st
 import datetime
 import os
 
-from services import background_jobs, import_service, schema_guard
+from services import background_jobs, git_backup, import_service, schema_guard
 from components import auth, sidebar, ui
 from pages import dashboard, data_management, api_widgets, matchs_a_venir, analyse_match, prediction_ia
 
@@ -27,6 +27,14 @@ except Exception:
 		"Vérifiez DATABASE_URL et les permissions d’écriture du dossier."
 	)
 	st.stop()
+
+
+@st.fragment(run_every="1h")
+def _check_daily_database_backup():
+	git_backup.start_daily_backup_check()
+
+
+_check_daily_database_backup()
 
 if "connection_started_at" not in st.session_state:
 	st.session_state["connection_started_at"] = datetime.datetime.now(datetime.UTC).replace(tzinfo=None).isoformat()

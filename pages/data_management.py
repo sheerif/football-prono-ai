@@ -172,6 +172,8 @@ def _render_jobs():
                         "Message": job.get("error") or job.get("message"),
                         "Sauvegarde Git": {
                             "uploaded": "Effectuée",
+                            "unchanged": "Aucun changement",
+                            "skipped_daily_limit": "Déjà faite aujourd’hui",
                             "pending": "En cours",
                             "not_configured": "Non configurée",
                             "error": "Erreur",
@@ -240,11 +242,14 @@ def show():
         if st.button("Créer une sauvegarde maintenant", key="create_git_database_backup"):
             try:
                 with st.spinner("Création et envoi de la copie SQLite…"):
-                    backup = git_backup.backup_to_github()
-                st.success(
-                    "Sauvegarde Git effectuée : "
-                    f"{backup['repository']} · branche {backup['branch']}"
-                )
+                    backup = git_backup.backup_to_github(force=True)
+                if backup["status"] == "uploaded":
+                    st.success(
+                        "Sauvegarde Git effectuée : "
+                        f"{backup['repository']} · branche {backup['branch']}"
+                    )
+                else:
+                    st.info("La copie Git est déjà à jour : aucune différence à enregistrer.")
             except Exception as exc:
                 st.error(f"Échec de la sauvegarde Git : {exc}")
     else:
