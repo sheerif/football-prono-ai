@@ -235,6 +235,7 @@ def _render_api_quota_status():
     if not (os.getenv("API_FOOTBALL_KEY") or "").strip():
         return
     quota = background_jobs.api_quota_status()
+    _render_quota_counters(quota)
     error = str(quota.get("error") or "").casefold()
     daily_exhausted = (
         quota.get("verified") and int(quota.get("remaining") or 0) <= 0
@@ -292,13 +293,6 @@ def _render_api_quota_status():
                     "Une nouvelle tentative sera possible après le délai de la limite "
                     f"par minute. {_quota_reset_label(quota, daily=False)}"
                 )
-        if quota.get("verified") and int(quota.get("remaining") or 0) > 0:
-            st.caption(
-                "Les en-têtes HTTP annoncent encore "
-                f"{quota['remaining']} appel(s) sur {quota['limit']}, "
-                "mais ce compteur contredit le refus explicite de l’API et "
-                "n’est pas considéré comme une disponibilité réelle."
-            )
     elif quota.get("verified"):
         remaining = quota["remaining"]
         quota_label = (
@@ -319,6 +313,70 @@ def _render_api_quota_status():
         st.caption(
             "Quota API non vérifiable pour le moment ; le contrôle sera "
             "retenté avant chaque téléchargement."
+        )
+
+
+def _render_quota_counters(quota: dict) -> None:
+    """Show daily and per-minute API call budgets without trusting refusals."""
+    st.markdown("#### Appels API disponibles")
+    verified = bool(quota.get("verified"))
+    refused = bool(quota.get("api_refused"))
+    current = quota.get("current")
+    daily_limit = quota.get("limit")
+    remaining = quota.get("remaining")
+    minute_remaining = quota.get("minute_remaining")
+    minute_limit = quota.get("minute_limit")
+
+    if verified and daily_limit and current is not None:
+        used = max(0, int(current))
+        limit = max(1, int(daily_limit))
+        daily_remaining = max(0, int(remaining or 0))
+        percent_used = min(100, round(100 * used / limit))
+        progress_text = (
+            f"{percent_used} % utilisés · {used:,} / {limit:,} appels · "
+            f"{daily_remaining:,} annoncés restants"
+        )
+        st.progress(min(1.0, used / limit), text=progress_text)
+        daily_label = (
+            "Appels annoncés restants"
+            if refused
+            else "Appels disponibles aujourd’hui"
+        )
+        daily_value = f"{daily_remaining:,}"
+        used_value = f"{used:,} / {limit:,}"
+    else:
+        daily_label = "Appels disponibles aujourd’hui"
+        daily_value = "Indisponible"
+        used_value = "Indisponible"
+
+    if minute_remaining is not None:
+        minute_value = (
+            f"{int(minute_remaining):,} / {int(minute_limit):,}"
+            if minute_limit
+            else f"{int(minute_remaining):,}"
+        )
+    else:
+        minute_value = "Indisponible"
+
+    daily_col, used_col, minute_col = st.columns(3)
+    daily_col.metric(daily_label, daily_value)
+    used_col.metric("Utilisés aujourd’hui", used_value)
+    minute_col.metric("Restants cette minute", minute_value)
+
+    checked_at = quota.get("checked_at")
+    if checked_at:
+        checked_label = _format_utc_datetime(checked_at)
+        freshness_note = (
+            " · compteur non confirmé, l’API a refusé le contrôle"
+            if refused
+            else ""
+        )
+        st.caption(f"Dernière vérification : {checked_label}{freshness_note}.")
+    if refused and verified and int(remaining or 0) > 0:
+        st.caption(
+            "Le compteur restant vient des en-têtes HTTP et contredit le refus "
+            "explicite de l’API; les appels affichés ne sont donc pas considérés "
+            "comme disponibles."
         )
 
 
