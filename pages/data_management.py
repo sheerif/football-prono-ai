@@ -1,5 +1,7 @@
+import datetime as dt
 import importlib
 import os
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import streamlit as st
@@ -233,17 +235,63 @@ def _render_api_quota_status():
     if not (os.getenv("API_FOOTBALL_KEY") or "").strip():
         return
     quota = background_jobs.api_quota_status()
-    if quota.get("api_refused"):
-        error = str(quota.get("error") or "").casefold()
-        if "minute" in error or "per minute" in error:
-            refusal_label = "La limite API par minute est atteinte."
-        elif "day" in error or "daily" in error or "journalier" in error:
-            refusal_label = "Le quota API quotidien est atteint."
+    error = str(quota.get("error") or "").casefold()
+    daily_exhausted = (
+        quota.get("verified") and int(quota.get("remaining") or 0) <= 0
+    ) or any(token in error for token in ("day", "daily", "journalier"))
+    minute_exhausted = (
+        quota.get("minute_remaining") is not None
+        and int(quota["minute_remaining"]) <= 0
+    ) or any(token in error for token in ("minute", "per minute", "rate limit"))
+    if quota.get("api_refused") or daily_exhausted or minute_exhausted:
+        if minute_exhausted and not daily_exhausted:
+            refusal_label = "Limite API par minute atteinte."
+        elif daily_exhausted:
+            refusal_label = "Quota API quotidien épuisé."
         else:
             refusal_label = "L’API a refusé le contrôle du quota."
-        st.warning(
-            f"{refusal_label} Aucun téléchargement de données ne sera lancé."
-        )
+        st.warning(f"{refusal_label} Les nouveaux appels de données sont suspendus.")
+        wait_state = background_jobs.cached_full_sync_state()
+        if wait_state and wait_state.get("status") == "waiting_quota":
+            metadata = wait_state.get("metadata") or {}
+            st.info(
+                _quota_wait_message(
+                    metadata,
+                    automatic=True,
+                    fallback_message=wait_state.get("message") or "",
+                )
+            )
+        else:
+            paused_job = next(
+                (
+                    job
+                    for job in background_jobs.list_jobs()
+                    if job.get("status") == "partial"
+                    and (job.get("details") or {}).get("quota_reached")
+                ),
+                None,
+            )
+            if paused_job:
+                details = paused_job.get("details") or {}
+                st.info(
+                    _quota_wait_message(
+                        details,
+                        automatic=bool(details.get("automatic_resume")),
+                        fallback_message=paused_job.get("message") or "",
+                    )
+                )
+            elif daily_exhausted:
+                st.caption(
+                    "Aucune synchronisation exhaustive n’est en attente automatique. "
+                    "Vous pourrez la relancer après le renouvellement; les données déjà "
+                    "enregistrées seront conservées. "
+                    f"{_quota_reset_label(daily=True)}"
+                )
+            elif minute_exhausted:
+                st.caption(
+                    "Une nouvelle tentative sera possible après le délai de la limite "
+                    f"par minute. {_quota_reset_label(quota, daily=False)}"
+                )
         if quota.get("verified") and int(quota.get("remaining") or 0) > 0:
             st.caption(
                 "Les en-têtes HTTP annoncent encore "
@@ -272,6 +320,56 @@ def _render_api_quota_status():
             "Quota API non vérifiable pour le moment ; le contrôle sera "
             "retenté avant chaque téléchargement."
         )
+
+
+def _quota_eta(*, quota: dict | None = None, daily: bool) -> dt.datetime:
+    now = dt.datetime.now(dt.timezone.utc)
+    if daily:
+        return (now + dt.timedelta(days=1)).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+    quota = quota or {}
+    retry_seconds = _safe_positive_seconds(quota.get("retry_after"), default=90)
+    checked = pd.to_datetime(quota.get("checked_at"), errors="coerce", utc=True)
+    checked_at = checked.to_pydatetime() if not pd.isna(checked) else now
+    return checked_at + dt.timedelta(seconds=retry_seconds)
+
+
+def _safe_positive_seconds(value, *, default: int) -> int:
+    try:
+        return max(1, int(value))
+    except (TypeError, ValueError):
+        return default
+
+
+def _quota_reset_label(quota: dict | None = None, *, daily: bool) -> str:
+    eta = _quota_eta(quota=quota, daily=daily)
+    paris_time = eta.astimezone(ZoneInfo("Europe/Paris"))
+    remaining = max(0, int((eta - dt.datetime.now(dt.timezone.utc)).total_seconds()))
+    hours, remainder = divmod(remaining, 3600)
+    minutes = remainder // 60
+    seconds = remainder % 60
+    countdown = (
+        f"dans {hours} h {minutes:02d}"
+        if hours
+        else f"dans {minutes} min" if minutes
+        else f"dans {seconds} s"
+    )
+    reset_name = "Renouvellement quotidien estimé" if daily else "Nouvelle tentative estimée"
+    return (
+        f"{reset_name} : {paris_time:%d/%m/%Y à %H:%M} (heure de Paris, "
+        f"{eta:%H:%M} UTC), {countdown}."
+    )
+
+
+def _quota_wait_message(
+    metadata: dict, *, automatic: bool, fallback_message: str = ""
+) -> str:
+    return ui.quota_wait_message(
+        metadata,
+        automatic=automatic,
+        fallback_message=fallback_message,
+    )
 
 
 @st.fragment(run_every="1s")
@@ -303,7 +401,13 @@ def _render_jobs():
             st.progress(progress, text=ui.progress_bar_text(job))
             st.caption(ui.progress_download_caption(job))
             if job.get("status") == "waiting_quota":
-                st.warning(job.get("message"))
+                st.warning(
+                    _quota_wait_message(
+                        job.get("details") or {},
+                        automatic=bool((job.get("details") or {}).get("automatic_resume")),
+                        fallback_message=job.get("message") or "",
+                    )
+                )
             else:
                 st.caption("La mise à jour continue automatiquement en arrière-plan.")
 
@@ -313,7 +417,17 @@ def _render_jobs():
             progress = float(job.get("progress") or 0)
             st.progress(progress, text=ui.progress_bar_text(job))
             st.caption(ui.progress_download_caption(job))
-            st.warning(job.get("message") or "Quota API atteint.")
+            details = job.get("details") or {}
+            if details.get("quota_reached") and details.get("next_retry_at"):
+                st.warning(
+                    _quota_wait_message(
+                        details,
+                        automatic=bool(details.get("automatic_resume")),
+                        fallback_message=job.get("message") or "",
+                    )
+                )
+            else:
+                st.warning(job.get("message") or "Quota API atteint.")
 
     if finished:
         with st.expander("Dernières tâches terminées", expanded=False):
@@ -520,11 +634,15 @@ def show():
                 "une seconde fois juste avant son téléchargement."
             )
         if full_state and full_state.get("status") == "waiting_quota":
-            st.warning(full_state.get("message") or "Synchronisation en attente du quota API.")
-            st.caption(
-                "Cette attente ne bloque plus les autres actions. Aucun appel de "
-                "contrôle n’est consommé avant minuit."
+            metadata = full_state.get("metadata") or {}
+            st.warning(
+                _quota_wait_message(
+                    metadata,
+                    automatic=True,
+                    fallback_message=full_state.get("message") or "",
+                )
             )
+            st.caption("Cette attente ne bloque pas les autres actions du site.")
             if st.button(
                 "Tenter une reprise maintenant",
                 key="retry_full_sync_now",

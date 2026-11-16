@@ -1,7 +1,9 @@
 import base64
+import datetime as dt
 import html
 import re
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import streamlit as st
 
@@ -50,6 +52,67 @@ LABEL_ICONS = {
     "attaque": "⚡",
     "défense": "🧱",
 }
+
+
+def quota_wait_message(
+    metadata: dict, *, automatic: bool, fallback_message: str = ""
+) -> str:
+    """Format a quota pause with its scheduled time and current countdown."""
+    raw_eta = metadata.get("next_retry_at")
+    try:
+        eta = dt.datetime.fromisoformat(str(raw_eta).replace("Z", "+00:00"))
+        if eta.tzinfo is None:
+            eta = eta.replace(tzinfo=dt.timezone.utc)
+        else:
+            eta = eta.astimezone(dt.timezone.utc)
+    except (TypeError, ValueError):
+        eta = None
+
+    if eta is None:
+        eta_label = "au prochain renouvellement du quota"
+    else:
+        paris_time = eta.astimezone(ZoneInfo("Europe/Paris"))
+        remaining = max(0, int((eta - dt.datetime.now(dt.timezone.utc)).total_seconds()))
+        hours, remainder = divmod(remaining, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        countdown = (
+            f"dans {hours} h {minutes:02d}"
+            if hours
+            else f"dans {minutes} min" if minutes
+            else f"dans {seconds} s"
+        )
+        eta_label = (
+            f"prévue le {paris_time:%d/%m/%Y à %H:%M} (heure de Paris, "
+            f"{eta:%H:%M} UTC), {countdown}"
+        )
+
+    fallback = fallback_message.casefold()
+    quota_kind = str(metadata.get("quota_kind") or (
+        "minute" if any(token in fallback for token in ("minute", "rate limit"))
+        else "daily"
+    ))
+    if metadata.get("budget_reserved"):
+        quota_label = "Réserve API protégée pour les matchs à venir. "
+    else:
+        quota_label = (
+            "Limite API par minute atteinte. "
+            if quota_kind == "minute"
+            else "Quota API quotidien épuisé. "
+        )
+    calls = metadata.get("api_calls")
+    no_call = (
+        "Aucun appel de données n’a été lancé. "
+        if calls is not None and int(calls) == 0
+        else "Les nouveaux appels de données sont suspendus. "
+    )
+    progress = metadata.get("progress")
+    progress_label = (
+        f" Progression conservée : {float(progress):.0f} %."
+        if progress is not None
+        else " Les données déjà enregistrées sont conservées."
+    )
+    action = "Reprise automatique" if automatic else "Relance manuelle"
+    return f"{quota_label}{no_call}{action} {eta_label}.{progress_label}"
 
 STADIUM_PATH = Path(__file__).resolve().parents[1] / "assets" / "stadium-hero.png"
 
@@ -1143,7 +1206,17 @@ def render_background_jobs():
         st.progress(progress, text=progress_bar_text(job))
         st.caption(progress_download_caption(job))
         if job.get("status") in {"waiting_quota", "partial"}:
-            st.caption(job.get("message"))
+            details = job.get("details") or {}
+            if details.get("quota_reached") and details.get("next_retry_at"):
+                st.caption(
+                    quota_wait_message(
+                        details,
+                        automatic=bool(details.get("automatic_resume")),
+                        fallback_message=job.get("message") or "",
+                    )
+                )
+            else:
+                st.caption(job.get("message"))
     if waiting_quota and not any(
         job.get("kind") == "full_sync" for job in [*jobs, *paused_jobs]
     ):
@@ -1164,4 +1237,10 @@ def render_background_jobs():
             text=progress_bar_text(persistent_job),
         )
         st.caption(progress_download_caption(persistent_job))
-        st.caption(full_state.get("message") or "En attente du quota API.")
+        st.caption(
+            quota_wait_message(
+                metadata,
+                automatic=True,
+                fallback_message=full_state.get("message") or "",
+            )
+        )

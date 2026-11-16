@@ -2,6 +2,7 @@ import unittest
 import datetime
 from unittest.mock import patch
 
+from components import ui
 from services import background_jobs, import_service
 
 
@@ -14,6 +15,37 @@ class _ImmediateThread:
 
 
 class BackgroundProgressTests(unittest.TestCase):
+    def test_daily_quota_message_shows_dynamic_reset_and_automatic_resume(self):
+        message = ui.quota_wait_message(
+            {
+                "quota_kind": "daily",
+                "api_calls": 0,
+                "next_retry_at": "2026-11-17T00:00:00",
+                "progress": 14,
+            },
+            automatic=True,
+        )
+
+        self.assertIn("Quota API quotidien épuisé", message)
+        self.assertIn("Aucun appel de données n’a été lancé", message)
+        self.assertIn("Reprise automatique prévue le 17/11/2026 à 01:00", message)
+        self.assertIn("00:00 UTC", message)
+        self.assertIn("Progression conservée : 14 %", message)
+
+    def test_minute_quota_message_distinguishes_manual_restart(self):
+        message = ui.quota_wait_message(
+            {
+                "quota_kind": "minute",
+                "api_calls": 3,
+                "next_retry_at": "2026-11-16T18:30:00",
+            },
+            automatic=False,
+        )
+
+        self.assertIn("Limite API par minute atteinte", message)
+        self.assertIn("Les nouveaux appels de données sont suspendus", message)
+        self.assertIn("Relance manuelle prévue", message)
+
     def test_quota_preflight_stops_job_before_data_requests_when_exhausted(self):
         job_id = "quota-preflight-test"
         status = {
