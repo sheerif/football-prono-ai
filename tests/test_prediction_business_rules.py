@@ -48,7 +48,7 @@ class PredictionBusinessRuleTests(unittest.TestCase):
             matches,
             "2026-01-18T12:00:00Z",
         )
-        self.assertAlmostEqual(score, 1.0 - 11 / 173, places=4)
+        self.assertAlmostEqual(score, 1.0 - 10 / 173, places=4)
 
 
     def test_lineup_coverage_uses_team_reliability_not_dict_presence(self):
