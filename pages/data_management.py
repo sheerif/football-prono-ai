@@ -10,6 +10,7 @@ from components import ui
 from database.database import engine
 from services import (
     background_jobs,
+    data_reliability,
     full_sync_service,
     git_backup,
     import_service,
@@ -562,6 +563,78 @@ def _start_full_sync(*, resumed: bool = False) -> str:
         return starter()
 
 
+def _render_reliability_engine() -> None:
+    """Expose the central reliability engine without recalculating business KPIs."""
+    st.subheader("Moteur de fiabilité des données")
+    try:
+        snapshot = data_reliability.get_reliability_snapshot()
+    except Exception as exc:
+        st.error(f"Contrôle de fiabilité indisponible ({type(exc).__name__}).")
+        return
+
+    labels = {
+        "healthy": "FIABLE",
+        "warning": "À SURVEILLER",
+        "critical": "CRITIQUE",
+        "unknown": "INCONNU",
+    }
+    overall = snapshot.get("overall_status", "unknown")
+    if overall == "healthy":
+        st.success(f"État global : {labels[overall]}")
+    elif overall == "critical":
+        st.error(f"État global : {labels[overall]}")
+    else:
+        st.warning(f"État global : {labels.get(overall, labels['unknown'])}")
+
+    summary = snapshot.get("summary") or {}
+    cols = st.columns(4)
+    for col, status in zip(cols, ("healthy", "warning", "critical", "unknown")):
+        col.metric(labels[status].capitalize(), int(summary.get(status, 0)))
+
+    table_rows = []
+    for item in snapshot.get("tables") or []:
+        age = item.get("age_seconds")
+        age_label = (
+            f"{age / 3600:.1f} h" if age is not None
+            else "Non vérifiable"
+        )
+        table_rows.append({
+            "Table": item.get("name"),
+            "Lignes": item.get("count") if item.get("count") is not None else "Inconnu",
+            "État": labels.get(item.get("status"), "INCONNU"),
+            "Dernière donnée": _format_utc_datetime(item.get("last_updated_at")),
+            "Âge": age_label,
+            "Diagnostic": item.get("message"),
+        })
+    if table_rows:
+        st.dataframe(pd.DataFrame(table_rows), use_container_width=True, hide_index=True)
+
+    archive = snapshot.get("api_archive") or {}
+    archive_col, update_col = st.columns(2)
+    with archive_col:
+        st.markdown("**Intégrité de l’archive API**")
+        st.write(labels.get(archive.get("status"), "INCONNU"))
+        if archive.get("checked") is not None:
+            st.caption(
+                f"Échantillon : {archive.get('checked')} · "
+                f"valides : {archive.get('valid')} · "
+                f"invalides : {archive.get('invalid')}"
+            )
+        st.caption(archive.get("message") or "Contrôle non disponible.")
+    with update_col:
+        st.markdown("**Dernière synchronisation terminée**")
+        st.write(_format_utc_datetime(snapshot.get("latest_update")))
+        sync_states = snapshot.get("sync_states")
+        if sync_states is None:
+            st.caption("État des ressources de synchronisation inconnu.")
+        else:
+            st.caption(" · ".join(f"{key} : {value}" for key, value in sorted(sync_states.items())) or "Aucune ressource suivie.")
+    st.caption(
+        "Instantané généré à " + _format_utc_datetime(snapshot.get("generated_at"))
+        + ". Une valeur inconnue n’est jamais assimilée à zéro."
+    )
+
+
 def show():
     ui.page_hero(
         "Mise à jour",
@@ -594,6 +667,7 @@ def show():
         )
 
     _render_storage_status()
+    _render_reliability_engine()
 
     counts = _summary_counts()
     database_kpis = [
