@@ -15,6 +15,42 @@ from pages import matchs_a_venir, prediction_ia
 
 class PredictionBusinessRuleTests(unittest.TestCase):
 
+    def test_freshness_ignores_matches_after_reference_date(self):
+        matches = pd.DataFrame(
+            {
+                "date": [
+                    "2026-01-01T12:00:00Z",
+                    "2026-10-01T12:00:00Z",
+                ]
+            }
+        )
+        score = final_prediction_service._freshness_score(
+            matches,
+            "2026-01-08T12:00:00Z",
+        )
+        self.assertEqual(score, 1.0)
+
+    def test_freshness_is_zero_when_all_matches_are_after_reference_date(self):
+        matches = pd.DataFrame(
+            {"date": ["2026-02-01T12:00:00Z", "2026-03-01T12:00:00Z"]}
+        )
+        score = final_prediction_service._freshness_score(
+            matches,
+            "2026-01-31T12:00:00Z",
+        )
+        self.assertEqual(score, 0.0)
+
+    def test_freshness_uses_latest_eligible_result(self):
+        matches = pd.DataFrame(
+            {"date": ["2025-12-01T12:00:00Z", "2026-01-01T12:00:00Z"]}
+        )
+        score = final_prediction_service._freshness_score(
+            matches,
+            "2026-01-18T12:00:00Z",
+        )
+        self.assertAlmostEqual(score, 1.0 - 11 / 173, places=4)
+
+
     def test_lineup_coverage_uses_team_reliability_not_dict_presence(self):
         intelligence = {
             "home": {"intelligence_reliability": 0.8},
