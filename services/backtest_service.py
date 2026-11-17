@@ -576,20 +576,22 @@ def evaluate_persisted_predictions(db_engine=None) -> dict:
         ),
         source_engine,
     )
-    post_kickoff = source_engine.connect().execute(
-        text(
-            """
-            SELECT COUNT(*)
-            FROM prediction_history ph
-            JOIN matches m ON m.fixture_id = ph.fixture_id
-            WHERE ph.fixture_id IS NOT NULL
-              AND m.status = 'Match Finished'
-              AND m.home_goals IS NOT NULL
-              AND m.away_goals IS NOT NULL
-              AND ph.created_at >= m.date
-            """
-        )
-    ).scalar_one()
+    with source_engine.connect() as connection:
+        post_kickoff = connection.execute(
+            text(
+                """
+                SELECT COUNT(*)
+                FROM prediction_history ph
+                JOIN matches m ON m.fixture_id = ph.fixture_id
+                WHERE ph.fixture_id IS NOT NULL
+                  AND ph.source IN ('internal', 'internal_legacy')
+                  AND m.status = 'Match Finished'
+                  AND m.home_goals IS NOT NULL
+                  AND m.away_goals IS NOT NULL
+                  AND ph.created_at >= m.date
+                """
+            )
+        ).scalar_one()
     groups = []
     invalid = 0
     if not frame.empty:
