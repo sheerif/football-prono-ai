@@ -206,5 +206,11 @@ def calibrate_score_prediction(
         "raw_draw_probability": round(raw[1], 2),
         "calibrated_draw_probability": normalized[1],
         "delta_points": round(normalized[1] - raw[1], 2),
+        "expected_goal_difference": round(abs(home_lambda - away_lambda), 3),
+        "expected_total_goals": round(total_goals, 3),
+        "goal_balance_score": round(
+            max(0.0, 1.0 - abs(home_lambda - away_lambda) / total_goals) * 100.0,
+            1,
+        ),
     }
     return result, metadata
