@@ -54,6 +54,20 @@ LABEL_ICONS = {
 }
 
 
+def format_informational_timestamp(value, *, label="Message généré") -> str:
+    """Format a persisted event timestamp in the Paris timezone."""
+    if not value:
+        return ""
+    try:
+        timestamp = dt.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=dt.timezone.utc)
+        timestamp = timestamp.astimezone(ZoneInfo("Europe/Paris"))
+    except (TypeError, ValueError):
+        return ""
+    return f"{label} le {timestamp:%d/%m/%Y à %H:%M} (heure de Paris)."
+
+
 def quota_wait_message(
     metadata: dict, *, automatic: bool, fallback_message: str = ""
 ) -> str:
@@ -112,7 +126,11 @@ def quota_wait_message(
         else " Les données déjà enregistrées sont conservées."
     )
     action = "Reprise automatique" if automatic else "Relance manuelle"
-    return f"{quota_label}{no_call}{action} {eta_label}.{progress_label}"
+    created_label = format_informational_timestamp(
+        metadata.get("message_created_at") or metadata.get("started_at") or metadata.get("checked_at")
+    )
+    suffix = f" {created_label}" if created_label else ""
+    return f"{quota_label}{no_call}{action} {eta_label}.{progress_label}{suffix}"
 
 STADIUM_PATH = Path(__file__).resolve().parents[1] / "assets" / "stadium-hero.png"
 
