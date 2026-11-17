@@ -171,7 +171,12 @@ def _freshness_score(matches_df: pd.DataFrame, reference_date=None) -> float:
     reference = pd.to_datetime(reference_date, errors="coerce", utc=True)
     if pd.isna(reference):
         reference = pd.Timestamp.now(tz="UTC")
-    age_days = max(0.0, (reference - dates.max()).total_seconds() / 86400)
+    # Une rencontre postérieure à la date de référence ne peut pas rendre
+    # les données historiques artificiellement fraîches.
+    eligible_dates = dates[dates <= reference]
+    if eligible_dates.empty:
+        return 0.0
+    age_days = (reference - eligible_dates.max()).total_seconds() / 86400
     if age_days <= 7:
         return 1.0
     return round(max(0.0, 1.0 - (age_days - 7) / 173), 4)
