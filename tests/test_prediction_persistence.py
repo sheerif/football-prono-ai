@@ -6,10 +6,17 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from database import models
-from services import analysis_store
+from services import analysis_store, draw_calibration_service
 
 
 class PredictionPersistenceTests(unittest.TestCase):
+
+    def test_model_version_includes_active_draw_calibration(self):
+        self.assertEqual(
+            analysis_store.PREDICTION_MODEL_VERSION,
+            f"poisson-decision-engine-v1+{draw_calibration_service.MODEL_VERSION}",
+        )
+
     def setUp(self):
         self.test_engine = create_engine("sqlite://")
         self.session_factory = sessionmaker(
