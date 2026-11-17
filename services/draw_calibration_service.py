@@ -184,7 +184,11 @@ def calibrate_score_prediction(
         round(value / sum(adjusted_groups) * 100.0, 2)
         for value in adjusted_groups
     ]
-    normalized[2] = round(100.0 - normalized[0] - normalized[1], 2)
+    rounding_residual = round(100.0 - sum(normalized), 2)
+    largest_group = max(range(3), key=normalized.__getitem__)
+    normalized[largest_group] = round(
+        normalized[largest_group] + rounding_residual, 2
+    )
 
     result = dict(score_prediction)
     result["matrix"] = copied_matrix
