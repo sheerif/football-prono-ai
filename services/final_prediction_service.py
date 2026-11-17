@@ -14,6 +14,7 @@ from services import (
     ranking_service,
     probability_validation,
     source_service,
+    draw_calibration_service,
 )
 
 
@@ -216,7 +217,12 @@ def calculate(
             },
         ),
     )
-    # La matrice Poisson est la source canonique 1/N/2. L'ancien calcul de
+    score_prediction, draw_calibration = draw_calibration_service.calibrate_score_prediction(
+        score_prediction
+    )
+    # La matrice Poisson calibrée reste la source canonique 1/N/2. La calibration
+    # ajuste uniquement la masse du nul et conserve la cohérence avec les scores.
+    # L'ancien calcul de
     # forces reste disponible comme référence interne, mais ne peut plus créer
     # une distribution contradictoire avec les scores exacts.
     score_probabilities = score_prediction.get("probabilities") or internal
@@ -271,6 +277,8 @@ def calculate(
         if callable(build_advice)
         else _fallback_consensus_advice(prediction, str(home_name), str(away_name))
     )
+    prediction["draw_calibration"] = draw_calibration
+    details["draw_calibration"] = draw_calibration
     details["api_refinement"] = api_refinement
     details["consensus_advice"] = consensus_advice
     details["decision"] = decision
