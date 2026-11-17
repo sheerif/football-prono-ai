@@ -111,6 +111,10 @@ def _resource_should_download(
         # Le stockage métier reste la source de vérité : l'appelant peut
         # demander une réparation si la ligne a disparu ou est incomplète.
         return repair_missing_complete
+    if state.get("status") == "running":
+        # Appliquer le même bail que les téléchargements directs pour éviter
+        # de relancer immédiatement un traitement encore actif.
+        return sync_registry.should_download(resource_key, retry_hours)
     if state.get("status") != "unavailable":
         return True
 

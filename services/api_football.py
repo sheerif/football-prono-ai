@@ -157,7 +157,9 @@ class ApiFootballClient:
                 "Clé API_FOOTBALL_KEY manquante. Ajoutez-la dans .env ou dans les secrets Streamlit avant de lancer une synchronisation."
             )
         with _request_lock:
-            if _daily_requests_blocked():
+            # The status endpoint must remain callable while the local
+            # circuit breaker is active so operators can inspect quota state.
+            if path != "/status" and _daily_requests_blocked():
                 raise RuntimeError(
                     "Quota API journalier déjà atteint : appel bloqué localement "
                     "jusqu'à minuit UTC pour éviter une requête refusée supplémentaire."

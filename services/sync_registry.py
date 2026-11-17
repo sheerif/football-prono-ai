@@ -48,12 +48,29 @@ def get(resource_key: str) -> dict | None:
     return result
 
 
-def should_download(resource_key: str, unavailable_retry_hours: int = 12) -> bool:
+def should_download(
+    resource_key: str,
+    unavailable_retry_hours: int = 12,
+    running_retry_minutes: int = 30,
+) -> bool:
     row = get(resource_key)
     if not row:
         return True
     if row["status"] == "complete":
         return False
+    if row["status"] == "running":
+        # A running marker acts as a short lease: avoid duplicate work while
+        # the current worker is active, but allow recovery after a crashed run.
+        try:
+            updated_at = datetime.datetime.fromisoformat(row["updated_at"])
+            if updated_at.tzinfo is not None:
+                updated_at = updated_at.astimezone(datetime.UTC).replace(tzinfo=None)
+            return (
+                (_now() - updated_at).total_seconds()
+                >= max(1, int(running_retry_minutes)) * 60
+            )
+        except (TypeError, ValueError):
+            return True
     if row["status"] != "unavailable":
         return True
     try:
