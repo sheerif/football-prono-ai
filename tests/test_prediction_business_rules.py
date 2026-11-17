@@ -51,6 +51,97 @@ class PredictionBusinessRuleTests(unittest.TestCase):
         self.assertAlmostEqual(score, 1.0 - 10 / 173, places=4)
 
 
+
+    def test_recent_team_context_excludes_matches_at_or_after_kickoff(self):
+        matches = pd.DataFrame(
+            [
+                {
+                    "fixture_id": 1,
+                    "date": "2026-01-01T12:00:00Z",
+                    "home_team_id": 10,
+                    "away_team_id": 30,
+                    "home_goals": 1,
+                    "away_goals": 0,
+                },
+                {
+                    "fixture_id": 2,
+                    "date": "2026-01-10T12:00:00Z",
+                    "home_team_id": 10,
+                    "away_team_id": 20,
+                    "home_goals": 2,
+                    "away_goals": 1,
+                },
+                {
+                    "fixture_id": 3,
+                    "date": "2026-01-11T12:00:00Z",
+                    "home_team_id": 20,
+                    "away_team_id": 10,
+                    "home_goals": 0,
+                    "away_goals": 3,
+                },
+            ]
+        )
+
+        context = final_prediction_service._recent_team_context(
+            matches,
+            10,
+            20,
+            5,
+            "2026-01-10T12:00:00Z",
+        )
+
+        self.assertEqual(context["fixture_id"].tolist(), [1])
+
+    def test_prediction_stability_passes_only_pre_kickoff_results(self):
+        matches = pd.DataFrame(
+            [
+                {
+                    "fixture_id": 1,
+                    "date": "2026-01-01T12:00:00Z",
+                    "home_team_id": 10,
+                    "away_team_id": 30,
+                    "home_goals": 1,
+                    "away_goals": 0,
+                },
+                {
+                    "fixture_id": 2,
+                    "date": "2026-01-10T12:00:00Z",
+                    "home_team_id": 10,
+                    "away_team_id": 20,
+                    "home_goals": 2,
+                    "away_goals": 1,
+                },
+                {
+                    "fixture_id": 3,
+                    "date": "2026-01-11T12:00:00Z",
+                    "home_team_id": 20,
+                    "away_team_id": 10,
+                    "home_goals": 0,
+                    "away_goals": 3,
+                },
+            ]
+        )
+        prediction = {
+            "home_probability": 50,
+            "draw_probability": 30,
+            "away_probability": 20,
+        }
+        predict_match = Mock(return_value=(prediction, {}, {}, {}))
+
+        final_prediction_service._prediction_stability(
+            predict_match,
+            matches,
+            10,
+            20,
+            prediction,
+            "2026-01-10T12:00:00Z",
+        )
+
+        self.assertEqual(predict_match.call_count, 2)
+        for call in predict_match.call_args_list:
+            self.assertEqual(call.args[0]["fixture_id"].tolist(), [1])
+
+
     def test_lineup_coverage_uses_team_reliability_not_dict_presence(self):
         intelligence = {
             "home": {"intelligence_reliability": 0.8},
