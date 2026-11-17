@@ -15,7 +15,47 @@ def _ensure_schema():
     global _schema_ready
     if not _schema_ready:
         models.Base.metadata.create_all(bind=engine)
+        _backfill_legacy_prediction_snapshots()
         _schema_ready = True
+
+
+def _backfill_legacy_prediction_snapshots() -> int:
+    """Import valid internal predictions from snapshots created before history existed."""
+    inserted = 0
+    with SessionLocal() as session:
+        snapshots = (
+            session.query(models.MatchAnalysisSnapshot)
+            .order_by(models.MatchAnalysisSnapshot.updated_at.asc())
+            .all()
+        )
+        for snapshot in snapshots:
+            try:
+                prediction = json.loads(snapshot.prediction_json or "{}")
+                model_details = json.loads(snapshot.model_details_json or "{}")
+                context = json.loads(snapshot.context_json or "{}")
+                if not isinstance(prediction, dict):
+                    continue
+                is_new = _save_prediction_record(
+                    session,
+                    analysis_type=snapshot.analysis_type,
+                    league_id=int(snapshot.league_id or 0),
+                    season=int(snapshot.season or 0),
+                    home_team_id=int(snapshot.home_team_id),
+                    away_team_id=int(snapshot.away_team_id),
+                    prediction=prediction,
+                    fixture_id=snapshot.fixture_id,
+                    model_details=model_details if isinstance(model_details, dict) else {},
+                    context=context if isinstance(context, dict) else {},
+                    model_version="legacy-unknown",
+                    source="internal_legacy",
+                    created_at=snapshot.updated_at,
+                )
+                inserted += int(is_new)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                # A malformed historical snapshot must not block app startup.
+                continue
+        session.commit()
+    return inserted
 
 
 def _clean(value):
@@ -73,6 +113,8 @@ def _save_prediction_record(
     model_details: dict | None,
     context: dict | None,
     model_version: str | None = None,
+    source: str = "internal",
+    created_at: datetime.datetime | None = None,
 ) -> bool:
     """Persist the latest fixture prediction and an idempotent audit history row.
 
@@ -103,6 +145,7 @@ def _save_prediction_record(
         "model_details": model_details or {},
         "context": context or {},
         "api_predictions_stored_separately": True,
+        "legacy_backfill": source == "internal_legacy",
     }
     metadata_json = _json(metadata)
     identity = _json({
@@ -113,6 +156,7 @@ def _save_prediction_record(
         "away_team_id": int(away_team_id),
         "analysis_type": str(analysis_type),
         "model_version": version,
+        "source": source,
         "probabilities": probabilities,
         "metadata": metadata_json,
     }) or ""
@@ -138,10 +182,10 @@ def _save_prediction_record(
                 away_probability=probabilities[2],
                 confidence=confidence,
                 model_version=version,
-                source="internal",
+                source=str(source),
                 analysis_type=str(analysis_type),
                 metadata_json=metadata_json,
-                created_at=_now(),
+                created_at=created_at or _now(),
             )
         )
 
@@ -153,12 +197,13 @@ def _save_prediction_record(
         if latest is None:
             latest = models.Prediction(fixture_id=fixture_key)
             session.add(latest)
-        if is_new or latest.created_at is None:
+        record_time = created_at or _now()
+        if latest.created_at is None or record_time >= latest.created_at:
             latest.home_probability = probabilities[0]
             latest.draw_probability = probabilities[1]
             latest.away_probability = probabilities[2]
             latest.confidence = confidence
-            latest.created_at = _now()
+            latest.created_at = record_time
     return is_new
 
 
