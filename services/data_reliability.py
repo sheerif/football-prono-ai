@@ -186,6 +186,14 @@ def get_reliability_snapshot(*, now: dt.datetime | None = None) -> dict:
         result["database"] = {
             "status": "critical", "message": f"Contrôle impossible ({type(exc).__name__})."
         }
+        result["tables"] = [
+            {
+                "name": name, "status": "unknown", "count": None,
+                "last_updated_at": None, "age_seconds": None,
+                "message": "Base inaccessible : mesure non vérifiable.",
+            }
+            for name in CORE_TABLES
+        ]
         result["overall_status"] = "critical"
         result["summary"]["critical"] = 1
         return result
