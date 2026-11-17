@@ -252,7 +252,13 @@ def _render_api_quota_status():
             refusal_label = "Quota API quotidien épuisé."
         else:
             refusal_label = "L’API a refusé le contrôle du quota."
-        st.warning(f"{refusal_label} Les nouveaux appels de données sont suspendus.")
+        refusal_timestamp = ui.format_informational_timestamp(
+            quota.get("checked_at"), label="État vérifié"
+        )
+        st.warning(
+            f"{refusal_label} Les nouveaux appels de données sont suspendus."
+            + (f" {refusal_timestamp}" if refusal_timestamp else "")
+        )
         wait_state = background_jobs.cached_full_sync_state()
         if wait_state and wait_state.get("status") == "waiting_quota":
             metadata = wait_state.get("metadata") or {}
