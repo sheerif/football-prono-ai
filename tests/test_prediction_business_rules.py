@@ -410,6 +410,41 @@ class PredictionBusinessRuleTests(unittest.TestCase):
 
         self.assertEqual(fixtures["fixture_id"].tolist(), [1])
 
+    def test_recent_form_always_uses_latest_matches_regardless_of_input_order(self):
+        matches = pd.DataFrame(
+            [
+                {
+                    "date": "2026-07-30T18:00:00Z",
+                    "home_team_id": 10,
+                    "away_team_id": 20,
+                    "home_goals": 1,
+                    "away_goals": 1,
+                },
+                {
+                    "date": "2026-08-01T18:00:00Z",
+                    "home_team_id": 30,
+                    "away_team_id": 10,
+                    "home_goals": 2,
+                    "away_goals": 0,
+                },
+                {
+                    "date": "2026-08-02T18:00:00Z",
+                    "home_team_id": 10,
+                    "away_team_id": 40,
+                    "home_goals": 3,
+                    "away_goals": 1,
+                },
+            ]
+        )
+
+        ascending = prediction_helpers.recent_form(matches, 10, limit=2)
+        descending = prediction_helpers.recent_form(
+            matches.iloc[::-1].reset_index(drop=True), 10, limit=2
+        )
+
+        self.assertEqual(ascending, ["W", "L"])
+        self.assertEqual(descending, ["W", "L"])
+
     def test_historical_context_excludes_future_results(self):
         matches = pd.DataFrame(
             [
