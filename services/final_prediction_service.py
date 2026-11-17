@@ -91,17 +91,24 @@ def _recent_team_context(
     home_team: int,
     away_team: int,
     limit: int,
+    reference_date=None,
 ) -> pd.DataFrame:
-    """Construit une fenêtre contenant les derniers matchs de chaque équipe."""
-    required = {"home_team_id", "away_team_id", "home_goals", "away_goals"}
+    """Construit une fenêtre historique strictement antérieure à la référence."""
+    required = {"home_team_id", "away_team_id", "home_goals", "away_goals", "date"}
     if matches_df.empty or not required.issubset(matches_df.columns):
         return pd.DataFrame(columns=matches_df.columns)
     completed = matches_df.dropna(subset=["home_goals", "away_goals"]).copy()
-    if "date" in completed:
-        completed["_ranking_date"] = pd.to_datetime(
-            completed["date"], errors="coerce", utc=True
-        )
-        completed = completed.sort_values("_ranking_date", ascending=False)
+    completed["_ranking_date"] = pd.to_datetime(
+        completed["date"], errors="coerce", utc=True
+    )
+    reference = pd.to_datetime(reference_date, errors="coerce", utc=True)
+    if pd.isna(reference):
+        reference = pd.Timestamp.now(tz="UTC")
+    # Le match à prédire et tout résultat postérieur doivent rester hors contexte.
+    completed = completed.loc[completed["_ranking_date"] < reference]
+    completed = completed.sort_values(
+        "_ranking_date", ascending=False, kind="stable"
+    )
     selected_indexes: set = set()
     for team_id in (int(home_team), int(away_team)):
         team_matches = completed[
@@ -120,12 +127,13 @@ def _prediction_stability(
     home_team: int,
     away_team: int,
     full_prediction: dict,
+    reference_date=None,
 ) -> float:
-    """Compare le favori sur 5 matchs, 10 matchs et toute la période."""
+    """Compare le favori sur des fenêtres historiques sans fuite temporelle."""
     windows = [full_prediction]
     for limit in (5, 10):
         context = _recent_team_context(
-            matches_df, home_team, away_team, limit
+            matches_df, home_team, away_team, limit, reference_date
         )
         if context.empty:
             continue
@@ -278,7 +286,12 @@ def calculate(
         api_coverage=api_coverage,
     )
     stability_score = _prediction_stability(
-        predict_match, matches_df, int(home_team), int(away_team), internal_prediction
+        predict_match,
+        matches_df,
+        int(home_team),
+        int(away_team),
+        internal_prediction,
+        match_date,
     )
     decision = decision_engine.calculate(
         statistical_prediction,
