@@ -1,3 +1,4 @@
+import datetime
 import unittest
 from unittest.mock import patch
 
@@ -71,6 +72,47 @@ class PredictionPersistenceTests(unittest.TestCase):
         self.assertEqual(history[0].source, "internal")
         self.assertEqual(history[0].model_version, analysis_store.PREDICTION_MODEL_VERSION)
         self.assertEqual(len(snapshots), 1)
+
+    def test_existing_analysis_snapshots_are_backfilled_once(self):
+        models.Base.metadata.create_all(self.test_engine)
+        with self.test_engine.begin() as connection:
+            connection.exec_driver_sql("DROP TABLE prediction_history")
+        legacy_time = datetime.datetime(2026, 9, 10, 18, 3, 35)
+        with self.session_factory() as session:
+            session.add(
+                models.MatchAnalysisSnapshot(
+                    scope_key="fixture:12345",
+                    analysis_type="aperçu_match_à_venir",
+                    fixture_id=12345,
+                    league_id=61,
+                    season=2026,
+                    home_team_id=85,
+                    away_team_id=86,
+                    prediction_json=(
+                        '{"home_probability":48.0,"draw_probability":27.0,'
+                        '"away_probability":25.0,"confidence":48.0}'
+                    ),
+                    model_details_json='{"historical_match_count": 100}',
+                    context_json='{"kickoff":"2026-09-11T18:00:00Z"}',
+                    updated_at=legacy_time,
+                )
+            )
+            session.commit()
+
+        analysis_store._ensure_schema()
+        # Running the backfill again is safe and cannot duplicate rows.
+        analysis_store._backfill_legacy_prediction_snapshots()
+
+        with self.session_factory() as session:
+            latest = session.get(models.Prediction, 12345)
+            history = session.query(models.PredictionHistory).all()
+
+        self.assertIsNotNone(latest)
+        self.assertEqual(latest.home_probability, 48.0)
+        self.assertEqual(len(history), 1)
+        self.assertEqual(history[0].source, "internal_legacy")
+        self.assertEqual(history[0].model_version, "legacy-unknown")
+        self.assertEqual(history[0].created_at, legacy_time)
 
     def test_manual_analysis_without_fixture_is_kept_in_history_only(self):
         analysis_store.save_analysis_snapshot(
