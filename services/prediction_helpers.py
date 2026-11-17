@@ -272,7 +272,17 @@ def fetch_teams(matches_df: pd.DataFrame):
 
 def recent_form(matches_df: pd.DataFrame, team_id: int, limit: int = 8):
     rows = matches_df[(matches_df["home_team_id"] == team_id) | (matches_df["away_team_id"] == team_id)].copy()
-    rows = rows.dropna(subset=["home_goals", "away_goals"]).head(limit)
+    rows = rows.dropna(subset=["home_goals", "away_goals"])
+    # Les appelants peuvent fournir un historique ascendant ou descendant.
+    # Toujours retenir les rencontres les plus récentes avant de limiter la fenêtre.
+    if "date" in rows.columns:
+        rows["_recent_form_date"] = pd.to_datetime(
+            rows["date"], errors="coerce", utc=True
+        )
+        rows = rows.sort_values(
+            "_recent_form_date", ascending=False, kind="stable"
+        )
+    rows = rows.head(max(0, int(limit)))
     results = []
     for _, row in rows.iterrows():
         if row["home_team_id"] == team_id:
