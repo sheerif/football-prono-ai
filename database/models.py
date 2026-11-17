@@ -127,6 +127,7 @@ class Standing(Base):
     goal_difference = Column(Integer, nullable=True)
 
 class Prediction(Base):
+    """Dernière prédiction interne connue pour chaque rencontre."""
     __tablename__ = "predictions"
     fixture_id = Column(Integer, primary_key=True, index=True)
     home_probability = Column(Float, nullable=False)
@@ -134,6 +135,32 @@ class Prediction(Base):
     away_probability = Column(Float, nullable=False)
     confidence = Column(Float, nullable=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+
+class PredictionHistory(Base):
+    """Historique append-only des calculs internes, distinct des signaux API."""
+    __tablename__ = "prediction_history"
+    __table_args__ = (
+        Index("ix_prediction_history_fixture_created", "fixture_id", "created_at"),
+        Index("ix_prediction_history_league_season", "league_id", "season"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    prediction_key = Column(String(64), nullable=False, unique=True, index=True)
+    fixture_id = Column(Integer, nullable=True)
+    league_id = Column(Integer, nullable=True)
+    season = Column(Integer, nullable=True)
+    home_team_id = Column(Integer, nullable=False)
+    away_team_id = Column(Integer, nullable=False)
+    home_probability = Column(Float, nullable=False)
+    draw_probability = Column(Float, nullable=False)
+    away_probability = Column(Float, nullable=False)
+    confidence = Column(Float, nullable=True)
+    model_version = Column(String(80), nullable=False)
+    source = Column(String(40), nullable=False, default="internal")
+    analysis_type = Column(String(80), nullable=False)
+    metadata_json = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False)
 
 
 class Player(Base):
