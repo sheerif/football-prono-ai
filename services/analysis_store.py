@@ -276,3 +276,8 @@ def save_analysis_snapshot(
         )
         session.commit()
     return scope_key
+
+
+def ensure_prediction_history() -> None:
+    """Ensure prediction tables exist and import valid pre-history snapshots."""
+    _ensure_schema()
