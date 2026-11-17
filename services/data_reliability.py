@@ -78,7 +78,7 @@ def _table_check(connection, inspector, table_name: str, now: dt.datetime) -> di
         count = int(connection.execute(text(f'SELECT COUNT(*) FROM "{table_name}"')).scalar_one())
         last_updated = _latest_value(
             connection, table_name, columns,
-            ("updated_at", "retrieved_at", "finished_at", "created_at", "date"),
+            ("updated_at", "retrieved_at", "finished_at", "created_at"),
         )
         age = _age_seconds(last_updated, now)
         status = _freshness_status(age, 24, 72) if last_updated is not None else "unknown"
@@ -118,7 +118,10 @@ def _archive_integrity(connection, inspector) -> dict:
                 "latest_retrieved_at": None, "message": "Aucune réponse API archivée."}
     valid = 0
     invalid = 0
+    http_failures = 0
     for row in rows:
+        if row["http_status"] is not None and not 200 <= int(row["http_status"]) < 300:
+            http_failures += 1
         raw = row["response_json"]
         try:
             json.loads(raw)
@@ -129,12 +132,17 @@ def _archive_integrity(connection, inspector) -> dict:
                 invalid += 1
         except (TypeError, ValueError, AttributeError):
             invalid += 1
-    status = "critical" if invalid else "healthy"
+    status = "critical" if invalid else "warning" if http_failures else "healthy"
     return {
         "status": status, "checked": len(rows), "valid": valid, "invalid": invalid,
+        "http_failures": http_failures,
         "latest_retrieved_at": rows[0]["retrieved_at"],
         "latest_http_status": rows[0]["http_status"],
-        "message": "Intégrité vérifiée." if not invalid else "Réponses altérées ou illisibles détectées.",
+        "message": (
+            "Réponses altérées ou illisibles détectées." if invalid
+            else "Réponses API en erreur présentes dans l'archive." if http_failures
+            else "Intégrité vérifiée."
+        ),
     }
 
 
