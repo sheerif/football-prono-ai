@@ -231,6 +231,22 @@ class ApiFootballClientTests(unittest.TestCase):
             second_client.get_leagues()
         second_session.get.assert_not_called()
 
+    def test_status_endpoint_remains_available_during_daily_circuit_breaker(self):
+        api_football._daily_blocked_until = (
+            api_football.datetime.datetime.now(api_football.datetime.UTC)
+            + api_football.datetime.timedelta(hours=1)
+        )
+        status = self._status_response(current=100, limit=100, daily_remaining=0)
+        session = Mock()
+        session.get.return_value = status
+        client = ApiFootballClient(api_key="test-key", session=session)
+
+        payload = client.get_status()
+
+        self.assertIn("response", payload)
+        session.get.assert_called_once()
+        self.assertEqual(client.request_count, 0)
+
     def test_daily_limit_payload_activates_the_global_circuit_breaker(self):
         response = Mock()
         response.headers = {}
