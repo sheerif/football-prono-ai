@@ -528,3 +528,118 @@ def run(
 
 def run_from_database(**kwargs) -> dict:
     return run(load_dataset(), **kwargs)
+
+
+def evaluate_persisted_predictions(db_engine=None) -> dict:
+    """Evaluate the latest internal prediction saved before each finished fixture.
+
+    A forecast is eligible only when its persisted timestamp is strictly earlier
+    than kickoff. Historical backfills retain their explicit legacy source and
+    unknown model version; they are never relabelled as current-model forecasts.
+    """
+    source_engine = db_engine or engine
+    frame = pd.read_sql(
+        text(
+            """
+            WITH eligible AS (
+                SELECT
+                    ph.id,
+                    ph.fixture_id,
+                    ph.league_id,
+                    ph.season,
+                    ph.home_probability,
+                    ph.draw_probability,
+                    ph.away_probability,
+                    ph.model_version,
+                    ph.source,
+                    ph.created_at,
+                    m.league_id AS result_league_id,
+                    m.home_goals,
+                    m.away_goals,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY ph.fixture_id, ph.model_version, ph.source
+                        ORDER BY ph.created_at DESC, ph.id DESC
+                    ) AS row_number
+                FROM prediction_history ph
+                JOIN matches m ON m.fixture_id = ph.fixture_id
+                WHERE ph.fixture_id IS NOT NULL
+                  AND m.status = 'Match Finished'
+                  AND m.home_goals IS NOT NULL
+                  AND m.away_goals IS NOT NULL
+                  AND ph.created_at < m.date
+            )
+            SELECT *
+            FROM eligible
+            WHERE row_number = 1
+            ORDER BY model_version, source, result_league_id, fixture_id
+            """
+        ),
+        source_engine,
+    )
+    post_kickoff = source_engine.connect().execute(
+        text(
+            """
+            SELECT COUNT(*)
+            FROM prediction_history ph
+            JOIN matches m ON m.fixture_id = ph.fixture_id
+            WHERE ph.fixture_id IS NOT NULL
+              AND m.status = 'Match Finished'
+              AND m.home_goals IS NOT NULL
+              AND m.away_goals IS NOT NULL
+              AND ph.created_at >= m.date
+            """
+        )
+    ).scalar_one()
+    groups = []
+    invalid = 0
+    if not frame.empty:
+        for (version, source), group in frame.groupby(
+            ["model_version", "source"], sort=True
+        ):
+            records = []
+            by_league: dict[int, list[tuple[list[float], int]]] = defaultdict(list)
+            for row in group.itertuples(index=False):
+                try:
+                    probabilities = [
+                        float(row.home_probability),
+                        float(row.draw_probability),
+                        float(row.away_probability),
+                    ]
+                    if (
+                        not all(math.isfinite(value) and 0 <= value <= 100 for value in probabilities)
+                        or abs(sum(probabilities) - 100.0) > 0.02
+                    ):
+                        invalid += 1
+                        continue
+                    outcome = (
+                        0 if int(row.home_goals) > int(row.away_goals)
+                        else 1 if int(row.home_goals) == int(row.away_goals)
+                        else 2
+                    )
+                    records.append((probabilities, outcome))
+                    by_league[int(row.result_league_id)].append((probabilities, outcome))
+                except (TypeError, ValueError, OverflowError):
+                    invalid += 1
+            metrics = _metrics(records)
+            metrics["accuracy_by_league"] = [
+                {
+                    "league_id": league_id,
+                    **_metrics(league_records),
+                }
+                for league_id, league_records in sorted(by_league.items())
+            ]
+            groups.append({
+                "model_version": str(version),
+                "source": str(source),
+                "metrics": metrics,
+            })
+    return {
+        "matches_evaluated": sum(item["metrics"]["matches"] for item in groups),
+        "groups": groups,
+        "post_kickoff_predictions_excluded": int(post_kickoff),
+        "invalid_predictions_excluded": int(invalid),
+        "selection_rule": (
+            "latest prediction per fixture/model/source with created_at strictly before kickoff; "
+            "only Match Finished fixtures"
+        ),
+    }
