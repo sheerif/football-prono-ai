@@ -48,7 +48,11 @@ def get(resource_key: str) -> dict | None:
     return result
 
 
-def should_download(\n    resource_key: str,\n    unavailable_retry_hours: int = 12,\n    running_retry_minutes: int = 30,\n) -> bool:
+def should_download(
+    resource_key: str,
+    unavailable_retry_hours: int = 12,
+    running_retry_minutes: int = 30,
+) -> bool:
     row = get(resource_key)
     if not row:
         return True
