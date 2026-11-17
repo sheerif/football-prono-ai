@@ -142,6 +142,34 @@ accuracy, multiclass Brier score, log loss, draw-specific measures and a SHA-256
 fingerprint of the database rows used. Historical context and API data are
 accepted only when timestamped strictly before kickoff.
 
+To evaluate predictions that were actually saved by the application (including
+the idempotent import of legacy analysis snapshots), run:
+
+```bash
+python -m scripts.run_backtest --persisted-predictions
+```
+
+This mode keeps current internal predictions and legacy snapshots separated by
+model version/source, excludes forecasts saved at or after kickoff, and reports
+accuracy, Brier score, log loss, calibration and draw-specific metrics.
+
+### Calibration de la probabilité de nul
+
+Le pipeline Poisson applique une calibration logistique dédiée au nul
+(`draw-logistic-v1-2016-2025`). Elle utilise la probabilité Poisson initiale,
+l'écart et le total de buts projetés ainsi que les probabilités des scores 0-0
+et 1-1. La masse restante est redistribuée proportionnellement entre domicile
+et extérieur ; la matrice des scores et la distribution 1/N/2 restent cohérentes.
+La calibration ne force donc pas artificiellement le nul comme premier choix.
+
+Le modèle a été évalué chronologiquement sur six compétitions, sans utiliser
+les résultats futurs : entraînement jusqu'à 2023 puis test 2024, jusqu'à 2024
+puis test 2025, enfin jusqu'à 2025 puis test 2026. Le Brier multiclasses est
+passé de 0.6112 à 0.6108 (2024), de 0.6095 à 0.6083 (2025) et de 0.5914 à
+0.5906 (2026). Le Log Loss s'améliore également sur les trois périodes. Les
+gains sont modestes mais réguliers ; la calibration est versionnée et reste
+séparée du choix du favori.
+
 ## xG historiques
 
 La page « Mise à jour » peut télécharger les statistiques de matchs terminés
