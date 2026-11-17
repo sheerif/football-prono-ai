@@ -563,6 +563,7 @@ def evaluate_persisted_predictions(db_engine=None) -> dict:
                 FROM prediction_history ph
                 JOIN matches m ON m.fixture_id = ph.fixture_id
                 WHERE ph.fixture_id IS NOT NULL
+                  AND ph.source IN ('internal', 'internal_legacy')
                   AND m.status = 'Match Finished'
                   AND m.home_goals IS NOT NULL
                   AND m.away_goals IS NOT NULL
