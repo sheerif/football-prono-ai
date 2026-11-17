@@ -14,6 +14,40 @@ from pages import matchs_a_venir, prediction_ia
 
 
 class PredictionBusinessRuleTests(unittest.TestCase):
+
+    def test_lineup_coverage_uses_team_reliability_not_dict_presence(self):
+        intelligence = {
+            "home": {"intelligence_reliability": 0.8},
+            "away": {"intelligence_reliability": 0.2},
+        }
+        self.assertEqual(
+            final_prediction_service._lineup_data_coverage(intelligence),
+            0.5,
+        )
+
+    def test_lineup_coverage_is_zero_for_unverified_or_missing_lineups(self):
+        self.assertEqual(
+            final_prediction_service._lineup_data_coverage(
+                {"home": {"players": []}, "away": {}}
+            ),
+            0.0,
+        )
+        self.assertEqual(
+            final_prediction_service._lineup_data_coverage(None),
+            0.0,
+        )
+
+    def test_lineup_coverage_clamps_invalid_reliability(self):
+        self.assertEqual(
+            final_prediction_service._lineup_data_coverage(
+                {
+                    "home": {"intelligence_reliability": 1.5},
+                    "away": {"intelligence_reliability": -0.2},
+                }
+            ),
+            0.5,
+        )
+
     def test_prediction_progress_exposes_percentage_count_and_step(self):
         progress_bar = Mock()
         status_slot = Mock()

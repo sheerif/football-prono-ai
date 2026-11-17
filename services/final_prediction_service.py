@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import math
 
 import pandas as pd
 
@@ -140,6 +141,26 @@ def _prediction_stability(
     return ranking_service.compute_stability(windows)
 
 
+
+def _lineup_data_coverage(player_intelligence: dict | None) -> float:
+    """Mesure la fiabilité réelle des deux compositions, pas leur seule présence."""
+    intelligence = player_intelligence if isinstance(player_intelligence, dict) else {}
+    reliabilities = []
+    for side in ("home", "away"):
+        team = intelligence.get(side)
+        if not isinstance(team, dict):
+            reliabilities.append(0.0)
+            continue
+        try:
+            reliability = float(team.get("intelligence_reliability") or 0.0)
+        except (TypeError, ValueError):
+            reliability = 0.0
+        if not math.isfinite(reliability):
+            reliability = 0.0
+        reliabilities.append(max(0.0, min(1.0, reliability)))
+    return round(sum(reliabilities) / 2.0, 4)
+
+
 def _freshness_score(matches_df: pd.DataFrame, reference_date=None) -> float:
     """Évalue la fraîcheur du dernier résultat avec une décroissance à 180 jours."""
     if matches_df.empty or "date" not in matches_df:
@@ -189,11 +210,7 @@ def calculate(
         float(int((home_stats or {}).get("played") or 0) > 0)
         + float(int((away_stats or {}).get("played") or 0) > 0)
     ) / 2
-    intelligence = player_intelligence or {}
-    lineup_coverage = (
-        float(bool(intelligence.get("home")))
-        + float(bool(intelligence.get("away")))
-    ) / 2
+    lineup_coverage = _lineup_data_coverage(player_intelligence)
     player_goal_factors = getattr(lineup_service, "player_goal_factors", None)
     if callable(player_goal_factors):
         home_player_factor, away_player_factor = player_goal_factors(
