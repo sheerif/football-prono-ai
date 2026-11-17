@@ -142,6 +142,17 @@ accuracy, multiclass Brier score, log loss, draw-specific measures and a SHA-256
 fingerprint of the database rows used. Historical context and API data are
 accepted only when timestamped strictly before kickoff.
 
+To evaluate predictions that were actually saved by the application (including
+the idempotent import of legacy analysis snapshots), run:
+
+```bash
+python -m scripts.run_backtest --persisted-predictions
+```
+
+This mode keeps current internal predictions and legacy snapshots separated by
+model version/source, excludes forecasts saved at or after kickoff, and reports
+accuracy, Brier score, log loss, calibration and draw-specific metrics.
+
 ## xG historiques
 
 La page « Mise à jour » peut télécharger les statistiques de matchs terminés
