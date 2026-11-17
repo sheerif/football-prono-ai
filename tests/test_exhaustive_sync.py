@@ -151,6 +151,31 @@ class ExhaustiveSyncTests(unittest.TestCase):
         self.assertFalse(due)
         should_download.assert_not_called()
 
+    def test_running_fixture_resource_uses_lease_before_exhaustive_retry(self):
+        now = datetime.datetime(2026, 11, 17, 12, 0, 0)
+        fresh = {
+            "status": "running",
+            "updated_at": (now - datetime.timedelta(minutes=5)).isoformat(),
+        }
+        stale = {
+            "status": "running",
+            "updated_at": (now - datetime.timedelta(minutes=31)).isoformat(),
+        }
+        row = {"fixture_id": 1, "date": "2026-11-17T12:00:00"}
+
+        with patch.object(sync_registry, "get", side_effect=[fresh, stale]):
+            with patch.object(sync_registry, "_now", return_value=now):
+                self.assertFalse(
+                    full_sync_service._resource_should_download(
+                        row, fresh, "fixture-lineup:1", 12
+                    )
+                )
+                self.assertTrue(
+                    full_sync_service._resource_should_download(
+                        row, stale, "fixture-lineup:1", 12
+                    )
+                )
+
     def test_recent_core_scope_respects_refresh_ttl(self):
         now = datetime.datetime.now(datetime.UTC).replace(tzinfo=None)
         with patch.object(
