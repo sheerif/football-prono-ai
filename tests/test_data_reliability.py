@@ -26,19 +26,19 @@ class DataReliabilityTests(unittest.TestCase):
                     f"INSERT INTO {table} (updated_at) VALUES ('2026-11-17T11:00:00+00:00')"
                 ))
             conn.execute(text("""
-                CREATE TABLE api_response_archive (
-                    id INTEGER PRIMARY KEY, response_json TEXT NOT NULL,
+                CREATE TABLE api_request_state (
+                    request_sha256 TEXT PRIMARY KEY, endpoint TEXT NOT NULL,
                     response_sha256 TEXT NOT NULL, http_status INTEGER,
                     retrieved_at TEXT NOT NULL
                 )
             """))
-            payload = json.dumps({"response": []}, separators=(",", ":"))
-            digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+            request_digest = hashlib.sha256(b"request").hexdigest()
+            response_digest = hashlib.sha256(b"response").hexdigest()
             conn.execute(text("""
-                INSERT INTO api_response_archive
-                (response_json, response_sha256, http_status, retrieved_at)
-                VALUES (:payload, :digest, 200, '2026-11-17T11:00:00+00:00')
-            """), {"payload": payload, "digest": digest})
+                INSERT INTO api_request_state
+                (request_sha256, endpoint, response_sha256, http_status, retrieved_at)
+                VALUES (:request, '/fixtures', :response, 200, '2026-11-17T11:00:00+00:00')
+            """), {"request": request_digest, "response": response_digest})
             conn.execute(text("""
                 CREATE TABLE update_log (id INTEGER PRIMARY KEY, finished_at TEXT)
             """))
@@ -51,18 +51,19 @@ class DataReliabilityTests(unittest.TestCase):
         self.engine.dispose()
         self.temp_dir.cleanup()
 
-    def test_snapshot_reports_counts_and_verified_archive(self):
+    def test_snapshot_reports_counts_and_current_api_request_state(self):
         now = dt.datetime(2026, 11, 17, 12, tzinfo=dt.timezone.utc)
         snapshot = data_reliability.get_reliability_snapshot(now=now)
         self.assertEqual(snapshot["database"]["status"], "healthy")
         self.assertEqual([table["count"] for table in snapshot["tables"]], [1, 1, 1, 1])
+        self.assertEqual(snapshot["api_archive"]["checked"], 1)
         self.assertEqual(snapshot["api_archive"]["valid"], 1)
         self.assertEqual(snapshot["api_archive"]["invalid"], 0)
         self.assertEqual(snapshot["overall_status"], "healthy")
 
-    def test_archive_tampering_is_critical(self):
+    def test_invalid_request_fingerprint_is_critical(self):
         with self.engine.begin() as conn:
-            conn.execute(text("UPDATE api_response_archive SET response_sha256 = 'bad'"))
+            conn.execute(text("UPDATE api_request_state SET response_sha256 = 'bad'"))
         snapshot = data_reliability.get_reliability_snapshot(
             now=dt.datetime(2026, 11, 17, 12, tzinfo=dt.timezone.utc)
         )
