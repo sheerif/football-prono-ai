@@ -49,7 +49,27 @@ jobs:
         run: |
           git fetch --no-tags --depth=1 origin \
             refs/heads/database-backup:refs/remotes/origin/database-backup
-          git show origin/database-backup:football.db.gz > football.db.gz
+          if git cat-file -e origin/database-backup:football.db.gz 2>/dev/null; then
+            git show origin/database-backup:football.db.gz > football.db.gz
+          else
+            git show origin/database-backup:football.db.manifest.json > football.db.manifest.json
+            python - <<'PY'
+          import hashlib, json, subprocess
+          from pathlib import Path
+          manifest = json.loads(Path("football.db.manifest.json").read_text())
+          archive = bytearray()
+          for part in manifest["parts"]:
+              data = subprocess.check_output(["git", "show", f"origin/database-backup:{part['path']}"])
+              header = f"blob {len(data)}\0".encode("ascii")
+              git_sha = hashlib.sha1(header + data).hexdigest()
+              if len(data) != part["size_bytes"] or git_sha != part["git_blob_sha"]:
+                  raise SystemExit(f"Fragment invalide: {part['path']}")
+              archive.extend(data)
+          if len(archive) != manifest["size_bytes"] or hashlib.sha256(archive).hexdigest() != manifest["sha256"]:
+              raise SystemExit("Archive reconstituée invalide (taille/SHA-256).")
+          Path("football.db.gz").write_bytes(archive)
+          PY
+          fi
           gzip -t football.db.gz
           gzip -dc football.db.gz > football.db
           test -s football.db

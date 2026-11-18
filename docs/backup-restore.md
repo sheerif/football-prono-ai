@@ -46,7 +46,7 @@ GITHUB_BACKUP_TOKEN = "github_pat_..."
 
 Le dépôt cible est public : les copies de la base seront donc publiques. Par
 défaut, elles sont publiées une fois par jour dans la branche
-`database-backup`, sous `football.db.gz`. Une vérification non bloquante tourne
+`database-backup`, sous `football.db.gz` pour les petites archives, ou en fragments de 8 Mio accompagnés de `football.db.manifest.json` pour les archives volumineuses. Une vérification non bloquante tourne
 à l'ouverture de l'application puis chaque heure. Les nouvelles copies sont
 ajoutées à l'historique de cette branche ; Git ne crée un nouvel objet que si
 le fichier SQLite a changé et compresse les différences entre versions. Les
@@ -60,12 +60,9 @@ ce jour-là. Le bouton « Créer une sauvegarde maintenant » force une vérific
 immédiate et ne crée pas de commit si la base est inchangée. La page « Mise à
 jour » indique si le jeton est configuré.
 Une erreur GitHub apparaît dans le détail de la tâche : elle ne supprime ni
-n'interrompt les données conservées localement. Vérifiez périodiquement que la
-branche contient `football.db.gz` et conservez aussi une copie téléchargée sur
-un autre support.
+n'interrompt les données conservées localement. Vérifiez périodiquement que la branche contient `football.db.gz` ou le manifeste et tous ses fragments, et conservez aussi une copie téléchargée sur un autre support.
 
-Pour restaurer, téléchargez `football.db.gz` depuis la branche `database-backup`,
-décompressez-le, puis suivez les étapes de la section « Restaurer » ci-dessus.
+Pour restaurer, récupérez `football.db.gz` directement si présent. Pour une archive fragmentée, reconstituez-la dans l'ordre indiqué par `football.db.manifest.json` et vérifiez les tailles et empreintes SHA-256, puis décompressez-la. Le workflow planifié effectue automatiquement cette reconstitution et ces contrôles.
 
 Ne sauvegardez jamais `.env`, les mots de passe ou les clés API dans Git ou
 une sauvegarde non chiffrée. Un secret exposé doit être révoqué puis remplacé.
