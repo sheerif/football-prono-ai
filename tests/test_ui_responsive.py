@@ -51,8 +51,8 @@ class ResponsiveUiContractTests(unittest.TestCase):
             encoding="utf-8"
         )
         decorator = '@st.fragment(run_every="1s")'
-        self.assertIn(f"{decorator}\\ndef render_background_jobs", sidebar_source)
-        self.assertIn(f"{decorator}\\ndef _render_jobs", updates_source)
+        self.assertIn(f"{decorator}\ndef render_background_jobs", sidebar_source)
+        self.assertIn(f"{decorator}\ndef _render_jobs", updates_source)
 
         # The sidebar is deliberately a compact activity indicator. Detailed
         # progress belongs to the Mise à jour page to avoid duplicate panels.
