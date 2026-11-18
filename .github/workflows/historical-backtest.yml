@@ -1,0 +1,97 @@
+name: Historical prediction backtest
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "services/**"
+      - "database/**"
+      - "scripts/**"
+      - ".github/workflows/historical-backtest.yml"
+  push:
+    branches: [main]
+    paths:
+      - "services/**"
+      - "database/**"
+      - "scripts/**"
+      - ".github/workflows/historical-backtest.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  snapshot-backtest:
+    name: Evaluate bundled historical database
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install application dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+      - name: Restore bundled SQLite snapshot
+        run: |
+          test -s database/seed/football.db.gz
+          gzip -dc database/seed/football.db.gz > football.db
+          sha256sum database/seed/football.db.gz football.db
+      - name: Evaluate persisted internal predictions
+        run: |
+          mkdir -p backtest-results
+          python -m scripts.run_backtest --persisted-predictions \
+            > backtest-results/persisted-predictions.json
+      - name: Evaluate current Poisson pipeline on 2026 fixtures
+        run: |
+          python -m scripts.run_backtest \
+            --start-season 2026 \
+            --min-prior-matches 30 \
+            --production-pipeline \
+            --production-max-matches 500 \
+            > backtest-results/production-poisson-2026.json
+      - name: Publish evaluation summary
+        if: always()
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          summary = Path("backtest-results/persisted-predictions.json")
+          if summary.exists():
+              result = json.loads(summary.read_text())
+              with open(__import__("os").environ["GITHUB_STEP_SUMMARY"], "a") as out:
+                  out.write("## Prédictions réellement enregistrées\n\n")
+                  out.write(f"- Matchs évalués : **{result.get('matches_evaluated', 0)}**\n")
+                  out.write(f"- Prédictions post-coup d'envoi exclues : **{result.get('post_kickoff_predictions_excluded', 0)}**\n")
+                  out.write(f"- Prédictions invalides exclues : **{result.get('invalid_predictions_excluded', 0)}**\n\n")
+                  for group in result.get("groups", []):
+                      metrics = group.get("metrics", {})
+                      out.write(f"### {group.get('model_version')} · {group.get('source')}\n\n")
+                      out.write(f"- Échantillon : {metrics.get('matches', 0)}\n")
+                      out.write(f"- Exactitude 1/N/2 : {metrics.get('accuracy_1n2')}\n")
+                      out.write(f"- Brier : {metrics.get('brier_score')}\n")
+                      out.write(f"- Log Loss : {metrics.get('log_loss')}\n")
+                      out.write(f"- Rappel du nul : {metrics.get('draw_recall')}\n\n")
+          production = Path("backtest-results/production-poisson-2026.json")
+          if production.exists():
+              result = json.loads(production.read_text())
+              metrics = result.get("production_poisson_decision_engine", {})
+              with open(__import__("os").environ["GITHUB_STEP_SUMMARY"], "a") as out:
+                  out.write("## Pipeline Poisson en walk-forward · saison 2026\n\n")
+                  out.write(f"- Matchs évalués : **{metrics.get('matches', 0)}**\n")
+                  out.write(f"- Exactitude 1/N/2 : {metrics.get('accuracy_1n2')}\n")
+                  out.write(f"- Brier : {metrics.get('brier_score')}\n")
+                  out.write(f"- Log Loss : {metrics.get('log_loss')}\n")
+          PY
+      - name: Upload reproducible metrics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: football-prono-backtest-results
+          path: backtest-results/
+          if-no-files-found: warn
+          retention-days: 30
