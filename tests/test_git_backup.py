@@ -29,46 +29,68 @@ class GitBackupTests(unittest.TestCase):
                 connection.exec_driver_sql("INSERT INTO sample VALUES ('saved')")
 
             calls = []
+            uploaded = {}
 
             def request(method, endpoint, token, payload=None):
                 calls.append((method, endpoint, token, payload))
-                if endpoint.endswith("/git/ref/heads/database-backup"):
-                    raise RuntimeError("GitHub API (404) : ref not found")
                 if endpoint.endswith("/git/blobs"):
                     compressed = base64.b64decode(payload["content"])
+                    uploaded["blob_sha"] = git_backup._git_blob_sha(compressed)
                     snapshot_path = Path(directory) / "snapshot.db"
                     snapshot_path.write_bytes(gzip.decompress(compressed))
                     snapshot = sqlite3.connect(snapshot_path)
                     try:
                         value = snapshot.execute("SELECT value FROM sample").fetchone()[0]
+                        integrity = snapshot.execute("PRAGMA integrity_check").fetchone()[0]
                     finally:
                         snapshot.close()
                     self.assertEqual(value, "saved")
-                    return {"sha": "blob-sha"}
+                    self.assertEqual(integrity, "ok")
+                    return {"sha": uploaded["blob_sha"]}
                 if endpoint.endswith("/git/trees"):
                     return {"sha": "tree-sha"}
                 if endpoint.endswith("/git/commits"):
                     return {"sha": "commit-sha"}
                 return {"ref": "refs/heads/database-backup"}
 
-            with patch.object(git_backup, "_setting", side_effect=lambda name, default="": {
-                "GITHUB_BACKUP_TOKEN": "test-token",
-                "GITHUB_BACKUP_REPOSITORY": "owner/repository",
-                "GITHUB_BACKUP_BRANCH": "database-backup",
-            }.get(name, default)), patch.object(git_backup, "_request", side_effect=request):
+            def backup_head(*_args):
+                if not uploaded:
+                    return None
+                return {
+                    "commit_sha": "commit-sha",
+                    "blob_sha": uploaded["blob_sha"],
+                }
+
+            with (
+                patch.object(git_backup, "_setting", side_effect=lambda name, default="": {
+                    "GITHUB_BACKUP_TOKEN": "test-token",
+                    "GITHUB_BACKUP_REPOSITORY": "owner/repository",
+                    "GITHUB_BACKUP_BRANCH": "database-backup",
+                }.get(name, default)),
+                patch.object(git_backup, "_request", side_effect=request),
+                patch.object(git_backup, "_backup_head", side_effect=backup_head),
+                patch(
+                    "services.database_maintenance.maintain_database",
+                    return_value={"status": "maintained"},
+                ) as maintenance,
+            ):
                 result = git_backup.backup_to_github(database_engine=database_engine)
 
             database_engine.dispose()
 
         self.assertEqual(result["status"], "uploaded")
         self.assertEqual(result["commit"], "commit-sha")
+        self.assertTrue(result["integrity_verified"])
+        self.assertTrue(result["gzip_verified"])
+        self.assertTrue(result["remote_verified"])
+        maintenance.assert_called_once_with(database_engine=database_engine)
         self.assertEqual(
             [call[0] for call in calls],
-            ["GET", "POST", "POST", "POST", "POST"],
+            ["POST", "POST", "POST", "POST"],
         )
         self.assertTrue(calls[-1][3]["ref"].endswith("database-backup"))
 
-    def test_existing_branch_is_updated_differentially(self):
+    def test_existing_branch_is_updated_differentially_and_verified(self):
         with tempfile.TemporaryDirectory() as directory:
             database_engine = create_engine(
                 f"sqlite:///{Path(directory) / 'source.db'}"
@@ -78,29 +100,68 @@ class GitBackupTests(unittest.TestCase):
                 connection.exec_driver_sql("INSERT INTO sample VALUES ('new')")
 
             calls = []
+            uploaded = {}
 
             def request(method, endpoint, token, payload=None):
                 calls.append((method, endpoint, payload))
-                if endpoint.endswith("/git/ref/heads/database-backup"):
-                    return {"object": {"sha": "old-commit"}}
-                if endpoint.endswith("/git/commits/old-commit"):
-                    return {
-                        "committer": {"date": "2026-11-14T10:00:00Z"},
-                        "tree": {"sha": "old-tree"},
-                    }
-                if endpoint.endswith("/git/trees/old-tree"):
-                    return {
-                        "tree": [{"path": "football.db.gz", "sha": "old-blob"}]
-                    }
                 if endpoint.endswith("/git/blobs"):
-                    return {"sha": "new-blob"}
+                    compressed = base64.b64decode(payload["content"])
+                    uploaded["blob_sha"] = git_backup._git_blob_sha(compressed)
+                    return {"sha": uploaded["blob_sha"]}
                 if endpoint.endswith("/git/trees"):
                     return {"sha": "new-tree"}
                 if endpoint.endswith("/git/commits"):
                     return {"sha": "new-commit"}
                 return {"ref": "updated"}
 
-            with patch.object(
+            old_head = {
+                "commit_sha": "old-commit",
+                "tree_sha": "old-tree",
+                "blob_sha": "old-blob",
+                "committed_at": "2026-11-14T10:00:00Z",
+            }
+
+            def backup_head(*_args):
+                if not uploaded:
+                    return old_head
+                return {
+                    "commit_sha": "new-commit",
+                    "blob_sha": uploaded["blob_sha"],
+                }
+
+            with (
+                patch.object(
+                    git_backup,
+                    "_setting",
+                    side_effect=lambda name, default="": {
+                        "GITHUB_BACKUP_TOKEN": "test-token",
+                        "GITHUB_BACKUP_REPOSITORY": "owner/repository",
+                        "GITHUB_BACKUP_BRANCH": "database-backup",
+                    }.get(name, default),
+                ),
+                patch.object(git_backup, "_request", side_effect=request),
+                patch.object(git_backup, "_backup_head", side_effect=backup_head),
+                patch(
+                    "services.database_maintenance.maintain_database",
+                    return_value={"status": "maintained"},
+                ),
+            ):
+                result = git_backup.backup_to_github(database_engine=database_engine)
+            database_engine.dispose()
+
+        self.assertEqual(result["status"], "uploaded")
+        self.assertTrue(result["differential"])
+        self.assertTrue(result["remote_verified"])
+        tree_payload = next(payload for _, endpoint, payload in calls if endpoint.endswith("/git/trees"))
+        commit_payload = next(payload for _, endpoint, payload in calls if endpoint.endswith("/git/commits"))
+        ref_payload = next(payload for method, endpoint, payload in calls if method == "PATCH")
+        self.assertEqual(tree_payload["base_tree"], "old-tree")
+        self.assertEqual(commit_payload["parents"], ["old-commit"])
+        self.assertFalse(ref_payload["force"])
+
+    def test_maintenance_failure_aborts_before_any_github_write(self):
+        with (
+            patch.object(
                 git_backup,
                 "_setting",
                 side_effect=lambda name, default="": {
@@ -108,18 +169,17 @@ class GitBackupTests(unittest.TestCase):
                     "GITHUB_BACKUP_REPOSITORY": "owner/repository",
                     "GITHUB_BACKUP_BRANCH": "database-backup",
                 }.get(name, default),
-            ), patch.object(git_backup, "_request", side_effect=request):
-                result = git_backup.backup_to_github(database_engine=database_engine)
-            database_engine.dispose()
-
-        self.assertEqual(result["status"], "uploaded")
-        self.assertTrue(result["differential"])
-        tree_payload = next(payload for _, endpoint, payload in calls if endpoint.endswith("/git/trees"))
-        commit_payload = next(payload for _, endpoint, payload in calls if endpoint.endswith("/git/commits"))
-        ref_payload = next(payload for method, endpoint, payload in calls if method == "PATCH")
-        self.assertEqual(tree_payload["base_tree"], "old-tree")
-        self.assertEqual(commit_payload["parents"], ["old-commit"])
-        self.assertFalse(ref_payload["force"])
+            ),
+            patch(
+                "services.database_maintenance.maintain_database",
+                return_value={"status": "error"},
+            ),
+            patch.object(git_backup, "_backup_head", return_value=None),
+            patch.object(git_backup, "_request") as request,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "maintenance SQLite non confirmée"):
+                git_backup.backup_to_github()
+            request.assert_not_called()
 
     def test_skips_duplicate_backup_for_utc_day(self):
         today = datetime.now(timezone.utc).strftime(
