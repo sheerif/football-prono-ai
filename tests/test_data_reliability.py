@@ -83,7 +83,7 @@ class DataReliabilityTests(unittest.TestCase):
         )
         for table in snapshot["tables"]:
             self.assertEqual(table["last_updated_at"], "2026-11-17T11:30:00+00:00")
-            self.assertEqual(table["timestamp_source"], "resource_sync_state (core_season)")
+            self.assertEqual(table["timestamp_source"], "resource_sync_state (core_season, dernier traitement)")
             self.assertEqual(table["status"], "healthy")
 
     def test_uses_endpoint_specific_archive_timestamp(self):
