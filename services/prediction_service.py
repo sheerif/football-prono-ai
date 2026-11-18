@@ -360,6 +360,72 @@ def _poisson_probability(expected_goals: float, goals: int) -> float:
     return math.exp(-expected_goals) * expected_goals**goals / math.factorial(goals)
 
 
+def _poisson_tail_probability(expected_goals: float, max_goals: int) -> float:
+    """Probability mass strictly above the requested score-grid boundary."""
+    lam = max(0.0, float(expected_goals))
+    cap = max(0, int(max_goals))
+    probability = math.exp(-lam)
+    cumulative = probability
+    for goals in range(1, cap + 1):
+        probability *= lam / goals
+        cumulative += probability
+    return max(0.0, min(1.0, 1.0 - cumulative))
+
+
+def _poisson_grid_limit(
+    expected_goals: float,
+    minimum_max_goals: int = 6,
+    *,
+    tail_tolerance: float = 1e-6,
+    hard_cap: int = 20,
+) -> tuple[int, float]:
+    """Extend the score grid until the omitted one-team tail is negligible."""
+    try:
+        minimum = max(0, int(minimum_max_goals))
+    except (TypeError, ValueError):
+        minimum = 6
+    hard_cap = max(0, int(hard_cap))
+    cap = min(minimum, hard_cap)
+    tail = _poisson_tail_probability(expected_goals, cap)
+    while tail > tail_tolerance and cap < hard_cap:
+        cap += 1
+        tail = _poisson_tail_probability(expected_goals, cap)
+    return cap, tail
+
+
+def _poisson_score_grid(
+    expected_home: float,
+    expected_away: float,
+    minimum_max_goals: int = 6,
+) -> tuple[list[dict], int, float]:
+    """Build an independent-Poisson score grid with negligible omitted mass."""
+    home_limit, _ = _poisson_grid_limit(expected_home, minimum_max_goals)
+    away_limit, _ = _poisson_grid_limit(expected_away, minimum_max_goals)
+    max_goals = max(home_limit, away_limit)
+    home_tail = _poisson_tail_probability(expected_home, max_goals)
+    away_tail = _poisson_tail_probability(expected_away, max_goals)
+    omitted_mass = 1.0 - (1.0 - home_tail) * (1.0 - away_tail)
+
+    home_probabilities = [
+        _poisson_probability(expected_home, goals)
+        for goals in range(max_goals + 1)
+    ]
+    away_probabilities = [
+        _poisson_probability(expected_away, goals)
+        for goals in range(max_goals + 1)
+    ]
+    rows = []
+    for home_goals, home_probability in enumerate(home_probabilities):
+        for away_goals, away_probability in enumerate(away_probabilities):
+            rows.append({
+                "Score": f"{home_goals}-{away_goals}",
+                "raw_probability": home_probability * away_probability,
+                "Buts domicile": home_goals,
+                "Buts extérieur": away_goals,
+            })
+    return rows, max_goals, max(0.0, min(1.0, omitted_mass))
+
+
 def predict_scorelines(
     matches_df,
     home_team_id: int,
@@ -470,22 +536,14 @@ def predict_scorelines(
     expected_home = max(0.15, min(4.5, expected_home))
     expected_away = max(0.15, min(4.5, expected_away))
 
-    score_rows = []
-    for home_goals in range(max_goals + 1):
-        home_prob = _poisson_probability(expected_home, home_goals)
-        for away_goals in range(max_goals + 1):
-            probability = home_prob * _poisson_probability(expected_away, away_goals)
-            if home_goals == max_goals or away_goals == max_goals:
-                probability *= 0.88
-            score_rows.append({
-                "Score": f"{home_goals}-{away_goals}",
-                "raw_probability": probability,
-                "Buts domicile": home_goals,
-                "Buts extérieur": away_goals,
-            })
+    score_rows, grid_max_goals, omitted_probability_mass = _poisson_score_grid(
+        expected_home,
+        expected_away,
+        minimum_max_goals=max_goals,
+    )
 
-    # The grid is truncated (and edge cells discounted), therefore normalize
-    # before displaying percentages so the complete score grid sums to 100%.
+    # The grid is extended until the omitted Poisson tail is negligible. No
+    # arbitrary discount is applied to its boundary cells.
     grid_total = sum(row["raw_probability"] for row in score_rows)
     grid_total = grid_total if math.isfinite(grid_total) and grid_total > 0 else 1.0
     for row in score_rows:
@@ -515,6 +573,11 @@ def predict_scorelines(
     return {
         "expected_home_goals": round(expected_home, 2),
         "expected_away_goals": round(expected_away, 2),
+        "score_grid_max_goals": int(grid_max_goals),
+        "score_grid_omitted_probability_mass": round(
+            float(omitted_probability_mass), 8
+        ),
+        "score_grid_version": "independent-poisson-adaptive-tail-v2",
         # Cette distribution est la source unique : les 1/N/2 sont la somme
         # des cellules de cette même matrice de scores, jamais un second modèle.
         "probabilities": {
