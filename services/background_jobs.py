@@ -470,6 +470,7 @@ def _preflight_api_quota(job_id: str) -> bool:
     details.update(
         {
             "quota_reached": True,
+            "message_created_at": retry_now.replace(tzinfo=None).isoformat(),
             "quota_preflight": status,
             "quota_kind": quota_kind,
             "next_retry_at": retry_at.isoformat(),
@@ -564,6 +565,7 @@ def _quota_retry_metadata(
     )
     return {
         "quota_reached": True,
+        "message_created_at": now.replace(tzinfo=None).isoformat(),
         "quota_kind": "minute" if minute else "daily",
         "next_retry_at": (now + datetime.timedelta(seconds=retry_seconds))
         .replace(tzinfo=None)

@@ -21,6 +21,7 @@ class BackgroundProgressTests(unittest.TestCase):
                 "quota_kind": "daily",
                 "api_calls": 0,
                 "next_retry_at": "2026-11-17T00:00:00",
+                "message_created_at": "2026-11-16T19:35:00",
                 "progress": 14,
             },
             automatic=True,
@@ -31,6 +32,7 @@ class BackgroundProgressTests(unittest.TestCase):
         self.assertIn("Reprise automatique prévue le 17/11/2026 à 01:00", message)
         self.assertIn("00:00 UTC", message)
         self.assertIn("Progression conservée : 14 %", message)
+        self.assertIn("Message généré le 16/11/2026 à 20:35 (heure de Paris)", message)
 
     def test_minute_quota_message_distinguishes_manual_restart(self):
         message = ui.quota_wait_message(
