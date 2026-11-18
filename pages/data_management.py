@@ -641,18 +641,27 @@ def show():
 
     if git_backup.backup_is_configured():
         st.caption(
-            "La base est optimisée après chaque synchronisation ou import, "
-            "puis une copie SQLite compressée est envoyée sur Git."
+            "Chaque sauvegarde applique d’abord la maintenance SQLite, vérifie "
+            "l’intégrité de l’instantané et de l’archive GZIP, puis contrôle le "
+            "fichier distant après son envoi sur Git."
         )
         if st.button("Créer une sauvegarde maintenant", key="create_git_database_backup"):
             try:
-                with st.spinner("Création et envoi de la copie SQLite…"):
+                with st.spinner(
+                    "Maintenance SQLite, contrôle d’intégrité, compression "
+                    "et vérification de la sauvegarde distante…"
+                ):
                     backup = git_backup.backup_to_github(force=True)
                 if backup["status"] == "uploaded":
                     _latest_git_backup_info.clear()
                     st.success(
-                        "Sauvegarde Git effectuée : "
-                        f"{backup['repository']} · branche {backup['branch']}"
+                        "Sauvegarde Git vérifiée : "
+                        f"{backup['repository']} · branche {backup['branch']} · "
+                        f"commit {backup['commit'][:8]}"
+                    )
+                    st.caption(
+                        "Maintenance SQLite confirmée · intégrité SQLite vérifiée · "
+                        "GZIP vérifié · fichier distant vérifié."
                     )
                 else:
                     st.info("La copie Git est déjà à jour : aucune différence à enregistrer.")
