@@ -1186,10 +1186,16 @@ def render_live_data_refresh():
         st.rerun()
 
 
-@st.fragment(run_every="5s")
+@st.fragment(run_every="1s")
 def render_background_jobs():
     """Indicateur discret; le suivi détaillé est centralisé dans la page Mise à jour."""
     from services import background_jobs
+
+    resume_pending = getattr(
+        background_jobs, "resume_pending_full_sync_if_due", None
+    ) or getattr(background_jobs, "resume_pending_full_sync", None)
+    if callable(resume_pending):
+        resume_pending()
 
     jobs = background_jobs.active_jobs()
     if not jobs:
