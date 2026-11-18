@@ -174,16 +174,8 @@ def backup_to_github(*, database_engine=engine, force: bool = False) -> dict:
                     "branch": branch,
                 }
 
-        # Toute sauvegarde passe par le même garde-fou : maintenance obligatoire
-        # avant l'instantané, quel que soit son déclencheur (manuel, planifié ou auto).
-        from services.database_maintenance import maintain_database
-
-        maintenance = maintain_database(database_engine=database_engine)
-        if maintenance.get("status") != "maintained":
-            raise RuntimeError(
-                "Sauvegarde annulée : maintenance SQLite non confirmée "
-                f"(état : {maintenance.get('status', 'inconnu')})."
-            )
+        # La sauvegarde reste indépendante de la maintenance applicative.
+        # L'intégrité du snapshot et du GZIP est contrôlée avant publication.
 
         with tempfile.TemporaryDirectory(prefix="football-backup-") as temp_dir:
             archive_path = Path(temp_dir) / "football.db.gz"
@@ -194,8 +186,8 @@ def backup_to_github(*, database_engine=engine, force: bool = False) -> dict:
                     "status": "unchanged",
                     "repository": repository,
                     "branch": branch,
-                    "maintenance": maintenance,
                     "integrity_verified": True,
+                    "gzip_verified": True,
                     "gzip_verified": True,
                 }
             content = base64.b64encode(archive_bytes).decode("ascii")
@@ -252,7 +244,6 @@ def backup_to_github(*, database_engine=engine, force: bool = False) -> dict:
                 "commit": commit["sha"],
                 "size_bytes": len(archive_bytes),
                 "differential": bool(head),
-                "maintenance": maintenance,
                 "integrity_verified": True,
                 "gzip_verified": True,
                 "remote_verified": True,
