@@ -92,9 +92,9 @@ class ApiResponseStoreTests(unittest.TestCase):
                     endpoint, params_json, request_sha256, response_sha256,
                     response_json, http_status, retrieved_at
                 ) VALUES
-                    ('/fixtures', '{}', 'same-request', 'old-hash', '{"old":true}', 200, '2026-01-01'),
-                    ('/fixtures', '{}', 'same-request', 'new-hash', '{"new":true}', 200, '2026-01-02')
-            """))
+                    ('/fixtures', '{}', 'same-request', 'old-hash', :old_payload, 200, '2026-01-01'),
+                    ('/fixtures', '{}', 'same-request', 'new-hash', :new_payload, 200, '2026-01-02')
+            """), {"old_payload": '{"old":true}', "new_payload": '{"new":true}'})
 
         api_response_store.ensure_table()
 
