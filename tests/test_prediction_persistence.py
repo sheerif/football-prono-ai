@@ -14,7 +14,7 @@ class PredictionPersistenceTests(unittest.TestCase):
     def test_model_version_includes_active_draw_calibration(self):
         self.assertEqual(
             analysis_store.PREDICTION_MODEL_VERSION,
-            f"poisson-decision-engine-v1+{draw_calibration_service.MODEL_VERSION}",
+            f"poisson-decision-engine-v1+independent-poisson-adaptive-tail-v2+{draw_calibration_service.MODEL_VERSION}",
         )
 
     def setUp(self):
