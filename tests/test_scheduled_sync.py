@@ -36,6 +36,11 @@ class ScheduledSyncTests(unittest.TestCase):
             patch.object(run_scheduled_sync.sync_registry, "ensure_table"),
             patch.object(run_scheduled_sync.sync_registry, "get", return_value=None),
             patch.object(
+                run_scheduled_sync.prediction_archive_service,
+                "archive_upcoming_predictions",
+                return_value={"status": "complete", "archived": 2, "api_calls": 0},
+            ),
+            patch.object(
                 run_scheduled_sync.background_jobs,
                 "api_quota_status",
                 return_value={"verified": True, "remaining": 58, "current": 42, "limit": 100},
@@ -144,6 +149,11 @@ class ScheduledSyncTests(unittest.TestCase):
             patch.object(run_scheduled_sync.import_service, "record_update_log"),
             patch.object(run_scheduled_sync.sync_registry, "ensure_table"),
             patch.object(run_scheduled_sync.sync_registry, "get", return_value=None),
+            patch.object(
+                run_scheduled_sync.prediction_archive_service,
+                "archive_upcoming_predictions",
+                return_value={"status": "complete", "archived": 2, "api_calls": 0},
+            ),
             patch.object(
                 run_scheduled_sync.background_jobs,
                 "api_quota_status",
