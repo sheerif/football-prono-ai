@@ -131,12 +131,19 @@ def _table_check(
         timestamp_source = "table"
         if last_updated is None:
             api_retrieved_at = _latest_api_retrieval(connection, inspector, table_name)
-            if api_retrieved_at is not None:
-                last_updated = api_retrieved_at
-                timestamp_source = "api_request_state (endpoint)"
-        if last_updated is None and core_sync and core_sync.get("last_updated_at"):
-            last_updated = core_sync["last_updated_at"]
-            timestamp_source = "resource_sync_state (core_season, dernier traitement)"
+            core_retrieved_at = (core_sync or {}).get("last_updated_at")
+            candidates = [
+                (value, source)
+                for value, source in (
+                    (api_retrieved_at, "api_request_state (endpoint)"),
+                    (core_retrieved_at, "resource_sync_state (core_season, dernier traitement)"),
+                )
+                if value is not None and _parse_timestamp(value) is not None
+            ]
+            if candidates:
+                last_updated, timestamp_source = max(
+                    candidates, key=lambda item: _parse_timestamp(item[0])
+                )
         age = _age_seconds(last_updated, now)
         status = _freshness_status(age, 24, 72) if last_updated is not None else "unknown"
         sync_counts = (core_sync or {}).get("status_counts") or {}
@@ -150,7 +157,7 @@ def _table_check(
             "Aucune ligne enregistrée." if count == 0
             else "Synchronisation de périmètres incomplète : couverture à contrôler."
             if incomplete_scopes
-            else "Fraîcheur estimée depuis la dernière synchronisation réussie des périmètres ligue/saison."
+            else "Fraîcheur estimée depuis le registre de synchronisation ou les requêtes API réussies."
             if timestamp_source != "table" and last_updated is not None
             else "Horodatage absent : fraîcheur non vérifiable." if last_updated is None
             else "Données récentes." if status == "healthy"
