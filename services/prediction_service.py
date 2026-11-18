@@ -547,7 +547,7 @@ def predict_scorelines(
     grid_total = sum(row["raw_probability"] for row in score_rows)
     grid_total = grid_total if math.isfinite(grid_total) and grid_total > 0 else 1.0
     for row in score_rows:
-        row["Probabilité"] = round(row.pop("raw_probability") / grid_total * 100.0, 2)
+        row["Probabilité"] = round(row.pop("raw_probability") / grid_total * 100.0, 4)
     outcome_probabilities = normalize_probs([
         sum(
             row["Probabilité"]
