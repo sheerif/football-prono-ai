@@ -632,5 +632,69 @@ class PredictionBusinessRuleTests(unittest.TestCase):
         self.assertEqual(context["fixture_id"].tolist(), [1])
 
 
+    def test_final_service_filters_future_and_same_kickoff_rows_for_every_model(self):
+        matches = pd.DataFrame(
+            [
+                {
+                    "fixture_id": 1, "date": "2026-01-01T12:00:00Z",
+                    "home_team_id": 1, "away_team_id": 3,
+                    "home_goals": 2, "away_goals": 0,
+                },
+                {
+                    "fixture_id": 2, "date": "2026-01-10T12:00:00Z",
+                    "home_team_id": 1, "away_team_id": 2,
+                    "home_goals": 1, "away_goals": 1,
+                },
+                {
+                    "fixture_id": 3, "date": "2026-01-11T12:00:00Z",
+                    "home_team_id": 2, "away_team_id": 1,
+                    "home_goals": 0, "away_goals": 3,
+                },
+                {
+                    "fixture_id": 4, "date": "2026-01-09T12:00:00Z",
+                    "home_team_id": 1, "away_team_id": 4,
+                    "home_goals": None, "away_goals": None,
+                },
+            ]
+        )
+        internal = {
+            "home_probability": 50, "draw_probability": 30,
+            "away_probability": 20, "confidence": 50,
+        }
+        details = {"home_form_score": 60, "away_form_score": 40}
+        predict_match = Mock(
+            return_value=(internal, {"played": 1}, {"played": 1}, details)
+        )
+        predict_scorelines = Mock(return_value={"scores": []})
+
+        with (
+            patch.object(prediction_helpers, "predict_match", predict_match),
+            patch.object(prediction_service, "predict_scorelines", predict_scorelines),
+            patch.object(final_prediction_service, "_prediction_stability", return_value=0.8),
+        ):
+            final_prediction_service.calculate(
+                matches, 1, 2, "Domicile", "Extérieur",
+                match_date="2026-01-10T12:00:00Z",
+            )
+
+        expected_ids = [1]
+        self.assertEqual(predict_match.call_args.args[0]["fixture_id"].tolist(), expected_ids)
+        self.assertEqual(predict_scorelines.call_args.args[0]["fixture_id"].tolist(), expected_ids)
+
+    def test_historical_context_before_reference_fails_closed_on_unknown_dates(self):
+        matches = pd.DataFrame(
+            [
+                {"fixture_id": 1, "date": "2026-01-01T12:00:00Z", "home_goals": 1, "away_goals": 0},
+                {"fixture_id": 2, "date": "not-a-date", "home_goals": 2, "away_goals": 0},
+                {"fixture_id": 3, "date": "2026-01-11T12:00:00Z", "home_goals": 0, "away_goals": 2},
+            ]
+        )
+        context = final_prediction_service._historical_context_before_reference(
+            matches, "2026-01-10T12:00:00Z"
+        )
+        self.assertEqual(context["fixture_id"].tolist(), [1])
+
+
+
 if __name__ == "__main__":
     unittest.main()
