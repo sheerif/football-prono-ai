@@ -190,6 +190,31 @@ def _freshness_score(matches_df: pd.DataFrame, reference_date=None) -> float:
     return round(max(0.0, 1.0 - (age_days - 7) / 173), 4)
 
 
+
+def _historical_context_before_reference(
+    matches_df: pd.DataFrame,
+    reference_date=None,
+) -> pd.DataFrame:
+    """Fail closed: aucun résultat égal ou postérieur à la référence n'entre au modèle."""
+    required = {"date", "home_goals", "away_goals"}
+    if matches_df.empty or not required.issubset(matches_df.columns):
+        return pd.DataFrame(columns=matches_df.columns)
+    reference = pd.to_datetime(reference_date, errors="coerce", utc=True)
+    if pd.isna(reference):
+        reference = pd.Timestamp.now(tz="UTC")
+    dates = pd.to_datetime(matches_df["date"], errors="coerce", utc=True)
+    eligible = (
+        dates.notna()
+        & dates.lt(reference)
+        & matches_df["home_goals"].notna()
+        & matches_df["away_goals"].notna()
+    )
+    completed = matches_df.loc[eligible].copy()
+    completed["_prediction_reference_date"] = dates.loc[eligible]
+    return completed.sort_values(
+        "_prediction_reference_date", ascending=True, kind="stable"
+    ).drop(columns=["_prediction_reference_date"])
+
 def calculate(
     matches_df: pd.DataFrame,
     home_team: int,
@@ -208,6 +233,9 @@ def calculate(
     Les pages peuvent présenter le résultat différemment, mais elles ne doivent
     plus recomposer elles-mêmes ces éléments métier.
     """
+    # La frontière temporelle est appliquée ici, au point d'entrée partagé,
+    # afin de protéger toutes les pages même si l'une d'elles transmet plusieurs saisons.
+    matches_df = _historical_context_before_reference(matches_df, match_date)
     predict_match = prediction_helpers.predict_match
     internal, home_stats, away_stats, details = predict_match(
         matches_df,
