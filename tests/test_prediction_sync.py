@@ -3,7 +3,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from pages import data_management, matchs_a_venir
-from services import background_jobs, full_sync_service
+from services import background_jobs, full_sync_service, prediction_archive_service
 
 
 class PredictionSyncTests(unittest.TestCase):
@@ -147,9 +147,7 @@ class PredictionSyncTests(unittest.TestCase):
         with (
             patch.object(background_jobs, "_jobs", jobs),
             patch.object(
-                background_jobs.prediction_archive_service
-                if hasattr(background_jobs, "prediction_archive_service")
-                else __import__("services.prediction_archive_service", fromlist=["archive_upcoming_predictions"]),
+                prediction_archive_service,
                 "archive_upcoming_predictions",
                 return_value=archive,
             ),
