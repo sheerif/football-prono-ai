@@ -611,7 +611,7 @@ def _render_reliability_engine() -> None:
     archive = snapshot.get("api_archive") or {}
     archive_col, update_col = st.columns(2)
     with archive_col:
-        st.markdown("**Intégrité de l’archive API**")
+        st.markdown("**Suivi des dernières requêtes API**")
         st.write(labels.get(archive.get("status"), "INCONNU"))
         if archive.get("checked") is not None:
             st.caption(
