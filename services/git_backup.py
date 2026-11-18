@@ -152,8 +152,14 @@ def latest_backup_info() -> dict:
     head = _backup_head(f"/repos/{repository}", branch, token)
     if not head:
         return {"status": "not_found", "repository": repository, "branch": branch}
+    # Large archives are stored as a manifest plus Git blob fragments.
+    # Treat that complete chunked representation as a valid backup too.
+    has_legacy_archive = bool(head.get("blob_sha"))
+    has_chunked_archive = bool(
+        head.get("manifest_sha") and head.get("part_shas")
+    )
     return {
-        "status": "available" if head.get("blob_sha") else "missing_file",
+        "status": "available" if (has_legacy_archive or has_chunked_archive) else "missing_file",
         "repository": repository,
         "branch": branch,
         "committed_at": head.get("committed_at"),

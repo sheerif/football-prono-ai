@@ -235,5 +235,41 @@ class GitBackupTests(unittest.TestCase):
         self.assertEqual(result, expected)
 
 
+    def test_latest_backup_info_recognizes_chunked_archive(self):
+        expected = {
+            "status": "available",
+            "repository": "owner/repository",
+            "branch": "database-backup",
+            "committed_at": "2026-11-18T20:45:00Z",
+            "commit": "chunked-commit",
+        }
+        with patch.object(
+            git_backup,
+            "_setting",
+            side_effect=lambda name, default="": {
+                "GITHUB_BACKUP_TOKEN": "test-token",
+                "GITHUB_BACKUP_REPOSITORY": "owner/repository",
+                "GITHUB_BACKUP_BRANCH": "database-backup",
+            }.get(name, default),
+        ), patch.object(
+            git_backup,
+            "_backup_head",
+            return_value={
+                "blob_sha": None,
+                "manifest_sha": "manifest-sha",
+                "part_shas": {
+                    "football.db.gz.part-0001": "part-sha-1",
+                    "football.db.gz.part-0002": "part-sha-2",
+                },
+                "committed_at": expected["committed_at"],
+                "commit_sha": expected["commit"],
+            },
+        ):
+            result = git_backup.latest_backup_info()
+
+        self.assertEqual(result, expected)
+
+
+
 if __name__ == "__main__":
     unittest.main()
