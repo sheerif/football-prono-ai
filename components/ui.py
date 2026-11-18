@@ -1186,79 +1186,15 @@ def render_live_data_refresh():
         st.rerun()
 
 
-@st.fragment(run_every="1s")
+@st.fragment(run_every="5s")
 def render_background_jobs():
-    """Actualise le suivi sans attendre une interaction sur la page."""
+    """Indicateur discret; le suivi détaillé est centralisé dans la page Mise à jour."""
     from services import background_jobs
 
-    resume_pending = getattr(
-        background_jobs, "resume_pending_full_sync_if_due", None
-    ) or getattr(background_jobs, "resume_pending_full_sync", None)
-    if callable(resume_pending):
-        resume_pending()
     jobs = background_jobs.active_jobs()
-    paused_jobs = [
-        job
-        for job in background_jobs.list_jobs()
-        if job.get("status") == "partial"
-        and (job.get("details") or {}).get("quota_reached")
-    ][:1]
-    state_loader = getattr(
-        background_jobs, "cached_full_sync_state", None
-    ) or getattr(background_jobs, "full_sync_state", None)
-    full_state = state_loader() if callable(state_loader) else None
-    waiting_quota = bool(
-        full_state and full_state.get("status") == "waiting_quota"
-    )
-    if not jobs and not paused_jobs and not waiting_quota:
+    if not jobs:
         return
-    st.markdown("---")
-    st.markdown("### Téléchargements")
-    displayed_ids = set()
-    for job in [*jobs, *paused_jobs]:
-        if job.get("id") in displayed_ids:
-            continue
-        displayed_ids.add(job.get("id"))
-        st.caption(job.get("label", "Tâche en arrière-plan"))
-        progress = float(job.get("progress") or 0)
-        st.progress(progress, text=progress_bar_text(job))
-        st.caption(progress_download_caption(job))
-        if job.get("status") in {"waiting_quota", "partial"}:
-            details = job.get("details") or {}
-            if details.get("quota_reached") and details.get("next_retry_at"):
-                st.caption(
-                    quota_wait_message(
-                        details,
-                        automatic=bool(details.get("automatic_resume")),
-                        fallback_message=job.get("message") or "",
-                    )
-                )
-            else:
-                st.caption(job.get("message"))
-    if waiting_quota and not any(
-        job.get("kind") == "full_sync" for job in [*jobs, *paused_jobs]
-    ):
-        metadata = full_state.get("metadata") or {}
-        persistent_job = {
-            "progress": metadata.get("progress", 0),
-            "progress_current": metadata.get("progress_current", 0),
-            "progress_total": metadata.get("progress_total", 100),
-            "progress_label": metadata.get("progress_label")
-            or "En attente du renouvellement du quota",
-            "downloaded": metadata.get("downloaded"),
-            "api_calls": metadata.get("api_calls"),
-            "skipped": metadata.get("skipped"),
-        }
-        st.caption("Synchronisation exhaustive")
-        st.progress(
-            float(persistent_job["progress"] or 0),
-            text=progress_bar_text(persistent_job),
-        )
-        st.caption(progress_download_caption(persistent_job))
-        st.caption(
-            quota_wait_message(
-                metadata,
-                automatic=True,
-                fallback_message=full_state.get("message") or "",
-            )
-        )
+    st.caption(
+        f"⟳ {len(jobs)} tâche(s) active(s) · "
+        "détails et progression dans « Mise à jour »"
+    )
