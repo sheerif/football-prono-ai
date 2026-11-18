@@ -69,23 +69,6 @@ def ensure_table() -> None:
                     "minute_remaining", "retrieved_at", "id",
                 }
                 if required.issubset(columns):
-                    conn.execute(text("""
-                        INSERT INTO api_request_state (
-                            request_sha256, endpoint, response_sha256, http_status,
-                            daily_limit, daily_remaining, minute_limit,
-                            minute_remaining, retrieved_at
-                        )
-                        SELECT old.endpoint, old.endpoint, old.response_sha256,
-                               old.http_status, old.daily_limit, old.daily_remaining,
-                               old.minute_limit, old.minute_remaining, old.retrieved_at
-                        FROM api_response_archive AS old
-                        JOIN (
-                            SELECT request_sha256, MAX(id) AS latest_id
-                            FROM api_response_archive
-                            GROUP BY request_sha256
-                        ) AS latest ON latest.latest_id = old.id
-                        WHERE 1 = 0
-                    """))
                     # Keep one compact state per request fingerprint; never copy raw JSON.
                     conn.execute(text("""
                         INSERT OR REPLACE INTO api_request_state (
