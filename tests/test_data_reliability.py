@@ -27,9 +27,9 @@ class DataReliabilityTests(unittest.TestCase):
                 ))
             conn.execute(text("""
                 CREATE TABLE api_response_archive (
-                    id INTEGER PRIMARY KEY, response_json TEXT NOT NULL,
-                    response_sha256 TEXT NOT NULL, http_status INTEGER,
-                    retrieved_at TEXT NOT NULL
+                    id INTEGER PRIMARY KEY, endpoint TEXT, params_json TEXT,
+                    response_json TEXT NOT NULL, response_sha256 TEXT NOT NULL,
+                    http_status INTEGER, retrieved_at TEXT NOT NULL
                 )
             """))
             payload = json.dumps({"response": []}, separators=(",", ":"))
@@ -84,6 +84,28 @@ class DataReliabilityTests(unittest.TestCase):
         for table in snapshot["tables"]:
             self.assertEqual(table["last_updated_at"], "2026-11-17T11:30:00+00:00")
             self.assertEqual(table["timestamp_source"], "resource_sync_state (core_season)")
+            self.assertEqual(table["status"], "healthy")
+
+    def test_uses_endpoint_specific_archive_timestamp(self):
+        with self.engine.begin() as conn:
+            for table in ("leagues", "teams", "matches", "standings"):
+                conn.execute(text(f"DROP TABLE {table}"))
+                conn.execute(text(f"CREATE TABLE {table} (id INTEGER PRIMARY KEY)"))
+                conn.execute(text(f"INSERT INTO {table} DEFAULT VALUES"))
+            for endpoint in ("/leagues", "/teams", "/fixtures", "/standings"):
+                conn.execute(text("""
+                    INSERT INTO api_response_archive
+                    (endpoint, params_json, response_json, response_sha256,
+                     http_status, retrieved_at)
+                    VALUES (:endpoint, '{}', '{}', :digest, 200,
+                            '2026-11-17T11:45:00+00:00')
+                """), {"endpoint": endpoint, "digest": hashlib.sha256(b"{}").hexdigest()})
+        snapshot = data_reliability.get_reliability_snapshot(
+            now=dt.datetime(2026, 11, 17, 12, tzinfo=dt.timezone.utc)
+        )
+        for table in snapshot["tables"]:
+            self.assertEqual(table["last_updated_at"], "2026-11-17T11:45:00+00:00")
+            self.assertEqual(table["timestamp_source"], "api_response_archive (endpoint)")
             self.assertEqual(table["status"], "healthy")
 
     def test_incomplete_core_sync_scopes_prevent_healthy_table_status(self):
