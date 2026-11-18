@@ -60,6 +60,53 @@ class DataReliabilityTests(unittest.TestCase):
         self.assertEqual(snapshot["api_archive"]["invalid"], 0)
         self.assertEqual(snapshot["overall_status"], "healthy")
 
+    def test_uses_core_sync_registry_when_business_tables_have_no_timestamp(self):
+        with self.engine.begin() as conn:
+            for table in ("leagues", "teams", "matches", "standings"):
+                conn.execute(text(f"DROP TABLE {table}"))
+                conn.execute(text(f"CREATE TABLE {table} (id INTEGER PRIMARY KEY)"))
+                conn.execute(text(f"INSERT INTO {table} DEFAULT VALUES"))
+            conn.execute(text("""
+                CREATE TABLE resource_sync_state (
+                    resource_key TEXT PRIMARY KEY, resource_type TEXT NOT NULL,
+                    status TEXT NOT NULL, updated_at TEXT NOT NULL
+                )
+            """))
+            conn.execute(text("""
+                INSERT INTO resource_sync_state
+                (resource_key, resource_type, status, updated_at)
+                VALUES ('core:61:2026', 'core_season', 'complete',
+                        '2026-11-17T11:30:00+00:00')
+            """))
+        snapshot = data_reliability.get_reliability_snapshot(
+            now=dt.datetime(2026, 11, 17, 12, tzinfo=dt.timezone.utc)
+        )
+        for table in snapshot["tables"]:
+            self.assertEqual(table["last_updated_at"], "2026-11-17T11:30:00+00:00")
+            self.assertEqual(table["timestamp_source"], "resource_sync_state (core_season)")
+            self.assertEqual(table["status"], "healthy")
+
+    def test_incomplete_core_sync_scopes_prevent_healthy_table_status(self):
+        with self.engine.begin() as conn:
+            conn.execute(text("""
+                CREATE TABLE resource_sync_state (
+                    resource_key TEXT PRIMARY KEY, resource_type TEXT NOT NULL,
+                    status TEXT NOT NULL, updated_at TEXT NOT NULL
+                )
+            """))
+            conn.execute(text("""
+                INSERT INTO resource_sync_state
+                (resource_key, resource_type, status, updated_at)
+                VALUES ('core:61:2026', 'core_season', 'complete',
+                        '2026-11-17T11:30:00+00:00'),
+                       ('core:39:2026', 'core_season', 'error',
+                        '2026-11-17T11:45:00+00:00')
+            """))
+        snapshot = data_reliability.get_reliability_snapshot(
+            now=dt.datetime(2026, 11, 17, 12, tzinfo=dt.timezone.utc)
+        )
+        self.assertTrue(all(table["status"] == "warning" for table in snapshot["tables"]))
+
     def test_archive_tampering_is_critical(self):
         with self.engine.begin() as conn:
             conn.execute(text("UPDATE api_response_archive SET response_sha256 = 'bad'"))
