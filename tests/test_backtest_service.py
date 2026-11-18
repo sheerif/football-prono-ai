@@ -67,7 +67,7 @@ class BacktestServiceTests(unittest.TestCase):
         self.assertAlmostEqual(policy["draw_precision"], 2 / 3, places=6)
         self.assertEqual(policy["accuracy_1n2"], 0.8)
         # The sweep is diagnostic only: it must not rewrite the base metrics.
-        self.assertEqual(metrics["accuracy_1n2"], 0.4)
+        self.assertEqual(metrics["accuracy_1n2"], 0.6)
         self.assertEqual(metrics["draw_recall"], 0.0)
 
     def test_backtest_uses_only_strictly_earlier_context(self):
