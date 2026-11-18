@@ -5,6 +5,7 @@ import pandas as pd
 
 from services import (
     cross_insight_service,
+    draw_calibration_service,
     final_prediction_service,
     lineup_service,
     prediction_helpers,
@@ -693,6 +694,85 @@ class PredictionBusinessRuleTests(unittest.TestCase):
             matches, "2026-01-10T12:00:00Z"
         )
         self.assertEqual(context["fixture_id"].tolist(), [1])
+
+
+
+    def test_poisson_grid_extends_until_omitted_tail_is_negligible(self):
+        cap, tail = prediction_service._poisson_grid_limit(4.5, 6)
+        self.assertGreater(cap, 6)
+        self.assertLessEqual(tail, 1e-6)
+
+        rows, grid_cap, omitted_mass = prediction_service._poisson_score_grid(
+            4.5, 4.2, minimum_max_goals=6
+        )
+        self.assertEqual(grid_cap, cap)
+        self.assertLessEqual(omitted_mass, 2e-6)
+        self.assertEqual(len(rows), (grid_cap + 1) ** 2)
+
+    def test_poisson_grid_does_not_discount_boundary_cells(self):
+        expected_home = 2.0
+        rows, cap, _ = prediction_service._poisson_score_grid(
+            expected_home, 1.4, minimum_max_goals=6
+        )
+        cells = {
+            (row["Buts domicile"], row["Buts extérieur"]): row["raw_probability"]
+            for row in rows
+        }
+        # For independent Poisson variables, adjacent home-goal cells have
+        # the exact ratio lambda / goals, including the grid boundary.
+        boundary_ratio = cells[(cap, 0)] / cells[(cap - 1, 0)]
+        self.assertAlmostEqual(boundary_ratio, expected_home / cap, places=12)
+
+    def test_predict_scorelines_exposes_grid_coverage_and_normalized_matrix(self):
+        matches = pd.DataFrame(
+            [
+                {
+                    "date": f"2026-01-{index + 1:02d}T12:00:00Z",
+                    "season": 2026,
+                    "home_team_id": 1,
+                    "away_team_id": 2,
+                    "home_goals": 4,
+                    "away_goals": 3,
+                }
+                for index in range(30)
+            ]
+        )
+        result = prediction_service.predict_scorelines(
+            matches, 1, 2, home_form_score=0.5, away_form_score=0.5
+        )
+        self.assertEqual(
+            result["score_grid_version"],
+            "independent-poisson-adaptive-tail-v2",
+        )
+        self.assertGreater(result["score_grid_max_goals"], 6)
+        self.assertLessEqual(
+            result["score_grid_omitted_probability_mass"], 2e-6
+        )
+        self.assertAlmostEqual(
+            sum(row["Probabilité"] for row in result["matrix"]),
+            100.0,
+            places=2,
+        )
+        self.assertAlmostEqual(
+            result["probabilities"]["home_probability"]
+            + result["probabilities"]["draw_probability"]
+            + result["probabilities"]["away_probability"],
+            100.0,
+            places=2,
+        )
+        calibrated, metadata = draw_calibration_service.calibrate_score_prediction(
+            result
+        )
+        self.assertTrue(metadata["applied"])
+        self.assertEqual(
+            metadata["score_grid_version"],
+            "independent-poisson-adaptive-tail-v2",
+        )
+        self.assertAlmostEqual(
+            sum(row["Probabilité"] for row in calibrated["matrix"]),
+            100.0,
+            places=2,
+        )
 
 
 

@@ -203,6 +203,9 @@ def calibrate_score_prediction(
         "training_matches": TRAINING_MATCHES,
         "training_period": "2016-2025",
         "training_data_sha256": TRAINING_DATA_SHA256,
+        "score_grid_version": str(
+            score_prediction.get("score_grid_version") or "legacy-fixed-grid-v1"
+        ),
         "raw_draw_probability": round(raw[1], 2),
         "calibrated_draw_probability": normalized[1],
         "delta_points": round(normalized[1] - raw[1], 2),
