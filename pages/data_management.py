@@ -30,7 +30,7 @@ LEAGUE_PRESETS = {
 }
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=15, show_spinner=False)
 def _summary_counts() -> dict[str, int]:
     try:
         row = pd.read_sql(
@@ -68,7 +68,7 @@ def _summary_counts() -> dict[str, int]:
     }
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=60, show_spinner=False)
 def _latest_git_backup_info() -> dict:
     return git_backup.latest_backup_info()
 
@@ -113,6 +113,7 @@ def _format_bytes(value: int | None) -> str:
         size /= 1024
 
 
+@st.fragment(run_every="30s")
 def _render_storage_status() -> None:
     """Show live database health and the latest remote Git backup state."""
     st.subheader("État de la base et des sauvegardes")
@@ -258,10 +259,14 @@ def _recent_logs(limit: int = 6) -> pd.DataFrame:
 
 @st.fragment(run_every="2s")
 def _render_api_quota_status():
+    """Affiche le quota et son éventuelle suspension depuis une seule source."""
     if not (os.getenv("API_FOOTBALL_KEY") or "").strip():
+        st.caption("Quota API indisponible : clé API absente.")
         return
+
     quota = background_jobs.api_quota_status()
     _render_quota_counters(quota)
+
     error = str(quota.get("error") or "").casefold()
     daily_exhausted = (
         quota.get("verified") and int(quota.get("remaining") or 0) <= 0
@@ -270,81 +275,37 @@ def _render_api_quota_status():
         quota.get("minute_remaining") is not None
         and int(quota["minute_remaining"]) <= 0
     ) or any(token in error for token in ("minute", "per minute", "rate limit"))
-    if quota.get("api_refused") or daily_exhausted or minute_exhausted:
+
+    full_state = background_jobs.cached_full_sync_state()
+    waiting = bool(full_state and full_state.get("status") == "waiting_quota")
+    if waiting:
+        metadata = full_state.get("metadata") or {}
+        st.warning(
+            _quota_wait_message(
+                metadata,
+                automatic=True,
+                fallback_message=full_state.get("message") or "",
+            )
+        )
+    elif quota.get("api_refused") or daily_exhausted or minute_exhausted:
         if minute_exhausted and not daily_exhausted:
-            refusal_label = "Limite API par minute atteinte."
+            label = "Limite API par minute atteinte."
         elif daily_exhausted:
-            refusal_label = "Quota API quotidien épuisé."
+            label = "Quota API quotidien épuisé."
         else:
-            refusal_label = "L’API a refusé le contrôle du quota."
-        refusal_timestamp = _format_informational_timestamp(
-            quota.get("checked_at"), label="État vérifié"
+            label = "Quota API non confirmé : l’API a refusé le contrôle."
+        timestamp = _format_informational_timestamp(
+            quota.get("checked_at"), label="Dernière vérification"
         )
         st.warning(
-            f"{refusal_label} Les nouveaux appels de données sont suspendus."
-            + (f" {refusal_timestamp}" if refusal_timestamp else "")
+            f"{label} Aucun nouvel appel ne sera lancé tant que la limite "
+            "n’est pas levée."
+            + (f" {timestamp}" if timestamp else "")
         )
-        wait_state = background_jobs.cached_full_sync_state()
-        if wait_state and wait_state.get("status") == "waiting_quota":
-            metadata = wait_state.get("metadata") or {}
-            st.info(
-                _quota_wait_message(
-                    _quota_metadata_for_job(wait_state, metadata),
-                    automatic=True,
-                    fallback_message=wait_state.get("message") or "",
-                )
-            )
-        else:
-            paused_job = next(
-                (
-                    job
-                    for job in background_jobs.list_jobs()
-                    if job.get("status") == "partial"
-                    and (job.get("details") or {}).get("quota_reached")
-                ),
-                None,
-            )
-            if paused_job:
-                details = paused_job.get("details") or {}
-                st.info(
-                    _quota_wait_message(
-                        details,
-                        automatic=bool(details.get("automatic_resume")),
-                        fallback_message=paused_job.get("message") or "",
-                    )
-                )
-            elif daily_exhausted:
-                st.caption(
-                    "Aucune synchronisation exhaustive n’est en attente automatique. "
-                    "Vous pourrez la relancer après le renouvellement; les données déjà "
-                    "enregistrées seront conservées. "
-                    f"{_quota_reset_label(daily=True)}"
-                )
-            elif minute_exhausted:
-                st.caption(
-                    "Une nouvelle tentative sera possible après le délai de la limite "
-                    f"par minute. {_quota_reset_label(quota, daily=False)}"
-                )
-    elif quota.get("verified"):
-        remaining = quota["remaining"]
-        quota_label = (
-            "Quota API épuisé"
-            if remaining <= 0
-            else f"Quota API : {remaining} appel(s) quotidien(s) restant(s)"
-        )
-        minute_label = (
-            f"{quota['minute_remaining']} appel(s) restant(s) cette minute · "
-            if quota.get("minute_remaining") is not None
-            else ""
-        )
-        st.caption(
-            f"{quota_label} · {quota['current']}/{quota['limit']} utilisés · "
-            f"{minute_label}vérifié à {quota['checked_at']} UTC."
-        )
-    else:
-        st.caption(
-            "Quota API non vérifiable pour le moment ; le contrôle sera "
-            "retenté avant chaque téléchargement."
+    elif not quota.get("verified"):
+        st.info(
+            "Quota API non vérifiable. Les compteurs restent indisponibles "
+            "et chaque téléchargement sera contrôlé avant son lancement."
         )
 
 
@@ -491,15 +452,9 @@ def _render_jobs():
             st.progress(progress, text=ui.progress_bar_text(job))
             st.caption(ui.progress_download_caption(job))
             if job.get("status") == "waiting_quota":
-                st.warning(
-                    _quota_wait_message(
-                        job.get("details") or {},
-                        automatic=bool((job.get("details") or {}).get("automatic_resume")),
-                        fallback_message=job.get("message") or "",
-                    )
-                )
+                st.caption("En attente du quota API · progression conservée.")
             else:
-                st.caption("La mise à jour continue automatiquement en arrière-plan.")
+                st.caption("Mise à jour active en arrière-plan.")
 
     for job in paused:
         with st.container(border=True):
@@ -508,16 +463,7 @@ def _render_jobs():
             st.progress(progress, text=ui.progress_bar_text(job))
             st.caption(ui.progress_download_caption(job))
             details = job.get("details") or {}
-            if details.get("quota_reached") and details.get("next_retry_at"):
-                st.warning(
-                    _quota_wait_message(
-                        _quota_metadata_for_job(job, details),
-                        automatic=bool(details.get("automatic_resume")),
-                        fallback_message=job.get("message") or "",
-                    )
-                )
-            else:
-                st.warning(job.get("message") or "Quota API atteint.")
+            st.caption("Mise à jour interrompue · progression conservée pour reprise.")
 
     if finished:
         with st.expander("Dernières tâches terminées", expanded=False):
@@ -594,6 +540,27 @@ def _start_full_sync(*, resumed: bool = False) -> str:
         return starter()
 
 
+@st.fragment(run_every="15s")
+def _render_database_kpis() -> None:
+    """Rafraîchit les volumes SQLite sans attendre un rechargement complet."""
+    counts = _summary_counts()
+    database_kpis = [
+        {"label": "Championnats", "value": counts["leagues"], "caption": "Compétitions suivies"},
+        {"label": "Équipes", "value": counts["teams"], "caption": "Clubs enregistrés"},
+        {"label": "Matchs", "value": counts["matches"], "caption": "Rencontres en base"},
+        {"label": "Classements", "value": counts["standings"], "caption": "Positions disponibles"},
+        {"label": "Joueurs", "value": counts["players"], "caption": "Profils persistés"},
+        {"label": "Compositions", "value": counts["lineups"], "caption": "Onze officiels ou projetés"},
+        {"label": "Analyses", "value": counts["analyses"], "caption": "Études conservées"},
+        {"label": "Matchs avec xG", "value": counts["xg_matches"], "caption": "Statistiques API stockées"},
+    ]
+    try:
+        ui.kpi_grid(database_kpis, columns=4)
+    except TypeError:
+        ui.kpi_grid(database_kpis)
+
+
+@st.fragment(run_every="15s")
 def _render_reliability_engine() -> None:
     """Expose the central reliability engine without recalculating business KPIs."""
     st.subheader("Moteur de fiabilité des données")
@@ -700,21 +667,7 @@ def show():
     _render_storage_status()
     _render_reliability_engine()
 
-    counts = _summary_counts()
-    database_kpis = [
-            {"label": "Championnats", "value": counts["leagues"], "caption": "Compétitions suivies"},
-            {"label": "Équipes", "value": counts["teams"], "caption": "Clubs enregistrés"},
-            {"label": "Matchs", "value": counts["matches"], "caption": "Rencontres en base"},
-            {"label": "Classements", "value": counts["standings"], "caption": "Positions disponibles"},
-            {"label": "Joueurs", "value": counts["players"], "caption": "Profils persistés"},
-            {"label": "Compositions", "value": counts["lineups"], "caption": "Onze officiels ou projetés"},
-            {"label": "Analyses", "value": counts["analyses"], "caption": "Études conservées"},
-            {"label": "Matchs avec xG", "value": counts["xg_matches"], "caption": "Statistiques API stockées"},
-        ]
-    try:
-        ui.kpi_grid(database_kpis, columns=4)
-    except TypeError:
-        ui.kpi_grid(database_kpis)
+    _render_database_kpis()
 
     _render_jobs()
     data_job_active = background_jobs.data_job_running()
@@ -798,14 +751,10 @@ def show():
             )
         if full_state and full_state.get("status") == "waiting_quota":
             metadata = full_state.get("metadata") or {}
-            st.warning(
-                _quota_wait_message(
-                    metadata,
-                    automatic=True,
-                    fallback_message=full_state.get("message") or "",
-                )
+            st.caption(
+                "En pause à cause du quota API. La progression est conservée "
+                "et la reprise automatique est planifiée."
             )
-            st.caption("Cette attente ne bloque pas les autres actions du site.")
             if st.button(
                 "Tenter une reprise maintenant",
                 key="retry_full_sync_now",

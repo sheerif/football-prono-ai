@@ -45,7 +45,7 @@ class ResponsiveUiContractTests(unittest.TestCase):
             for token in forbidden:
                 self.assertNotIn(token.replace(" ", ""), content, str(path))
 
-    def test_background_progress_panels_refresh_automatically(self):
+    def test_background_progress_is_centralized_and_refreshes_automatically(self):
         sidebar_source = (ROOT / "components" / "ui.py").read_text(encoding="utf-8")
         updates_source = (ROOT / "pages" / "data_management.py").read_text(
             encoding="utf-8"
@@ -53,12 +53,19 @@ class ResponsiveUiContractTests(unittest.TestCase):
         decorator = '@st.fragment(run_every="1s")'
         self.assertIn(f"{decorator}\ndef render_background_jobs", sidebar_source)
         self.assertIn(f"{decorator}\ndef _render_jobs", updates_source)
-        self.assertIn("progress_download_caption(job)", sidebar_source)
+
+        # The sidebar is deliberately a compact activity indicator. Detailed
+        # progress belongs to the Mise à jour page to avoid duplicate panels.
+        sidebar_panel = sidebar_source.split("def render_background_jobs():", 1)[1]
+        self.assertIn("détails et progression dans « Mise à jour »", sidebar_panel)
+        self.assertNotIn("st.progress(", sidebar_panel)
+        self.assertNotIn("progress_download_caption(job)", sidebar_panel)
+
+        # The dedicated page owns live progress, counters, and retry history.
         self.assertIn("ui.progress_download_caption(job)", updates_source)
-        self.assertIn("text=progress_bar_text(job)", sidebar_source)
-        self.assertIn("text=ui.progress_bar_text(job)", updates_source)
-        self.assertIn('job.get("status") == "partial"', sidebar_source)
-        self.assertIn("st.warning(job.get(\"message\")", updates_source)
+        self.assertIn("st.progress(progress, text=ui.progress_bar_text(job))", updates_source)
+        self.assertIn('"partial": "À reprendre"', updates_source)
+        self.assertIn("Mise à jour interrompue · progression conservée pour reprise.", updates_source)
 
     def test_every_long_user_action_has_visible_progress(self):
         required_markers = {
