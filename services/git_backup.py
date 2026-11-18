@@ -74,6 +74,17 @@ def _create_database_archive(database_engine, archive_path: Path) -> None:
         finally:
             destination.close()
             source.close()
+        check = sqlite3.connect(snapshot)
+        try:
+            integrity = check.execute("PRAGMA integrity_check").fetchone()
+            if not integrity or integrity[0] != "ok":
+                detail = integrity[0] if integrity else "résultat absent"
+                raise RuntimeError(
+                    f"Instantané SQLite invalide avant compression : {detail}"
+                )
+        finally:
+            check.close()
+
         with snapshot.open("rb") as source_file, archive_path.open("wb") as raw_archive:
             with gzip.GzipFile(
                 filename="", mode="wb", fileobj=raw_archive,
@@ -81,6 +92,14 @@ def _create_database_archive(database_engine, archive_path: Path) -> None:
             ) as archive:
                 while chunk := source_file.read(1024 * 1024):
                     archive.write(chunk)
+
+    if not archive_path.is_file() or archive_path.stat().st_size == 0:
+        raise RuntimeError("Archive GZIP absente ou vide.")
+
+    # Lire tout le flux vérifie aussi le CRC et la taille GZIP avant tout envoi.
+    with gzip.open(archive_path, "rb") as compressed:
+        while compressed.read(1024 * 1024):
+            pass
 
 
 def _git_blob_sha(content: bytes) -> str:
@@ -155,6 +174,9 @@ def backup_to_github(*, database_engine=engine, force: bool = False) -> dict:
                     "branch": branch,
                 }
 
+        # La sauvegarde reste indépendante de la maintenance applicative.
+        # L'intégrité du snapshot et du GZIP est contrôlée avant publication.
+
         with tempfile.TemporaryDirectory(prefix="football-backup-") as temp_dir:
             archive_path = Path(temp_dir) / "football.db.gz"
             _create_database_archive(database_engine, archive_path)
@@ -164,6 +186,9 @@ def backup_to_github(*, database_engine=engine, force: bool = False) -> dict:
                     "status": "unchanged",
                     "repository": repository,
                     "branch": branch,
+                    "integrity_verified": True,
+                    "gzip_verified": True,
+                    "gzip_verified": True,
                 }
             content = base64.b64encode(archive_bytes).decode("ascii")
             blob = _request(
@@ -201,6 +226,17 @@ def backup_to_github(*, database_engine=engine, force: bool = False) -> dict:
                     "POST", f"{root}/git/refs", token,
                     {"ref": f"refs/heads/{branch}", "sha": commit["sha"]},
                 )
+            verified_head = _backup_head(root, branch, token)
+            expected_blob_sha = _git_blob_sha(archive_bytes)
+            if (
+                not verified_head
+                or verified_head.get("commit_sha") != commit["sha"]
+                or verified_head.get("blob_sha") != expected_blob_sha
+            ):
+                raise RuntimeError(
+                    "Sauvegarde envoyée mais vérification distante échouée : "
+                    "le commit ou le fichier football.db.gz ne correspond pas."
+                )
             return {
                 "status": "uploaded",
                 "repository": repository,
@@ -208,6 +244,9 @@ def backup_to_github(*, database_engine=engine, force: bool = False) -> dict:
                 "commit": commit["sha"],
                 "size_bytes": len(archive_bytes),
                 "differential": bool(head),
+                "integrity_verified": True,
+                "gzip_verified": True,
+                "remote_verified": True,
             }
 
 
