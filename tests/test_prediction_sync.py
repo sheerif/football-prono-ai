@@ -130,6 +130,36 @@ class PredictionSyncTests(unittest.TestCase):
         self.assertFalse(second_created)
         self.assertEqual(first, second)
 
+    def test_background_archive_result_is_kept_in_job_details(self):
+        archive = {
+            "status": "complete",
+            "archived": 3,
+            "api_calls": 0,
+        }
+        jobs = {
+            "job-1": {
+                "id": "job-1",
+                "kind": "prediction_sync",
+                "status": "running",
+                "details": {"days": 7},
+            }
+        }
+        with (
+            patch.object(background_jobs, "_jobs", jobs),
+            patch.object(
+                background_jobs.prediction_archive_service
+                if hasattr(background_jobs, "prediction_archive_service")
+                else __import__("services.prediction_archive_service", fromlist=["archive_upcoming_predictions"]),
+                "archive_upcoming_predictions",
+                return_value=archive,
+            ),
+        ):
+            result = background_jobs._archive_pre_match_predictions("job-1")
+
+        self.assertEqual(result, archive)
+        self.assertEqual(jobs["job-1"]["details"]["days"], 7)
+        self.assertEqual(jobs["job-1"]["details"]["pre_match_archive"], archive)
+
     def test_update_page_refreshes_stale_prediction_services(self):
         starter = Mock(return_value="prediction-job")
 
