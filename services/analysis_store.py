@@ -8,7 +8,7 @@ from database.database import SessionLocal, engine
 
 
 _schema_ready = False
-PREDICTION_MODEL_VERSION = "poisson-decision-engine-v1+draw-logistic-v1-2016-2025"
+PREDICTION_MODEL_VERSION = "poisson-decision-engine-v1+independent-poisson-adaptive-tail-v2+draw-logistic-v1-2016-2025"
 
 
 def _ensure_schema():
