@@ -85,11 +85,7 @@ def _archive_pre_match_predictions(job_id: str) -> dict:
     try:
         from services import prediction_archive_service
 
-        result = prediction_archive_service.archive_upcoming_predictions(
-            progress_callback=lambda current, total, label: _progress(
-                job_id, current, total, label
-            )
-        )
+        result = prediction_archive_service.archive_upcoming_predictions()
     except Exception as exc:
         result = {"status": "error", "archived": 0, "api_calls": 0, "errors": [str(exc)]}
     with _lock:
