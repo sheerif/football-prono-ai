@@ -89,11 +89,11 @@ def _core_sync_freshness(connection, inspector) -> dict | None:
 
 
 def _latest_api_retrieval(connection, inspector, table_name: str):
-    """Find the latest successful archived response for this table's API endpoint."""
-    if not inspector.has_table("api_response_archive"):
+    """Find the latest successful request-state timestamp for this table endpoint."""
+    if not inspector.has_table("api_request_state"):
         return None
-    archive_columns = _table_columns(inspector, "api_response_archive")
-    if not {"endpoint", "retrieved_at", "http_status"}.issubset(archive_columns):
+    columns = _table_columns(inspector, "api_request_state")
+    if not {"endpoint", "retrieved_at", "http_status"}.issubset(columns):
         return None
     endpoints = {
         "leagues": ("/leagues",),
@@ -106,7 +106,7 @@ def _latest_api_retrieval(connection, inspector, table_name: str):
     placeholders = ", ".join(f":endpoint_{index}" for index in range(len(endpoints)))
     params = {f"endpoint_{index}": endpoint for index, endpoint in enumerate(endpoints)}
     return connection.execute(text(
-        "SELECT MAX(retrieved_at) FROM api_response_archive "
+        "SELECT MAX(retrieved_at) FROM api_request_state "
         f"WHERE endpoint IN ({placeholders}) AND http_status >= 200 AND http_status < 300"
     ), params).scalar()
 
@@ -133,7 +133,7 @@ def _table_check(
             api_retrieved_at = _latest_api_retrieval(connection, inspector, table_name)
             if api_retrieved_at is not None:
                 last_updated = api_retrieved_at
-                timestamp_source = "api_response_archive (endpoint)"
+                timestamp_source = "api_request_state (endpoint)"
         if last_updated is None and core_sync and core_sync.get("last_updated_at"):
             last_updated = core_sync["last_updated_at"]
             timestamp_source = "resource_sync_state (core_season, dernier traitement)"
@@ -172,32 +172,40 @@ def _table_check(
 
 
 def _archive_integrity(connection, inspector) -> dict:
-    table = "api_response_archive"
+    """Check stored fingerprint format and HTTP outcomes, not payload integrity."""
+    table = "api_request_state"
     if not inspector.has_table(table):
-        return {"status": "unknown", "checked": 0, "valid": None, "invalid": None,
-                "latest_retrieved_at": None, "message": "Archive API absente."}
-    rows = connection.execute(text(
-        "SELECT response_json, response_sha256, http_status, retrieved_at "
-        "FROM api_response_archive ORDER BY id DESC LIMIT :limit"
-    ), {"limit": ARCHIVE_SAMPLE_SIZE}).mappings().all()
+        return {
+            "status": "unknown", "checked": 0, "valid": None, "invalid": None,
+            "latest_retrieved_at": None,
+            "message": "Suivi des requêtes API absent.",
+        }
+    rows = connection.execute(text("""
+        SELECT request_sha256, response_sha256, http_status, retrieved_at
+        FROM api_request_state ORDER BY retrieved_at DESC
+        LIMIT :limit
+    """), {"limit": ARCHIVE_SAMPLE_SIZE}).mappings().all()
     if not rows:
-        return {"status": "unknown", "checked": 0, "valid": None, "invalid": None,
-                "latest_retrieved_at": None, "message": "Aucune réponse API archivée."}
+        return {
+            "status": "unknown", "checked": 0, "valid": None, "invalid": None,
+            "latest_retrieved_at": None,
+            "message": "Aucune requête API suivie.",
+        }
     valid = 0
     invalid = 0
     http_failures = 0
     for row in rows:
         if row["http_status"] is not None and not 200 <= int(row["http_status"]) < 300:
             http_failures += 1
-        raw = row["response_json"]
-        try:
-            json.loads(raw)
-            digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()
-            if digest == row["response_sha256"]:
-                valid += 1
-            else:
-                invalid += 1
-        except (TypeError, ValueError, AttributeError):
+        hashes = (row["request_sha256"], row["response_sha256"])
+        if all(
+            isinstance(value, str)
+            and len(value) == 64
+            and all(char in "0123456789abcdef" for char in value.lower())
+            for value in hashes
+        ):
+            valid += 1
+        else:
             invalid += 1
     status = "critical" if invalid else "warning" if http_failures else "healthy"
     return {
@@ -206,9 +214,9 @@ def _archive_integrity(connection, inspector) -> dict:
         "latest_retrieved_at": rows[0]["retrieved_at"],
         "latest_http_status": rows[0]["http_status"],
         "message": (
-            "Réponses altérées ou illisibles détectées." if invalid
-            else "Réponses API en erreur présentes dans l'archive." if http_failures
-            else "Intégrité vérifiée."
+            "Format d'empreintes invalide détecté." if invalid
+            else "Des requêtes API ont renvoyé une erreur HTTP." if http_failures
+            else "Format des empreintes techniques vérifié (contenu brut non conservé)."
         ),
     }
 
