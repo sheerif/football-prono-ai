@@ -40,22 +40,15 @@ def ensure_table() -> None:
     with _table_lock:
         if _table_ready:
             return
-        with engine.begin() as conn:
-            conn.execute(text("""
-                CREATE TABLE IF NOT EXISTS api_request_state (
-                    request_sha256 TEXT PRIMARY KEY,
-                    endpoint TEXT NOT NULL,
-                    response_sha256 TEXT NOT NULL,
-                    http_status INTEGER,
-                    daily_limit INTEGER,
-                    daily_remaining INTEGER,
-                    minute_limit INTEGER,
-                    minute_remaining INTEGER,
-                    retrieved_at TEXT NOT NULL
-                )
-            """))
+
+        # Validate the legacy source before creating anything. SQLite may commit DDL
+        # outside the surrounding transaction on some driver configurations.
+        state_existed = False
+        with engine.connect() as conn:
             inspector = inspect(conn)
-            if inspector.has_table("api_response_archive"):
+            state_existed = inspector.has_table("api_request_state")
+            has_legacy = inspector.has_table("api_response_archive")
+            if has_legacy:
                 columns = {item["name"] for item in inspector.get_columns("api_response_archive")}
                 required = {
                     "id", "endpoint", "request_sha256", "response_sha256",
@@ -80,47 +73,72 @@ def ensure_table() -> None:
                         f"Migration API interrompue : {invalid} ligne(s) historique(s) invalide(s). "
                         "L'ancienne archive est conservée."
                     )
+
+        try:
+            with engine.begin() as conn:
                 conn.execute(text("""
-                    INSERT INTO api_request_state (
-                        request_sha256, endpoint, response_sha256, http_status,
-                        daily_limit, daily_remaining, minute_limit,
-                        minute_remaining, retrieved_at
+                    CREATE TABLE IF NOT EXISTS api_request_state (
+                        request_sha256 TEXT PRIMARY KEY,
+                        endpoint TEXT NOT NULL,
+                        response_sha256 TEXT NOT NULL,
+                        http_status INTEGER,
+                        daily_limit INTEGER,
+                        daily_remaining INTEGER,
+                        minute_limit INTEGER,
+                        minute_remaining INTEGER,
+                        retrieved_at TEXT NOT NULL
                     )
-                    SELECT old.request_sha256, old.endpoint, old.response_sha256,
-                           old.http_status, old.daily_limit, old.daily_remaining,
-                           old.minute_limit, old.minute_remaining, old.retrieved_at
-                    FROM api_response_archive AS old
-                    JOIN (
-                        SELECT request_sha256, MAX(id) AS latest_id
-                        FROM api_response_archive
-                        GROUP BY request_sha256
-                    ) AS latest ON latest.latest_id = old.id
-                    WHERE 1
-                    ON CONFLICT(request_sha256) DO UPDATE SET
-                        endpoint = excluded.endpoint,
-                        response_sha256 = excluded.response_sha256,
-                        http_status = excluded.http_status,
-                        daily_limit = excluded.daily_limit,
-                        daily_remaining = excluded.daily_remaining,
-                        minute_limit = excluded.minute_limit,
-                        minute_remaining = excluded.minute_remaining,
-                        retrieved_at = excluded.retrieved_at
                 """))
-                expected = conn.execute(text("""
-                    SELECT COUNT(DISTINCT request_sha256) FROM api_response_archive
-                """)).scalar_one()
-                migrated = conn.execute(text("""
-                    SELECT COUNT(*) FROM api_request_state
-                    WHERE request_sha256 IN (
-                        SELECT DISTINCT request_sha256 FROM api_response_archive
-                    )
-                """)).scalar_one()
-                if migrated != expected:
-                    raise RuntimeError(
-                        "Migration API interrompue : contrôle du nombre d'états migrés invalide. "
-                        "L'ancienne archive est conservée."
-                    )
-                conn.execute(text("DROP TABLE api_response_archive"))
+                inspector = inspect(conn)
+                if inspector.has_table("api_response_archive"):
+                    conn.execute(text("""
+                        INSERT INTO api_request_state (
+                            request_sha256, endpoint, response_sha256, http_status,
+                            daily_limit, daily_remaining, minute_limit,
+                            minute_remaining, retrieved_at
+                        )
+                        SELECT old.request_sha256, old.endpoint, old.response_sha256,
+                               old.http_status, old.daily_limit, old.daily_remaining,
+                               old.minute_limit, old.minute_remaining, old.retrieved_at
+                        FROM api_response_archive AS old
+                        JOIN (
+                            SELECT request_sha256, MAX(id) AS latest_id
+                            FROM api_response_archive
+                            GROUP BY request_sha256
+                        ) AS latest ON latest.latest_id = old.id
+                        WHERE 1
+                        ON CONFLICT(request_sha256) DO UPDATE SET
+                            endpoint = excluded.endpoint,
+                            response_sha256 = excluded.response_sha256,
+                            http_status = excluded.http_status,
+                            daily_limit = excluded.daily_limit,
+                            daily_remaining = excluded.daily_remaining,
+                            minute_limit = excluded.minute_limit,
+                            minute_remaining = excluded.minute_remaining,
+                            retrieved_at = excluded.retrieved_at
+                    """))
+                    expected = conn.execute(text("""
+                        SELECT COUNT(DISTINCT request_sha256) FROM api_response_archive
+                    """)).scalar_one()
+                    migrated = conn.execute(text("""
+                        SELECT COUNT(*) FROM api_request_state
+                        WHERE request_sha256 IN (
+                            SELECT DISTINCT request_sha256 FROM api_response_archive
+                        )
+                    """)).scalar_one()
+                    if migrated != expected:
+                        raise RuntimeError(
+                            "Migration API interrompue : contrôle du nombre d'états migrés invalide. "
+                            "L'ancienne archive est conservée."
+                        )
+                    conn.execute(text("DROP TABLE api_response_archive"))
+        except Exception:
+            # If this attempt created the target table, remove that partial artifact.
+            # Never remove a table that existed before the migration attempt.
+            if not state_existed:
+                with engine.begin() as cleanup:
+                    cleanup.execute(text("DROP TABLE IF EXISTS api_request_state"))
+            raise
         _table_ready = True
 
 
