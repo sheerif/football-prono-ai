@@ -74,8 +74,8 @@ def _draw_decision_sweep(
                 ]
                 predicted = max(range(3), key=probs.__getitem__)
                 if (
-                    probs[1] >= threshold
-                    and probs[1] >= max(probs[0], probs[2]) - gap
+                    probs[1] + 1e-12 >= threshold
+                    and probs[1] + 1e-12 >= max(probs[0], probs[2]) - gap
                 ):
                     predicted = 1
                 is_correct = predicted == outcome
