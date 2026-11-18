@@ -69,10 +69,7 @@ class GitBackupTests(unittest.TestCase):
                 }.get(name, default)),
                 patch.object(git_backup, "_request", side_effect=request),
                 patch.object(git_backup, "_backup_head", side_effect=backup_head),
-                patch(
-                    "services.database_maintenance.maintain_database",
-                    return_value={"status": "maintained"},
-                ) as maintenance,
+                patch("services.database_maintenance.maintain_database") as maintenance,
             ):
                 result = git_backup.backup_to_github(database_engine=database_engine)
 
@@ -83,7 +80,7 @@ class GitBackupTests(unittest.TestCase):
         self.assertTrue(result["integrity_verified"])
         self.assertTrue(result["gzip_verified"])
         self.assertTrue(result["remote_verified"])
-        maintenance.assert_called_once_with(database_engine=database_engine)
+        maintenance.assert_not_called()
         self.assertEqual(
             [call[0] for call in calls],
             ["POST", "POST", "POST", "POST"],
@@ -141,10 +138,6 @@ class GitBackupTests(unittest.TestCase):
                 ),
                 patch.object(git_backup, "_request", side_effect=request),
                 patch.object(git_backup, "_backup_head", side_effect=backup_head),
-                patch(
-                    "services.database_maintenance.maintain_database",
-                    return_value={"status": "maintained"},
-                ),
             ):
                 result = git_backup.backup_to_github(database_engine=database_engine)
             database_engine.dispose()
@@ -158,28 +151,6 @@ class GitBackupTests(unittest.TestCase):
         self.assertEqual(tree_payload["base_tree"], "old-tree")
         self.assertEqual(commit_payload["parents"], ["old-commit"])
         self.assertFalse(ref_payload["force"])
-
-    def test_maintenance_failure_aborts_before_any_github_write(self):
-        with (
-            patch.object(
-                git_backup,
-                "_setting",
-                side_effect=lambda name, default="": {
-                    "GITHUB_BACKUP_TOKEN": "test-token",
-                    "GITHUB_BACKUP_REPOSITORY": "owner/repository",
-                    "GITHUB_BACKUP_BRANCH": "database-backup",
-                }.get(name, default),
-            ),
-            patch(
-                "services.database_maintenance.maintain_database",
-                return_value={"status": "error"},
-            ),
-            patch.object(git_backup, "_backup_head", return_value=None),
-            patch.object(git_backup, "_request") as request,
-        ):
-            with self.assertRaisesRegex(RuntimeError, "maintenance SQLite non confirmée"):
-                git_backup.backup_to_github()
-            request.assert_not_called()
 
     def test_skips_duplicate_backup_for_utc_day(self):
         today = datetime.now(timezone.utc).strftime(
