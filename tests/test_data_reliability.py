@@ -26,19 +26,19 @@ class DataReliabilityTests(unittest.TestCase):
                     f"INSERT INTO {table} (updated_at) VALUES ('2026-11-17T11:00:00+00:00')"
                 ))
             conn.execute(text("""
-                CREATE TABLE api_response_archive (
-                    id INTEGER PRIMARY KEY, endpoint TEXT, params_json TEXT,
-                    response_json TEXT NOT NULL, response_sha256 TEXT NOT NULL,
-                    http_status INTEGER, retrieved_at TEXT NOT NULL
+                CREATE TABLE api_request_state (
+                    request_sha256 TEXT PRIMARY KEY, endpoint TEXT NOT NULL,
+                    response_sha256 TEXT NOT NULL, http_status INTEGER,
+                    retrieved_at TEXT NOT NULL
                 )
             """))
-            payload = json.dumps({"response": []}, separators=(",", ":"))
-            digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+            request_digest = hashlib.sha256(b"request").hexdigest()
+            response_digest = hashlib.sha256(b"response").hexdigest()
             conn.execute(text("""
-                INSERT INTO api_response_archive
-                (response_json, response_sha256, http_status, retrieved_at)
-                VALUES (:payload, :digest, 200, '2026-11-17T11:00:00+00:00')
-            """), {"payload": payload, "digest": digest})
+                INSERT INTO api_request_state
+                (request_sha256, endpoint, response_sha256, http_status, retrieved_at)
+                VALUES (:request, '/fixtures', :response, 200, '2026-11-17T11:00:00+00:00')
+            """), {"request": request_digest, "response": response_digest})
             conn.execute(text("""
                 CREATE TABLE update_log (id INTEGER PRIMARY KEY, finished_at TEXT)
             """))
@@ -51,7 +51,7 @@ class DataReliabilityTests(unittest.TestCase):
         self.engine.dispose()
         self.temp_dir.cleanup()
 
-    def test_snapshot_reports_counts_and_verified_archive(self):
+    def test_snapshot_reports_counts_and_current_api_request_state(self):
         now = dt.datetime(2026, 11, 17, 12, tzinfo=dt.timezone.utc)
         snapshot = data_reliability.get_reliability_snapshot(now=now)
         self.assertEqual(snapshot["database"]["status"], "healthy")
@@ -86,7 +86,7 @@ class DataReliabilityTests(unittest.TestCase):
             self.assertEqual(table["timestamp_source"], "resource_sync_state (core_season, dernier traitement)")
             self.assertEqual(table["status"], "healthy")
 
-    def test_uses_endpoint_specific_archive_timestamp(self):
+    def test_uses_endpoint_specific_request_state_timestamp(self):
         with self.engine.begin() as conn:
             for table in ("leagues", "teams", "matches", "standings"):
                 conn.execute(text(f"DROP TABLE {table}"))
@@ -94,18 +94,17 @@ class DataReliabilityTests(unittest.TestCase):
                 conn.execute(text(f"INSERT INTO {table} DEFAULT VALUES"))
             for endpoint in ("/leagues", "/teams", "/fixtures", "/standings"):
                 conn.execute(text("""
-                    INSERT INTO api_response_archive
-                    (endpoint, params_json, response_json, response_sha256,
-                     http_status, retrieved_at)
-                    VALUES (:endpoint, '{}', '{}', :digest, 200,
+                    INSERT INTO api_request_state
+                    (request_sha256, endpoint, response_sha256, http_status, retrieved_at)
+                    VALUES (:request, :endpoint, :digest, 200,
                             '2026-11-17T11:45:00+00:00')
-                """), {"endpoint": endpoint, "digest": hashlib.sha256(b"{}").hexdigest()})
+                """), {"request": hashlib.sha256(endpoint.encode()).hexdigest(), "endpoint": endpoint, "digest": hashlib.sha256(b"{}").hexdigest()})
         snapshot = data_reliability.get_reliability_snapshot(
             now=dt.datetime(2026, 11, 17, 12, tzinfo=dt.timezone.utc)
         )
         for table in snapshot["tables"]:
             self.assertEqual(table["last_updated_at"], "2026-11-17T11:45:00+00:00")
-            self.assertEqual(table["timestamp_source"], "api_response_archive (endpoint)")
+            self.assertEqual(table["timestamp_source"], "api_request_state (endpoint)")
             self.assertEqual(table["status"], "healthy")
 
     def test_incomplete_core_sync_scopes_prevent_healthy_table_status(self):
@@ -131,7 +130,7 @@ class DataReliabilityTests(unittest.TestCase):
 
     def test_archive_tampering_is_critical(self):
         with self.engine.begin() as conn:
-            conn.execute(text("UPDATE api_response_archive SET response_sha256 = 'bad'"))
+            conn.execute(text("UPDATE api_request_state SET response_sha256 = 'bad'"))
         snapshot = data_reliability.get_reliability_snapshot(
             now=dt.datetime(2026, 11, 17, 12, tzinfo=dt.timezone.utc)
         )

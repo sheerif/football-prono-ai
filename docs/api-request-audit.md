@@ -72,3 +72,21 @@ déploiement.
 - Les actions explicitement forcées par l'utilisateur peuvent légitimement
   redemander une donnée déjà présente. Elles doivent rester clairement
   identifiées dans l'interface.
+
+
+## Registre technique des requêtes
+
+Le registre `api_request_state` conserve un seul état courant par empreinte
+endpoint + paramètres : empreinte de requête, empreinte de réponse, statut HTTP,
+compteurs de quota et horodatage. Les payloads JSON et les versions précédentes
+ne sont pas conservés dans ce registre.
+
+Lors d'une migration depuis `api_response_archive`, l'ancienne table n'est
+supprimée qu'après vérification des colonnes requises, des lignes sources et du
+nombre d'empreintes distinctes transférées. Si le schéma est incomplet ou si une
+ligne source est invalide, la transaction est annulée et l'archive historique
+reste disponible.
+
+Le contrôle de fiabilité vérifie le format des empreintes et les statuts HTTP.
+Il ne prétend pas vérifier le contenu des réponses, puisque les payloads bruts
+ne sont volontairement plus conservés.
