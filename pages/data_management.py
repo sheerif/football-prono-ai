@@ -181,6 +181,31 @@ def _render_storage_status() -> None:
             )
 
 
+def _format_informational_timestamp(value, *, label="Message généré") -> str:
+    """Format a timestamp locally so the page does not depend on a stale UI module."""
+    if not value:
+        return ""
+    try:
+        timestamp = dt.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=dt.timezone.utc)
+        timestamp = timestamp.astimezone(ZoneInfo("Europe/Paris"))
+    except (TypeError, ValueError):
+        return ""
+    return f"{label} le {timestamp:%d/%m/%Y à %H:%M} (heure de Paris)."
+
+
+def _quota_metadata_for_job(job: dict, metadata: dict | None = None) -> dict:
+    """Use the job canonical progress for both the bar and quota notice."""
+    result = dict(metadata or {})
+    progress = job.get("progress")
+    if progress is not None:
+        try:
+            result["progress"] = max(0.0, min(100.0, float(progress) * 100.0))
+        except (TypeError, ValueError):
+            pass
+    return result
+
 def _format_datetime(value):
     timestamp = pd.to_datetime(value, errors="coerce")
     if pd.isna(timestamp):
@@ -252,7 +277,7 @@ def _render_api_quota_status():
             refusal_label = "Quota API quotidien épuisé."
         else:
             refusal_label = "L’API a refusé le contrôle du quota."
-        refusal_timestamp = ui.format_informational_timestamp(
+        refusal_timestamp = _format_informational_timestamp(
             quota.get("checked_at"), label="État vérifié"
         )
         st.warning(
@@ -264,7 +289,7 @@ def _render_api_quota_status():
             metadata = wait_state.get("metadata") or {}
             st.info(
                 _quota_wait_message(
-                    metadata,
+                    _quota_metadata_for_job(wait_state, metadata),
                     automatic=True,
                     fallback_message=wait_state.get("message") or "",
                 )
@@ -486,7 +511,7 @@ def _render_jobs():
             if details.get("quota_reached") and details.get("next_retry_at"):
                 st.warning(
                     _quota_wait_message(
-                        details,
+                        _quota_metadata_for_job(job, details),
                         automatic=bool(details.get("automatic_resume")),
                         fallback_message=job.get("message") or "",
                     )
