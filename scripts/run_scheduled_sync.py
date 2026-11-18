@@ -17,7 +17,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from database.database import engine
-from services import background_jobs, full_sync_service, import_service, sync_registry
+from services import background_jobs, full_sync_service, git_backup, import_service, prediction_archive_service, sync_registry
 
 
 CONTROL_KEY = "full-sync:exhaustive"
@@ -43,6 +43,16 @@ def run() -> dict:
     previous = sync_registry.get(CONTROL_KEY)
     if _recent_running_job(previous):
         return {"status": "skipped", "reason": "synchronisation déjà active"}
+
+    try:
+        pre_match_archive = prediction_archive_service.archive_upcoming_predictions()
+    except Exception as exc:
+        pre_match_archive = {
+            "status": "error",
+            "archived": 0,
+            "api_calls": 0,
+            "errors": [str(exc)],
+        }
 
     started_at = _now().isoformat()
     attempt = int((previous or {}).get("attempts") or 0) + 1
@@ -75,6 +85,7 @@ def run() -> dict:
             "started_at": started_at,
             "next_retry_at": retry_at.isoformat(),
             "quota_preflight": quota_status,
+            "pre_match_archive": pre_match_archive,
         }
         sync_registry.mark(
             CONTROL_KEY,
@@ -90,7 +101,7 @@ def run() -> dict:
             reason=message,
             details=metadata,
         )
-        return {"status": "waiting_quota", **metadata}
+        return {"status": "waiting_quota", **metadata, "pre_match_archive": pre_match_archive}
 
     sync_registry.mark(
         CONTROL_KEY,
@@ -140,6 +151,7 @@ def run() -> dict:
             "next_retry_at": next_midnight.isoformat(),
             "checkpoint": result.get("checkpoint"),
             "api_calls": int(result.get("api_calls") or 0),
+            "pre_match_archive": pre_match_archive,
         }
     else:
         partial = bool(result.get("partial") or result.get("errors"))
@@ -157,6 +169,7 @@ def run() -> dict:
             "api_calls": int(result.get("api_calls") or 0),
             "xg_api_calls": int(result.get("xg_api_calls") or 0),
             "xg_budget_reserved": bool(result.get("xg_budget_reserved")),
+            "pre_match_archive": pre_match_archive,
         }
 
     sync_registry.mark(
@@ -173,18 +186,35 @@ def run() -> dict:
         reason=message,
         details=metadata,
     )
-    return {"status": status, **metadata}
+    return {"status": status, **metadata, "pre_match_archive": pre_match_archive}
 
 
 def main() -> int:
     try:
         result = run()
+        backup = (
+            {"status": "skipped_active_sync"}
+            if result.get("status") == "skipped"
+            else git_backup.backup_to_github(force=True)
+        )
+        result["database_backup"] = backup
         print(
             "Synchronisation planifiée : "
             f"{result.get('status')} · "
-            f"{int(result.get('api_calls') or 0)} appel(s) API"
+            f"{int(result.get('api_calls') or 0)} appel(s) API · "
+            f"archivage pré-match : "
+            f"{int((result.get('pre_match_archive') or {}).get('archived') or 0)} "
+            "prévision(s) · "
+            f"sauvegarde : {backup.get('status', 'unknown')}"
         )
+        if backup.get("status") not in {
+            "uploaded", "unchanged", "not_configured", "skipped_active_sync"
+        }:
+            return 1
         return 0
+    except Exception as exc:
+        print(f"Échec de la synchronisation planifiée : {exc}", file=sys.stderr)
+        return 1
     finally:
         engine.dispose()
 

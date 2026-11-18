@@ -3,7 +3,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from pages import data_management, matchs_a_venir
-from services import background_jobs, full_sync_service
+from services import background_jobs, full_sync_service, prediction_archive_service
 
 
 class PredictionSyncTests(unittest.TestCase):
@@ -129,6 +129,34 @@ class PredictionSyncTests(unittest.TestCase):
         self.assertTrue(first_created)
         self.assertFalse(second_created)
         self.assertEqual(first, second)
+
+    def test_background_archive_result_is_kept_in_job_details(self):
+        archive = {
+            "status": "complete",
+            "archived": 3,
+            "api_calls": 0,
+        }
+        jobs = {
+            "job-1": {
+                "id": "job-1",
+                "kind": "prediction_sync",
+                "status": "running",
+                "details": {"days": 7},
+            }
+        }
+        with (
+            patch.object(background_jobs, "_jobs", jobs),
+            patch.object(
+                prediction_archive_service,
+                "archive_upcoming_predictions",
+                return_value=archive,
+            ),
+        ):
+            result = background_jobs._archive_pre_match_predictions("job-1")
+
+        self.assertEqual(result, archive)
+        self.assertEqual(jobs["job-1"]["details"]["days"], 7)
+        self.assertEqual(jobs["job-1"]["details"]["pre_match_archive"], archive)
 
     def test_update_page_refreshes_stale_prediction_services(self):
         starter = Mock(return_value="prediction-job")

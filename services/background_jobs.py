@@ -80,6 +80,23 @@ def _backup_after_data_job(job_id: str):
         _set_job(job_id, backup_status="error", backup_error=str(exc))
 
 
+def _archive_pre_match_predictions(job_id: str) -> dict:
+    """Archive les prévisions internes avant quota/API, sans appel externe."""
+    try:
+        from services import prediction_archive_service
+
+        result = prediction_archive_service.archive_upcoming_predictions()
+    except Exception as exc:
+        result = {"status": "error", "archived": 0, "api_calls": 0, "errors": [str(exc)]}
+    with _lock:
+        job = _jobs.get(job_id)
+        if job is not None:
+            details = dict(job.get("details") or {})
+            details["pre_match_archive"] = result
+            job["details"] = details
+    return result
+
+
 def _create_job(kind: str, label: str, details: dict | None = None) -> str:
     job_id = str(uuid.uuid4())
     with _lock:
@@ -695,6 +712,7 @@ def start_prediction_sync(days: int | None = None) -> str:
 
         started_at = _now()
         try:
+            archive_result = _archive_pre_match_predictions(job_id)
             if not _preflight_api_quota(job_id):
                 return
             result = full_sync_service.sync_all_upcoming_predictions(
@@ -719,7 +737,7 @@ def start_prediction_sync(days: int | None = None) -> str:
                 status="partial" if quota_reached else "done",
                 message=message,
                 finished_at=_now(),
-                details={**result, **quota_details},
+                details={**result, **quota_details, "pre_match_archive": archive_result},
                 **_result_metrics(result),
                 **({"progress": 1.0} if not quota_reached else {}),
             )
@@ -862,6 +880,7 @@ def start_full_sync(*, resumed: bool = False) -> str:
                 message=f"Synchronisation exhaustive · passage {attempt}",
                 error=None,
             )
+            archive_result = _archive_pre_match_predictions(job_id)
             quota_status = api_quota_status(force=True)
             _set_job(job_id, quota_preflight=quota_status)
             if _quota_is_exhausted(quota_status):
