@@ -151,6 +151,7 @@ def run() -> dict:
             "next_retry_at": next_midnight.isoformat(),
             "checkpoint": result.get("checkpoint"),
             "api_calls": int(result.get("api_calls") or 0),
+            "pre_match_archive": pre_match_archive,
         }
     else:
         partial = bool(result.get("partial") or result.get("errors"))
