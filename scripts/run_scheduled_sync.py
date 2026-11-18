@@ -17,7 +17,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from database.database import engine
-from services import background_jobs, full_sync_service, import_service, sync_registry
+from services import background_jobs, full_sync_service, import_service, prediction_archive_service, sync_registry
 
 
 CONTROL_KEY = "full-sync:exhaustive"
@@ -43,6 +43,16 @@ def run() -> dict:
     previous = sync_registry.get(CONTROL_KEY)
     if _recent_running_job(previous):
         return {"status": "skipped", "reason": "synchronisation déjà active"}
+
+    try:
+        pre_match_archive = prediction_archive_service.archive_upcoming_predictions()
+    except Exception as exc:
+        pre_match_archive = {
+            "status": "error",
+            "archived": 0,
+            "api_calls": 0,
+            "errors": [str(exc)],
+        }
 
     started_at = _now().isoformat()
     attempt = int((previous or {}).get("attempts") or 0) + 1
@@ -75,6 +85,7 @@ def run() -> dict:
             "started_at": started_at,
             "next_retry_at": retry_at.isoformat(),
             "quota_preflight": quota_status,
+            "pre_match_archive": pre_match_archive,
         }
         sync_registry.mark(
             CONTROL_KEY,
@@ -90,7 +101,7 @@ def run() -> dict:
             reason=message,
             details=metadata,
         )
-        return {"status": "waiting_quota", **metadata}
+        return {"status": "waiting_quota", **metadata, "pre_match_archive": pre_match_archive}
 
     sync_registry.mark(
         CONTROL_KEY,
@@ -157,6 +168,7 @@ def run() -> dict:
             "api_calls": int(result.get("api_calls") or 0),
             "xg_api_calls": int(result.get("xg_api_calls") or 0),
             "xg_budget_reserved": bool(result.get("xg_budget_reserved")),
+            "pre_match_archive": pre_match_archive,
         }
 
     sync_registry.mark(
@@ -173,7 +185,7 @@ def run() -> dict:
         reason=message,
         details=metadata,
     )
-    return {"status": status, **metadata}
+    return {"status": status, **metadata, "pre_match_archive": pre_match_archive}
 
 
 def main() -> int:
