@@ -76,8 +76,8 @@ def archive_upcoming_predictions(
             FROM matches m
             LEFT JOIN teams home ON home.id = m.home_team_id
             LEFT JOIN teams away ON away.id = m.away_team_id
-            WHERE m.date > :now
-              AND m.date <= :horizon
+            WHERE datetime(m.date) > datetime(:now)
+              AND datetime(m.date) <= datetime(:horizon)
               AND m.home_goals IS NULL
               AND m.away_goals IS NULL
             ORDER BY m.date ASC, m.fixture_id ASC
@@ -101,13 +101,23 @@ def archive_upcoming_predictions(
         "reference_time": reference.isoformat(),
     }
     total = len(rows)
-    for index, fixture in rows.iterrows():
+
+    def report_progress(index: int) -> None:
+        if progress_callback:
+            progress_callback(
+                index,
+                max(1, total),
+                f"Archivage pré-match : {index}/{total}",
+            )
+
+    for index, fixture in enumerate(rows.to_dict("records"), start=1):
         fixture_id = int(fixture["fixture_id"])
         kickoff = _utc_datetime(fixture["date"])
         # Recheck immediately before the calculation: a queued fixture may
         # have crossed kickoff after the SQL snapshot was read.
         if kickoff <= recheck_time:
             summary["skipped_started"] += 1
+            report_progress(index)
             continue
         try:
             historical = prediction_helpers.load_historical_context(
@@ -116,6 +126,7 @@ def archive_upcoming_predictions(
             )
             if len(historical) < minimum_history:
                 summary["skipped_insufficient_history"] += 1
+                report_progress(index)
                 continue
 
             final = final_prediction_service.calculate(
@@ -168,12 +179,7 @@ def archive_upcoming_predictions(
             summary["archived"] += 1
         except Exception as exc:
             summary["errors"].append(f"fixture:{fixture_id}: {exc}")
-        if progress_callback:
-            progress_callback(
-                index + 1,
-                max(1, total),
-                f"Archivage pré-match : {index + 1}/{total}",
-            )
+        report_progress(index)
 
     if summary["errors"]:
         summary["status"] = "partial"
