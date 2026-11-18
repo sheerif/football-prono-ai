@@ -59,6 +59,7 @@ def archive_upcoming_predictions(
     minimum_history = max(1, int(min_history_matches))
     fixture_limit = max(1, int(max_fixtures))
     horizon = reference + datetime.timedelta(days=horizon_days)
+    recheck_time = _utc_datetime() if now is None else reference
     source_engine = db_engine or engine
     params = {
         "now": reference.replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S"),
@@ -105,7 +106,7 @@ def archive_upcoming_predictions(
         kickoff = _utc_datetime(fixture["date"])
         # Recheck immediately before the calculation: a queued fixture may
         # have crossed kickoff after the SQL snapshot was read.
-        if kickoff <= _utc_datetime():
+        if kickoff <= recheck_time:
             summary["skipped_started"] += 1
             continue
         try:
