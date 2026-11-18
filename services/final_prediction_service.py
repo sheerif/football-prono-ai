@@ -203,15 +203,17 @@ def _historical_context_before_reference(
     if pd.isna(reference):
         reference = pd.Timestamp.now(tz="UTC")
     dates = pd.to_datetime(matches_df["date"], errors="coerce", utc=True)
-    completed = matches_df.loc[
+    eligible = (
         dates.notna()
         & dates.lt(reference)
         & matches_df["home_goals"].notna()
         & matches_df["away_goals"].notna()
-    ].copy()
-    return completed.sort_values(
-        ["date"], ascending=True, kind="stable"
     )
+    completed = matches_df.loc[eligible].copy()
+    completed["_prediction_reference_date"] = dates.loc[eligible]
+    return completed.sort_values(
+        "_prediction_reference_date", ascending=True, kind="stable"
+    ).drop(columns=["_prediction_reference_date"])
 
 def calculate(
     matches_df: pd.DataFrame,
