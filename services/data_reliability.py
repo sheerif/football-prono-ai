@@ -88,6 +88,26 @@ def _core_sync_freshness(connection, inspector) -> dict | None:
             "status_counts": counts}
 
 
+def _latest_api_retrieval(connection, inspector, table_name: str):
+    """Find the latest successful archived response for this table's API endpoint."""
+    if not inspector.has_table("api_response_archive"):
+        return None
+    endpoints = {
+        "leagues": ("/leagues",),
+        "teams": ("/teams",),
+        "matches": ("/fixtures",),
+        "standings": ("/standings",),
+    }.get(table_name, ())
+    if not endpoints:
+        return None
+    placeholders = ", ".join(f":endpoint_{index}" for index in range(len(endpoints)))
+    params = {f"endpoint_{index}": endpoint for index, endpoint in enumerate(endpoints)}
+    return connection.execute(text(
+        "SELECT MAX(retrieved_at) FROM api_response_archive "
+        f"WHERE endpoint IN ({placeholders}) AND http_status >= 200 AND http_status < 300"
+    ), params).scalar()
+
+
 def _table_check(
     connection, inspector, table_name: str, now: dt.datetime,
     core_sync: dict | None = None,
@@ -106,9 +126,14 @@ def _table_check(
             ("updated_at", "retrieved_at", "finished_at", "created_at"),
         )
         timestamp_source = "table"
+        if last_updated is None:
+            api_retrieved_at = _latest_api_retrieval(connection, inspector, table_name)
+            if api_retrieved_at is not None:
+                last_updated = api_retrieved_at
+                timestamp_source = "api_response_archive (endpoint)"
         if last_updated is None and core_sync and core_sync.get("last_updated_at"):
             last_updated = core_sync["last_updated_at"]
-            timestamp_source = "resource_sync_state (core_season)"
+            timestamp_source = "resource_sync_state (core_season, dernier traitement)"
         age = _age_seconds(last_updated, now)
         status = _freshness_status(age, 24, 72) if last_updated is not None else "unknown"
         sync_counts = (core_sync or {}).get("status_counts") or {}
