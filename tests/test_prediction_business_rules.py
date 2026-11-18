@@ -5,6 +5,7 @@ import pandas as pd
 
 from services import (
     cross_insight_service,
+    draw_calibration_service,
     final_prediction_service,
     lineup_service,
     prediction_helpers,
@@ -756,6 +757,19 @@ class PredictionBusinessRuleTests(unittest.TestCase):
             result["probabilities"]["home_probability"]
             + result["probabilities"]["draw_probability"]
             + result["probabilities"]["away_probability"],
+            100.0,
+            places=2,
+        )
+        calibrated, metadata = draw_calibration_service.calibrate_score_prediction(
+            result
+        )
+        self.assertTrue(metadata["applied"])
+        self.assertEqual(
+            metadata["score_grid_version"],
+            "independent-poisson-adaptive-tail-v2",
+        )
+        self.assertAlmostEqual(
+            sum(row["Probabilité"] for row in calibrated["matrix"]),
             100.0,
             places=2,
         )
