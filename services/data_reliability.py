@@ -92,6 +92,9 @@ def _latest_api_retrieval(connection, inspector, table_name: str):
     """Find the latest successful archived response for this table's API endpoint."""
     if not inspector.has_table("api_response_archive"):
         return None
+    archive_columns = _table_columns(inspector, "api_response_archive")
+    if not {"endpoint", "retrieved_at", "http_status"}.issubset(archive_columns):
+        return None
     endpoints = {
         "leagues": ("/leagues",),
         "teams": ("/teams",),
