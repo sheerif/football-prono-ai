@@ -118,14 +118,26 @@ def _backup_head(root: str, branch: str, token: str) -> dict | None:
     commit = _request("GET", f"{root}/git/commits/{commit_sha}", token)
     tree_sha = commit["tree"]["sha"]
     tree = _request("GET", f"{root}/git/trees/{tree_sha}", token)
-    archive = next(
-        (entry for entry in tree.get("tree", []) if entry.get("path") == "football.db.gz"),
-        None,
-    )
+    entries = tree.get("tree", [])
+    archive = next((entry for entry in entries if entry.get("path") == "football.db.gz"), None)
+    manifest = next((entry for entry in entries if entry.get("path") == "football.db.manifest.json"), None)
+    parts = {
+        entry["path"]: entry.get("sha")
+        for entry in entries if entry.get("path", "").startswith("football.db.gz.part-")
+    }
+    archive_paths = [
+        entry["path"] for entry in entries
+        if entry.get("path") == "football.db.gz"
+        or entry.get("path") == "football.db.manifest.json"
+        or entry.get("path", "").startswith("football.db.gz.part-")
+    ]
     return {
         "commit_sha": commit_sha,
         "tree_sha": tree_sha,
         "blob_sha": archive.get("sha") if archive else None,
+        "manifest_sha": manifest.get("sha") if manifest else None,
+        "part_shas": parts,
+        "archive_paths": archive_paths,
         "committed_at": (commit.get("committer") or {}).get("date"),
     }
 
@@ -181,28 +193,84 @@ def backup_to_github(*, database_engine=engine, force: bool = False) -> dict:
             archive_path = Path(temp_dir) / "football.db.gz"
             _create_database_archive(database_engine, archive_path)
             archive_bytes = archive_path.read_bytes()
-            if head and head.get("blob_sha") == _git_blob_sha(archive_bytes):
-                return {
-                    "status": "unchanged",
-                    "repository": repository,
-                    "branch": branch,
-                    "integrity_verified": True,
-                    "gzip_verified": True,
-                    "gzip_verified": True,
-                }
-            content = base64.b64encode(archive_bytes).decode("ascii")
-            blob = _request(
-                "POST", f"{root}/git/blobs", token,
-                {"content": content, "encoding": "base64"},
-            )
-            tree_payload = {
-                "tree": [{
-                    "path": "football.db.gz",
-                    "mode": "100644",
-                    "type": "blob",
-                    "sha": blob["sha"],
+            chunk_size = 8 * 1024 * 1024
+            use_chunks = len(archive_bytes) > chunk_size
+            expected_part_shas = {}
+            manifest_sha = None
+            if use_chunks:
+                parts = [
+                    archive_bytes[offset:offset + chunk_size]
+                    for offset in range(0, len(archive_bytes), chunk_size)
+                ]
+                tree_entries = []
+                manifest_parts = []
+                for index, part in enumerate(parts, start=1):
+                    part_path = f"football.db.gz.part-{index:04d}"
+                    part_sha = _git_blob_sha(part)
+                    expected_part_shas[part_path] = part_sha
+                    blob = _request(
+                        "POST", f"{root}/git/blobs", token,
+                        {"content": base64.b64encode(part).decode("ascii"), "encoding": "base64"},
+                    )
+                    if blob.get("sha") != part_sha:
+                        raise RuntimeError("Empreinte d'un fragment de sauvegarde incohérente.")
+                    tree_entries.append({
+                        "path": part_path, "mode": "100644", "type": "blob", "sha": part_sha,
+                    })
+                    manifest_parts.append({
+                        "path": part_path, "size_bytes": len(part), "git_blob_sha": part_sha,
+                    })
+                manifest_bytes = json.dumps(
+                    {
+                        "format": 1,
+                        "archive": "football.db.gz",
+                        "size_bytes": len(archive_bytes),
+                        "sha256": hashlib.sha256(archive_bytes).hexdigest(),
+                        "parts": manifest_parts,
+                    },
+                    sort_keys=True, separators=(",", ":"),
+                ).encode("utf-8")
+                manifest_sha = _git_blob_sha(manifest_bytes)
+                manifest_blob = _request(
+                    "POST", f"{root}/git/blobs", token,
+                    {"content": base64.b64encode(manifest_bytes).decode("ascii"), "encoding": "base64"},
+                )
+                if manifest_blob.get("sha") != manifest_sha:
+                    raise RuntimeError("Empreinte du manifeste de sauvegarde incohérente.")
+                tree_entries.append({
+                    "path": "football.db.manifest.json", "mode": "100644",
+                    "type": "blob", "sha": manifest_sha,
+                })
+                current_paths = {entry["path"] for entry in tree_entries}
+                if head:
+                    tree_entries.extend(
+                        {"path": path, "mode": "100644", "type": "blob", "sha": None}
+                        for path in head.get("archive_paths", []) if path not in current_paths
+                    )
+                if head and head.get("manifest_sha") == manifest_sha:
+                    return {
+                        "status": "unchanged", "repository": repository, "branch": branch,
+                        "integrity_verified": True, "gzip_verified": True,
+                    }
+            else:
+                if head and head.get("blob_sha") == _git_blob_sha(archive_bytes):
+                    return {
+                        "status": "unchanged", "repository": repository, "branch": branch,
+                        "integrity_verified": True, "gzip_verified": True,
+                    }
+                blob = _request(
+                    "POST", f"{root}/git/blobs", token,
+                    {"content": base64.b64encode(archive_bytes).decode("ascii"), "encoding": "base64"},
+                )
+                tree_entries = [{
+                    "path": "football.db.gz", "mode": "100644", "type": "blob", "sha": blob["sha"],
                 }]
-            }
+                if head:
+                    tree_entries.extend(
+                        {"path": path, "mode": "100644", "type": "blob", "sha": None}
+                        for path in head.get("archive_paths", []) if path != "football.db.gz"
+                    )
+            tree_payload = {"tree": tree_entries}
             if head:
                 tree_payload["base_tree"] = head["tree_sha"]
             tree = _request("POST", f"{root}/git/trees", token, tree_payload)
@@ -228,10 +296,19 @@ def backup_to_github(*, database_engine=engine, force: bool = False) -> dict:
                 )
             verified_head = _backup_head(root, branch, token)
             expected_blob_sha = _git_blob_sha(archive_bytes)
+            remote_archive_matches = (
+                verified_head
+                and (
+                    verified_head.get("manifest_sha") == manifest_sha
+                    and verified_head.get("part_shas") == expected_part_shas
+                    if use_chunks
+                    else verified_head.get("blob_sha") == expected_blob_sha
+                )
+            )
             if (
                 not verified_head
                 or verified_head.get("commit_sha") != commit["sha"]
-                or verified_head.get("blob_sha") != expected_blob_sha
+                or not remote_archive_matches
             ):
                 raise RuntimeError(
                     "Sauvegarde envoyée mais vérification distante échouée : "
