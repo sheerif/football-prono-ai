@@ -31,6 +31,19 @@ requête HTTP supplémentaire et les limites par minute restent surveillées.
 | `/fixtures/players` | Performances individuelles | statistiques déjà présentes | Match complet ignoré. Indisponibilité récente temporisée. |
 | `/players` | Profils et statistiques paginés | périmètre ligue/saison enregistré comme complet | La synchronisation exhaustive ignore un périmètre complet. Le bouton manuel reste une demande explicite de rafraîchissement. |
 
+## Stockage technique des réponses
+
+Les payloads JSON bruts ne sont pas conservés dans une archive cumulative. Le
+registre `api_request_state` garde uniquement le dernier état par combinaison
+endpoint + paramètres : empreinte de requête, empreinte de réponse, statut HTTP,
+compteurs de quota et horodatage. Une nouvelle réponse remplace la précédente.
+Les corps JSON et les anciennes versions sont exclus de ce registre.
+
+À l'initialisation, les installations existantes migrent le dernier état de
+chaque requête depuis `api_response_archive`, puis suppriment cette ancienne
+table volumineuse. Les données métier déjà importées dans les tables principales
+ne sont pas supprimées par cette migration.
+
 ## Anomalies constatées et corrigées
 
 1. L'import appelait `/leagues` avant de constater qu'une saison historique
