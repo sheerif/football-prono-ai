@@ -59,25 +59,25 @@ def _set_job(job_id: str, **updates):
 
 
 def _backup_after_data_job(job_id: str):
-    """Maintain SQLite and publish a snapshot after a data task or quota pause."""
-    try:
-        from services.database_maintenance import maintain_database
-        maintenance = maintain_database()
-        _set_job(job_id, database_maintenance=maintenance)
-    except Exception as exc:
-        _set_job(job_id, database_maintenance_error=str(exc))
-
+    """Publish only through the central maintenance-and-verification pipeline."""
     try:
         from services.git_backup import backup_to_github
 
         result = backup_to_github()
         _set_job(
             job_id,
+            database_maintenance=result.get("maintenance"),
             backup_status=result.get("status", "unknown"),
             backup=result,
         )
     except Exception as exc:
-        _set_job(job_id, backup_status="error", backup_error=str(exc))
+        # backup_to_github fails closed: no upload occurs if maintenance,
+        # SQLite integrity, GZIP validation, or remote verification fails.
+        _set_job(
+            job_id,
+            backup_status="error",
+            backup_error=str(exc),
+        )
 
 
 def _archive_pre_match_predictions(job_id: str) -> dict:
