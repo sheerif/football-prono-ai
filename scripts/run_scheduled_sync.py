@@ -17,7 +17,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from database.database import engine
-from services import background_jobs, full_sync_service, import_service, prediction_archive_service, sync_registry
+from services import background_jobs, full_sync_service, git_backup, import_service, prediction_archive_service, sync_registry
 
 
 CONTROL_KEY = "full-sync:exhaustive"
@@ -192,12 +192,23 @@ def run() -> dict:
 def main() -> int:
     try:
         result = run()
+        backup = git_backup.backup_to_github(force=True)
+        result["database_backup"] = backup
         print(
             "Synchronisation planifiée : "
             f"{result.get('status')} · "
-            f"{int(result.get('api_calls') or 0)} appel(s) API"
+            f"{int(result.get('api_calls') or 0)} appel(s) API · "
+            f"archivage pré-match : "
+            f"{int((result.get('pre_match_archive') or {}).get('archived') or 0)} "
+            "prévision(s) · "
+            f"sauvegarde : {backup.get('status', 'unknown')}"
         )
+        if backup.get("status") not in {"uploaded", "unchanged", "not_configured"}:
+            return 1
         return 0
+    except Exception as exc:
+        print(f"Échec de la synchronisation planifiée : {exc}", file=sys.stderr)
+        return 1
     finally:
         engine.dispose()
 
