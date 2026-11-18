@@ -602,6 +602,7 @@ def _render_reliability_engine() -> None:
             "État": labels.get(item.get("status"), "INCONNU"),
             "Dernière donnée": _format_utc_datetime(item.get("last_updated_at")),
             "Âge": age_label,
+            "Source horodatage": item.get("timestamp_source") or "Aucune",
             "Diagnostic": item.get("message"),
         })
     if table_rows:
