@@ -99,6 +99,44 @@ class ScheduledSyncTests(unittest.TestCase):
         self.assertEqual(result["pre_match_archive"], archive)
         run_full_sync.assert_not_called()
 
+    def test_scheduled_entrypoint_persists_database_after_sync(self):
+        with (
+            patch.object(
+                run_scheduled_sync,
+                "run",
+                return_value={
+                    "status": "complete",
+                    "api_calls": 4,
+                    "pre_match_archive": {"archived": 3},
+                },
+            ),
+            patch.object(
+                run_scheduled_sync.git_backup,
+                "backup_to_github",
+                return_value={"status": "uploaded"},
+            ) as backup,
+            patch.object(run_scheduled_sync.engine, "dispose") as dispose,
+        ):
+            result = run_scheduled_sync.main()
+
+        self.assertEqual(result, 0)
+        backup.assert_called_once_with(force=True)
+        dispose.assert_called_once()
+
+    def test_scheduled_entrypoint_fails_when_database_backup_fails(self):
+        with (
+            patch.object(run_scheduled_sync, "run", return_value={"status": "complete"}),
+            patch.object(
+                run_scheduled_sync.git_backup,
+                "backup_to_github",
+                return_value={"status": "error"},
+            ),
+            patch.object(run_scheduled_sync.engine, "dispose"),
+        ):
+            result = run_scheduled_sync.main()
+
+        self.assertEqual(result, 1)
+
     def test_scheduler_defers_without_data_calls_when_quota_is_exhausted(self):
         marks = []
         with (
