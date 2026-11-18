@@ -7,8 +7,6 @@ jamais des compteurs à zéro.
 from __future__ import annotations
 
 import datetime as dt
-import hashlib
-import json
 
 from sqlalchemy import inspect, text
 
@@ -105,46 +103,53 @@ def _table_check(connection, inspector, table_name: str, now: dt.datetime) -> di
 
 
 def _archive_integrity(connection, inspector) -> dict:
-    table = "api_response_archive"
+    """Check the compact latest-state ledger; response bodies are never retained."""
+    table = "api_request_state"
     if not inspector.has_table(table):
-        return {"status": "unknown", "checked": 0, "valid": None, "invalid": None,
-                "latest_retrieved_at": None, "message": "Archive API absente."}
-    rows = connection.execute(text(
-        "SELECT response_json, response_sha256, http_status, retrieved_at "
-        "FROM api_response_archive ORDER BY id DESC LIMIT :limit"
-    ), {"limit": ARCHIVE_SAMPLE_SIZE}).mappings().all()
+        return {
+            "status": "unknown", "checked": 0, "valid": None, "invalid": None,
+            "latest_retrieved_at": None, "message": "Suivi des requêtes API absent.",
+        }
+    rows = connection.execute(text("""
+        SELECT request_sha256, response_sha256, http_status, retrieved_at
+        FROM api_request_state
+    """)).mappings().all()
     if not rows:
-        return {"status": "unknown", "checked": 0, "valid": None, "invalid": None,
-                "latest_retrieved_at": None, "message": "Aucune réponse API archivée."}
+        return {
+            "status": "unknown", "checked": 0, "valid": None, "invalid": None,
+            "latest_retrieved_at": None, "message": "Aucune requête API suivie.",
+        }
     valid = 0
     invalid = 0
     http_failures = 0
+    latest = None
     for row in rows:
         if row["http_status"] is not None and not 200 <= int(row["http_status"]) < 300:
             http_failures += 1
-        raw = row["response_json"]
-        try:
-            json.loads(raw)
-            digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()
-            if digest == row["response_sha256"]:
-                valid += 1
-            else:
-                invalid += 1
-        except (TypeError, ValueError, AttributeError):
+        hashes = (row["request_sha256"], row["response_sha256"])
+        if all(
+            isinstance(value, str)
+            and len(value) == 64
+            and all(char in "0123456789abcdef" for char in value.lower())
+            for value in hashes
+        ):
+            valid += 1
+        else:
             invalid += 1
+        retrieved_at = str(row["retrieved_at"] or "")
+        if latest is None or retrieved_at > latest:
+            latest = retrieved_at
     status = "critical" if invalid else "warning" if http_failures else "healthy"
     return {
         "status": status, "checked": len(rows), "valid": valid, "invalid": invalid,
         "http_failures": http_failures,
-        "latest_retrieved_at": rows[0]["retrieved_at"],
-        "latest_http_status": rows[0]["http_status"],
+        "latest_retrieved_at": latest,
         "message": (
-            "Réponses altérées ou illisibles détectées." if invalid
-            else "Réponses API en erreur présentes dans l'archive." if http_failures
-            else "Intégrité vérifiée."
+            "Empreintes techniques invalides détectées." if invalid
+            else "Des requêtes API ont renvoyé une erreur HTTP." if http_failures
+            else "État des dernières requêtes vérifié."
         ),
     }
-
 
 def get_reliability_snapshot(*, now: dt.datetime | None = None) -> dict:
     """Return a read-only, explainable health snapshot without hiding failures."""
