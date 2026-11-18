@@ -86,6 +86,26 @@ jobs:
                   out.write(f"- Exactitude 1/N/2 : {metrics.get('accuracy_1n2')}\n")
                   out.write(f"- Brier : {metrics.get('brier_score')}\n")
                   out.write(f"- Log Loss : {metrics.get('log_loss')}\n")
+                  sweep = sorted(
+                      metrics.get("draw_decision_sweep", []),
+                      key=lambda item: (
+                          item.get("draw_f1") or 0,
+                          item.get("accuracy_1n2") or 0,
+                      ),
+                      reverse=True,
+                  )[:5]
+                  out.write("\n### Diagnostic de décision du nul (non activé en production)\n\n")
+                  out.write("| Seuil nul | Écart maximal | Précision 1/N/2 | Rappel nul | Précision nul | F1 nul |\n")
+                  out.write("|---:|---:|---:|---:|---:|---:|\n")
+                  for item in sweep:
+                      out.write(
+                          f"| {item.get('draw_threshold')} % "
+                          f"| {item.get('draw_gap_to_best_points')} pts "
+                          f"| {item.get('accuracy_1n2')} "
+                          f"| {item.get('draw_recall')} "
+                          f"| {item.get('draw_precision')} "
+                          f"| {item.get('draw_f1')} |\n"
+                      )
           PY
       - name: Upload reproducible metrics
         if: always()
