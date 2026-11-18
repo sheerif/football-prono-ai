@@ -1,4 +1,4 @@
-"""Archivage durable de chaque réponse réseau reçue d’API-Football."""
+"""Conserve le dernier état technique de chaque requête API, sans archiver les payloads."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import json
 import threading
 import time
 
-from sqlalchemy import text
+from sqlalchemy import inspect, text
 
 from database.database import engine
 
@@ -22,56 +22,7 @@ def _now_iso() -> str:
 
 
 def _json(value) -> str:
-    return json.dumps(
-        value,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        default=str,
-    )
-
-
-def ensure_table() -> None:
-    global _table_ready
-    if _table_ready:
-        return
-    with _table_lock:
-        if _table_ready:
-            return
-        with engine.begin() as conn:
-            conn.execute(
-                text(
-                    """
-                    CREATE TABLE IF NOT EXISTS api_response_archive (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        endpoint TEXT NOT NULL,
-                        params_json TEXT NOT NULL,
-                        request_sha256 TEXT NOT NULL,
-                        response_sha256 TEXT NOT NULL,
-                        response_json TEXT NOT NULL,
-                        http_status INTEGER,
-                        daily_limit INTEGER,
-                        daily_remaining INTEGER,
-                        minute_limit INTEGER,
-                        minute_remaining INTEGER,
-                        retrieved_at TEXT NOT NULL
-                    )
-                    """
-                )
-            )
-            conn.execute(
-                text(
-                    "CREATE INDEX IF NOT EXISTS ix_api_response_archive_endpoint_time "
-                    "ON api_response_archive(endpoint, retrieved_at)"
-                )
-            )
-            conn.execute(
-                text(
-                    "CREATE INDEX IF NOT EXISTS ix_api_response_archive_request "
-                    "ON api_response_archive(request_sha256)"
-                )
-            )
-        _table_ready = True
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
 
 
 def _integer(value):
@@ -81,6 +32,98 @@ def _integer(value):
         return None
 
 
+def ensure_table() -> None:
+    """Create the compact state table; drop legacy data only after verified migration."""
+    global _table_ready
+    if _table_ready:
+        return
+    with _table_lock:
+        if _table_ready:
+            return
+        with engine.begin() as conn:
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS api_request_state (
+                    request_sha256 TEXT PRIMARY KEY,
+                    endpoint TEXT NOT NULL,
+                    response_sha256 TEXT NOT NULL,
+                    http_status INTEGER,
+                    daily_limit INTEGER,
+                    daily_remaining INTEGER,
+                    minute_limit INTEGER,
+                    minute_remaining INTEGER,
+                    retrieved_at TEXT NOT NULL
+                )
+            """))
+            inspector = inspect(conn)
+            if inspector.has_table("api_response_archive"):
+                columns = {item["name"] for item in inspector.get_columns("api_response_archive")}
+                required = {
+                    "id", "endpoint", "request_sha256", "response_sha256",
+                    "http_status", "daily_limit", "daily_remaining",
+                    "minute_limit", "minute_remaining", "retrieved_at",
+                }
+                if not required.issubset(columns):
+                    missing = sorted(required - columns)
+                    raise RuntimeError(
+                        "Migration API interrompue : schéma historique incomplet "
+                        f"(colonnes manquantes : {', '.join(missing)}). "
+                        "L'ancienne archive est conservée."
+                    )
+                invalid = conn.execute(text("""
+                    SELECT COUNT(*) FROM api_response_archive
+                    WHERE request_sha256 IS NULL OR TRIM(request_sha256) = ''
+                       OR endpoint IS NULL OR retrieved_at IS NULL
+                       OR response_sha256 IS NULL
+                """)).scalar_one()
+                if invalid:
+                    raise RuntimeError(
+                        f"Migration API interrompue : {invalid} ligne(s) historique(s) invalide(s). "
+                        "L'ancienne archive est conservée."
+                    )
+                conn.execute(text("""
+                    INSERT INTO api_request_state (
+                        request_sha256, endpoint, response_sha256, http_status,
+                        daily_limit, daily_remaining, minute_limit,
+                        minute_remaining, retrieved_at
+                    )
+                    SELECT old.request_sha256, old.endpoint, old.response_sha256,
+                           old.http_status, old.daily_limit, old.daily_remaining,
+                           old.minute_limit, old.minute_remaining, old.retrieved_at
+                    FROM api_response_archive AS old
+                    JOIN (
+                        SELECT request_sha256, MAX(id) AS latest_id
+                        FROM api_response_archive
+                        GROUP BY request_sha256
+                    ) AS latest ON latest.latest_id = old.id
+                    WHERE 1
+                    ON CONFLICT(request_sha256) DO UPDATE SET
+                        endpoint = excluded.endpoint,
+                        response_sha256 = excluded.response_sha256,
+                        http_status = excluded.http_status,
+                        daily_limit = excluded.daily_limit,
+                        daily_remaining = excluded.daily_remaining,
+                        minute_limit = excluded.minute_limit,
+                        minute_remaining = excluded.minute_remaining,
+                        retrieved_at = excluded.retrieved_at
+                """))
+                expected = conn.execute(text("""
+                    SELECT COUNT(DISTINCT request_sha256) FROM api_response_archive
+                """)).scalar_one()
+                migrated = conn.execute(text("""
+                    SELECT COUNT(*) FROM api_request_state
+                    WHERE request_sha256 IN (
+                        SELECT DISTINCT request_sha256 FROM api_response_archive
+                    )
+                """)).scalar_one()
+                if migrated != expected:
+                    raise RuntimeError(
+                        "Migration API interrompue : contrôle du nombre d'états migrés invalide. "
+                        "L'ancienne archive est conservée."
+                    )
+                conn.execute(text("DROP TABLE api_response_archive"))
+        _table_ready = True
+
+
 def archive_response(
     endpoint: str,
     params: dict | None,
@@ -88,18 +131,15 @@ def archive_response(
     response_headers=None,
     http_status: int | None = None,
 ) -> int:
-    """Persiste le contenu brut avant toute extraction métier."""
+    """Replace the previous technical state for this endpoint/parameter set."""
     ensure_table()
-    params_json = _json(params or {})
-    response_json = _json(payload)
     request_json = _json({"endpoint": str(endpoint), "params": params or {}})
+    response_json = _json(payload)
     headers = response_headers if hasattr(response_headers, "get") else {}
     values = {
         "endpoint": str(endpoint),
-        "params_json": params_json,
         "request_sha256": hashlib.sha256(request_json.encode("utf-8")).hexdigest(),
         "response_sha256": hashlib.sha256(response_json.encode("utf-8")).hexdigest(),
-        "response_json": response_json,
         "http_status": _integer(http_status),
         "daily_limit": _integer(headers.get("x-ratelimit-requests-limit")),
         "daily_remaining": _integer(headers.get("x-ratelimit-requests-remaining")),
@@ -111,27 +151,31 @@ def archive_response(
     for attempt in range(3):
         try:
             with engine.begin() as conn:
-                result = conn.execute(
-                    text(
-                        """
-                        INSERT INTO api_response_archive (
-                            endpoint, params_json, request_sha256, response_sha256,
-                            response_json, http_status, daily_limit, daily_remaining,
-                            minute_limit, minute_remaining, retrieved_at
-                        ) VALUES (
-                            :endpoint, :params_json, :request_sha256, :response_sha256,
-                            :response_json, :http_status, :daily_limit, :daily_remaining,
-                            :minute_limit, :minute_remaining, :retrieved_at
-                        )
-                        """
-                    ),
-                    values,
-                )
-            return int(result.lastrowid)
+                conn.execute(text("""
+                    INSERT INTO api_request_state (
+                        request_sha256, endpoint, response_sha256, http_status,
+                        daily_limit, daily_remaining, minute_limit,
+                        minute_remaining, retrieved_at
+                    ) VALUES (
+                        :request_sha256, :endpoint, :response_sha256, :http_status,
+                        :daily_limit, :daily_remaining, :minute_limit,
+                        :minute_remaining, :retrieved_at
+                    )
+                    ON CONFLICT(request_sha256) DO UPDATE SET
+                        endpoint = excluded.endpoint,
+                        response_sha256 = excluded.response_sha256,
+                        http_status = excluded.http_status,
+                        daily_limit = excluded.daily_limit,
+                        daily_remaining = excluded.daily_remaining,
+                        minute_limit = excluded.minute_limit,
+                        minute_remaining = excluded.minute_remaining,
+                        retrieved_at = excluded.retrieved_at
+                """), values)
+            return 1
         except Exception as exc:
             last_error = exc
             if attempt < 2:
                 time.sleep(0.2 * (attempt + 1))
     raise RuntimeError(
-        "Réponse API reçue mais impossible à archiver dans la base persistante."
+        "Réponse API reçue mais impossible d'actualiser son état technique."
     ) from last_error
