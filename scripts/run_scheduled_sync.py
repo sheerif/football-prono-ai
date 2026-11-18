@@ -192,7 +192,11 @@ def run() -> dict:
 def main() -> int:
     try:
         result = run()
-        backup = git_backup.backup_to_github(force=True)
+        backup = (
+            {"status": "skipped_active_sync"}
+            if result.get("status") == "skipped"
+            else git_backup.backup_to_github(force=True)
+        )
         result["database_backup"] = backup
         print(
             "Synchronisation planifiée : "
@@ -203,7 +207,9 @@ def main() -> int:
             "prévision(s) · "
             f"sauvegarde : {backup.get('status', 'unknown')}"
         )
-        if backup.get("status") not in {"uploaded", "unchanged", "not_configured"}:
+        if backup.get("status") not in {
+            "uploaded", "unchanged", "not_configured", "skipped_active_sync"
+        }:
             return 1
         return 0
     except Exception as exc:
