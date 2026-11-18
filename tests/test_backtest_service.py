@@ -47,6 +47,29 @@ class BacktestServiceTests(unittest.TestCase):
         self.assertEqual(metrics["accuracy_away"], 0.0)
         self.assertEqual(metrics["calibration_curve"][0]["matches"], 2)
 
+    def test_draw_decision_sweep_reports_precision_recall_tradeoff(self):
+        records = [
+            ([45, 30, 25], 1),
+            ([60, 20, 20], 0),
+            ([40, 28, 32], 1),
+            ([30, 34, 36], 2),
+            ([55, 25, 20], 0),
+        ]
+        metrics = backtest_service._metrics(records)
+        policy = next(
+            item
+            for item in metrics["draw_decision_sweep"]
+            if item["draw_threshold"] == 25.0
+            and item["draw_gap_to_best_points"] == 15.0
+        )
+        self.assertEqual(policy["predicted_draws"], 3)
+        self.assertEqual(policy["draw_recall"], 1.0)
+        self.assertAlmostEqual(policy["draw_precision"], 2 / 3, places=6)
+        self.assertEqual(policy["accuracy_1n2"], 0.8)
+        # The sweep is diagnostic only: it must not rewrite the base metrics.
+        self.assertEqual(metrics["accuracy_1n2"], 0.6)
+        self.assertEqual(metrics["draw_recall"], 0.0)
+
     def test_backtest_uses_only_strictly_earlier_context(self):
         result = backtest_service.run(
             _dataset("2023-02-04T12:00:00Z"),

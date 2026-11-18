@@ -46,6 +46,78 @@ def _outcome(row) -> int:
     return 0 if home_goals > away_goals else 1 if home_goals == away_goals else 2
 
 
+def _draw_decision_sweep(
+    records: list[tuple[list[float], int]],
+) -> list[dict]:
+    """Explore des règles de décision pour le nul sans modifier les probabilités.
+
+    Ce diagnostic mesure le compromis précision/rappel sur les données test.
+    Il ne constitue pas une calibration et aucune règle n'est activée en production.
+    """
+    if not records:
+        return []
+    thresholds = (0.20, 0.225, 0.25, 0.275, 0.30, 0.325, 0.35, 0.375, 0.40)
+    gaps = (0.0, 0.05, 0.10, 0.15)
+    results = []
+    for threshold in thresholds:
+        for gap in gaps:
+            correct = 0
+            actual_draws = 0
+            predicted_draws = 0
+            correct_draws = 0
+            outcome_totals = [0, 0, 0]
+            outcome_correct = [0, 0, 0]
+            for probabilities, outcome in records:
+                probs = [
+                    max(0.0, min(1.0, float(value) / 100.0))
+                    for value in probabilities
+                ]
+                predicted = max(range(3), key=probs.__getitem__)
+                if (
+                    probs[1] + 1e-12 >= threshold
+                    and probs[1] + 1e-12 >= max(probs[0], probs[2]) - gap
+                ):
+                    predicted = 1
+                is_correct = predicted == outcome
+                correct += is_correct
+                outcome_totals[outcome] += 1
+                outcome_correct[outcome] += is_correct
+                if outcome == 1:
+                    actual_draws += 1
+                if predicted == 1:
+                    predicted_draws += 1
+                    if outcome == 1:
+                        correct_draws += 1
+            recall = correct_draws / actual_draws if actual_draws else None
+            precision = correct_draws / predicted_draws if predicted_draws else None
+            class_recalls = [
+                outcome_correct[index] / outcome_totals[index]
+                for index in range(3)
+                if outcome_totals[index]
+            ]
+            f1 = (
+                2.0 * precision * recall / (precision + recall)
+                if precision is not None and recall is not None and precision + recall
+                else None
+            )
+            results.append(
+                {
+                    "draw_threshold": round(threshold * 100.0, 1),
+                    "draw_gap_to_best_points": round(gap * 100.0, 1),
+                    "matches": len(records),
+                    "accuracy_1n2": round(correct / len(records), 6),
+                    "predicted_draws": predicted_draws,
+                    "draw_precision": round(precision, 6) if precision is not None else None,
+                    "draw_recall": round(recall, 6) if recall is not None else None,
+                    "draw_f1": round(f1, 6) if f1 is not None else None,
+                    "balanced_accuracy": round(
+                        sum(class_recalls) / len(class_recalls), 6
+                    ),
+                }
+            )
+    return results
+
+
 def _metrics(records: list[tuple[list[float], int]]) -> dict:
     if not records:
         return {
@@ -65,6 +137,7 @@ def _metrics(records: list[tuple[list[float], int]]) -> dict:
             "draw_precision": None,
             "draw_brier": None,
             "mean_draw_probability_on_draws": None,
+            "draw_decision_sweep": [],
         }
     correct = 0
     brier = 0.0
@@ -147,6 +220,7 @@ def _metrics(records: list[tuple[list[float], int]]) -> dict:
             if actual_draws
             else None
         ),
+        "draw_decision_sweep": _draw_decision_sweep(records),
     }
 
 
