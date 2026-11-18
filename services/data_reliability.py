@@ -66,7 +66,32 @@ def _latest_value(connection, table_name: str, columns: set[str], candidates: tu
     ).scalar()
 
 
-def _table_check(connection, inspector, table_name: str, now: dt.datetime) -> dict:
+def _core_sync_freshness(connection, inspector) -> dict | None:
+    """Return the last successful core-season sync, not a fabricated table timestamp.
+
+    The current importer updates leagues, teams, fixtures and standings as one
+    league/season operation. Its registry is therefore the authoritative
+    shared freshness signal when individual tables have no timestamp column.
+    """
+    if not inspector.has_table("resource_sync_state"):
+        return None
+    rows = connection.execute(text(
+        "SELECT status, COUNT(*) AS total FROM resource_sync_state "
+        "WHERE resource_type = 'core_season' GROUP BY status"
+    )).mappings().all()
+    counts = {str(row["status"]): int(row["total"]) for row in rows}
+    latest = connection.execute(text(
+        "SELECT MAX(updated_at) FROM resource_sync_state "
+        "WHERE resource_type = 'core_season' AND status = 'complete'"
+    )).scalar()
+    return {"last_updated_at": str(latest) if latest is not None else None,
+            "status_counts": counts}
+
+
+def _table_check(
+    connection, inspector, table_name: str, now: dt.datetime,
+    core_sync: dict | None = None,
+) -> dict:
     if not inspector.has_table(table_name):
         return {
             "name": table_name, "status": "unknown", "count": None,
@@ -80,12 +105,25 @@ def _table_check(connection, inspector, table_name: str, now: dt.datetime) -> di
             connection, table_name, columns,
             ("updated_at", "retrieved_at", "finished_at", "created_at"),
         )
+        timestamp_source = "table"
+        if last_updated is None and core_sync and core_sync.get("last_updated_at"):
+            last_updated = core_sync["last_updated_at"]
+            timestamp_source = "resource_sync_state (core_season)"
         age = _age_seconds(last_updated, now)
         status = _freshness_status(age, 24, 72) if last_updated is not None else "unknown"
-        if count == 0:
+        sync_counts = (core_sync or {}).get("status_counts") or {}
+        incomplete_scopes = sum(
+            total for sync_status, total in sync_counts.items()
+            if sync_status != "complete"
+        )
+        if count == 0 or incomplete_scopes:
             status = "warning"
         message = (
             "Aucune ligne enregistrée." if count == 0
+            else "Synchronisation de périmètres incomplète : couverture à contrôler."
+            if incomplete_scopes
+            else "Fraîcheur estimée depuis la dernière synchronisation réussie des périmètres ligue/saison."
+            if timestamp_source != "table" and last_updated is not None
             else "Horodatage absent : fraîcheur non vérifiable." if last_updated is None
             else "Données récentes." if status == "healthy"
             else "Données à contrôler." if status in {"warning", "critical"}
@@ -95,6 +133,7 @@ def _table_check(connection, inspector, table_name: str, now: dt.datetime) -> di
             "name": table_name, "status": status, "count": count,
             "last_updated_at": str(last_updated) if last_updated is not None else None,
             "age_seconds": age, "message": message,
+            "timestamp_source": timestamp_source if last_updated is not None else None,
         }
     except Exception as exc:
         return {
@@ -157,6 +196,7 @@ def get_reliability_snapshot(*, now: dt.datetime | None = None) -> dict:
         "database": {"status": "unknown", "message": "Contrôle non effectué."},
         "tables": [],
         "api_archive": {"status": "unknown", "message": "Contrôle non effectué."},
+        "core_sync": None,
         "latest_update": None,
         "sync_states": None,
         "overall_status": "unknown",
@@ -167,8 +207,10 @@ def get_reliability_snapshot(*, now: dt.datetime | None = None) -> dict:
             connection.execute(text("SELECT 1")).scalar_one()
             inspector = inspect(connection)
             result["database"] = {"status": "healthy", "message": "Connexion vérifiée."}
+            core_sync = _core_sync_freshness(connection, inspector)
+            result["core_sync"] = core_sync
             result["tables"] = [
-                _table_check(connection, inspector, name, current)
+                _table_check(connection, inspector, name, current, core_sync)
                 for name in CORE_TABLES
             ]
             result["api_archive"] = _archive_integrity(connection, inspector)
