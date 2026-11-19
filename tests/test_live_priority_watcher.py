@@ -111,3 +111,9 @@ def test_priority_prediction_requests_signal_active_secondary_job(monkeypatch):
     assert background_jobs.priority_preemption_requested()
     assert background_jobs._priority_prediction_pending
     assert background_jobs._jobs[job_id]["details"]["priority_prediction_pending"]
+
+
+def test_preemption_event_is_cleared_by_test_isolation(monkeypatch):
+    from services import background_jobs
+    monkeypatch.setattr(background_jobs, "_priority_preemption_requested", threading.Event())
+    assert not background_jobs.priority_preemption_requested()
