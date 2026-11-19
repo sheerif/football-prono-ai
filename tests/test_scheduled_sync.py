@@ -125,7 +125,7 @@ class ScheduledSyncTests(unittest.TestCase):
             result = run_scheduled_sync.main()
 
         self.assertEqual(result, 0)
-        backup.assert_called_once_with(force=True)
+        backup.assert_called_once_with(force=False)
         dispose.assert_called_once()
 
     def test_scheduled_entrypoint_fails_when_database_backup_fails(self):
