@@ -80,6 +80,49 @@ jobs:
           test -s football.db
           sha256sum football.db.gz football.db
 
+      - name: Verify restored SQLite integrity
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os
+          import sqlite3
+          from pathlib import Path
+
+          path = Path("football.db")
+          if not path.is_file() or path.stat().st_size == 0:
+              raise SystemExit("Base SQLite restaurée absente ou vide.")
+          connection = sqlite3.connect(path)
+          try:
+              integrity = connection.execute("PRAGMA integrity_check").fetchone()
+              if not integrity or integrity[0] != "ok":
+                  raise SystemExit(f"SQLite integrity_check failed: {integrity}")
+              tables = {
+                  row[0] for row in connection.execute(
+                      "SELECT name FROM sqlite_master WHERE type='table'"
+                  )
+              }
+              required = {"leagues", "teams", "matches", "standings"}
+              missing = required - tables
+              if missing:
+                  raise SystemExit(f"Tables core manquantes après restauration: {sorted(missing)}")
+              counts = {
+                  name: int(connection.execute(f'SELECT COUNT(*) FROM "{name}"').fetchone()[0])
+                  for name in sorted(required)
+              }
+          finally:
+              connection.close()
+          print("SQLite integrity_check: ok")
+          print("Tables core présentes et base restaurée lisible.")
+          print("Volumes core:", counts)
+          summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+          if summary_path:
+              with open(summary_path, "a", encoding="utf-8") as summary:
+                  summary.write("## Restauration SQLite vérifiée\n\n")
+                  summary.write("- PRAGMA integrity_check: ok\n")
+                  summary.write("- Tables core: leagues, teams, matches, standings\n")
+                  summary.write("- Volumes: " + ", ".join(f"{name}={count}" for name, count in counts.items()) + "\n")
+          PY
+
       - name: Set up Python
         uses: actions/setup-python@v7
         with:
