@@ -1183,13 +1183,17 @@ def run_full_sync(progress_callback=None) -> dict:
             return stop_for_quota(key, RuntimeError(_reserve_message()))
         sync_registry.mark(key, "core_season", "running")
         try:
-            import_service.import_leagues_cautious(
+            import_result = import_service.import_leagues_cautious(
                 [league_id],
                 seasons=[season],
                 pause=pause,
                 max_retries=config["max_retries"],
                 force_refresh_seasons=[season],
+                priority_preemption_check=_priority_preemption_requested,
             )
+            if import_result and import_result.get("preempted"):
+                sync_registry.mark(key, "core_season", "partial", message="Checkpoint de préemption", metadata=import_result)
+                return stop_for_priority(import_result.get("checkpoint") or key)
             sync_registry.mark(key, "core_season", "complete", item_count=1)
             summary["downloaded"] += 1
         except Exception as exc:
