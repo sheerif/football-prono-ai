@@ -132,3 +132,19 @@ def test_watcher_backoff_grows_and_honors_retry_after():
     assert live_priority_watcher._failure_delay(3) == 1200
     assert live_priority_watcher._failure_delay(10) == 1800
     assert live_priority_watcher._failure_delay(1, {"retry_after": "900"}) == 900
+
+
+def test_poll_once_can_detect_changes_without_writing_during_secondary_job(monkeypatch):
+    now = datetime.datetime.now(datetime.UTC)
+    live = {"fixture": {"id": 99, "status": {"short": "1H"}}}
+    class FakeClient:
+        last_rate_limit = {}
+        def _get(self, path, params):
+            return {"response": [live] if params == {"live": "all"} else []}
+    def fail_persist(items):
+        raise AssertionError("writes must be deferred while secondary job runs")
+    monkeypatch.setattr(live_priority_watcher, "_persist_live_fixtures", fail_persist)
+    result = live_priority_watcher.poll_once(FakeClient(), now=now, persist=False)
+    assert result["live_count"] == 1
+    assert result["changed"] == 0
+    assert result["signature"]
