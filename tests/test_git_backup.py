@@ -190,6 +190,17 @@ class GitBackupTests(unittest.TestCase):
             result = git_backup.backup_to_github()
         self.assertEqual(result, {"status": "not_configured"})
 
+    def test_accepts_non_reserved_backup_token_secret_alias(self):
+        with patch.object(
+            git_backup,
+            "_setting",
+            side_effect=lambda name, default="": {
+                "BACKUP_TOKEN": "alias-token",
+            }.get(name, default),
+        ):
+            self.assertEqual(git_backup._backup_token(), "alias-token")
+            self.assertTrue(git_backup.backup_is_configured())
+
     def test_daily_scheduler_starts_a_non_blocking_backup_check(self):
         with (
             patch.object(git_backup, "backup_is_configured", return_value=True),
