@@ -202,6 +202,8 @@ def _league_readiness_table(matches_df: pd.DataFrame, league_seasons_df: pd.Data
 
 
 def _next_action(health: dict, matches_df: pd.DataFrame) -> str:
+    if matches_df.attrs.get("load_error") or health.get("errors"):
+        return "Corriger ou vérifier la connexion à la base avant d'interpréter les KPI."
     if matches_df.empty:
         return "Importer les championnats dans Mise à jour."
     if health["upcoming"] == 0:
@@ -257,6 +259,8 @@ def _top_leagues_table(matches_df: pd.DataFrame, league_seasons_df: pd.DataFrame
 
 
 def _quick_read_sentence(kpis: dict) -> str:
+    if kpis.get("completed_count") is None:
+        return "Tendances indisponibles : la lecture des matchs a échoué."
     if not kpis["completed_count"]:
         return "Aucun match terminé n’est encore disponible pour calculer des tendances fiables."
     dominant = max(
@@ -315,8 +319,9 @@ def show():
     league_seasons_df = _load_league_seasons()
     kpis = _compute_kpis(matches_df)
     health = _load_data_health()
-
-    matches_count = len(matches_df)
+    if matches_df.attrs.get("load_error"):
+        kpis = {key: None for key in kpis}
+    matches_count = None if matches_df.attrs.get("load_error") else len(matches_df)
     seasons = league_seasons_df["season"].nunique() if not league_seasons_df.empty else (
         matches_df["season"].nunique() if not matches_df.empty else 0
     )
