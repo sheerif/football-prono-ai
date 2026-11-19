@@ -2,7 +2,7 @@ import streamlit as st
 import datetime
 import os
 
-from services import background_jobs, git_backup, import_service, live_priority_watcher, schema_guard
+from services import api_football, background_jobs, git_backup, import_service, live_priority_watcher, schema_guard
 from components import auth, sidebar, ui
 from pages import dashboard, data_management, api_widgets, matchs_a_venir, analyse_match, prediction_ia
 
@@ -27,6 +27,12 @@ except Exception:
 		"Vérifiez DATABASE_URL et les permissions d’écriture du dossier."
 	)
 	st.stop()
+
+
+if os.getenv("STREAMLIT_LIVE_PRIORITY_WATCHER", "true").strip().lower() in {
+	"1", "true", "yes", "oui"
+}:
+	live_priority_watcher.start()
 
 
 @st.fragment(run_every="1h")
@@ -70,3 +76,8 @@ with st.sidebar:
 	st.caption(f"Dernière MAJ en cours: {import_service.get_last_current_refresh_label()}")
 	st.caption(f"Dernière MAJ historique: {import_service.get_last_auto_refresh_label()}")
 	st.caption(import_service.get_api_access_message())
+	cache_metrics = api_football.cache_metrics_snapshot()
+	st.caption(
+		f"Cache API · {cache_metrics['requests_avoided']} appels évités "
+		f"({cache_metrics['cache_hits']} hits / {cache_metrics['cache_entries']} entrées)"
+	)
