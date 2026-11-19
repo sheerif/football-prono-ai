@@ -302,3 +302,26 @@ class ApiFootballClientTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ApiRequestPolicyTests(unittest.TestCase):
+    def test_live_and_backfill_calls_are_classified_by_priority(self):
+        self.assertEqual(api_football._request_priority("/fixtures", {"live": "all"}), "live")
+        self.assertEqual(api_football._request_priority("/players", {"season": 2024}), "player_stats")
+        self.assertEqual(api_football._request_priority("/fixtures", {"league": 1, "season": 2024}), "current_fixtures")
+
+    def test_dataset_cache_ttl_is_factored_by_freshness(self):
+        self.assertLess(api_football._request_cache_ttl("/fixtures", {"live": "all"}),
+                        api_football._request_cache_ttl("/standings", {"league": 1}))
+        self.assertLess(api_football._request_cache_ttl("/standings", {}),
+                        api_football._request_cache_ttl("/teams", {}))
+
+    def test_quota_reserve_blocks_low_priority_call_before_download(self):
+        status = ApiFootballClientTests._status_response(current=80, limit=100, daily_remaining=10)
+        session = Mock()
+        session.get.return_value = status
+        client = ApiFootballClient(api_key="test-key", session=session)
+        with self.assertRaisesRegex(RuntimeError, "emergency_reserve_protected"):
+            client.get_players(season=2024)
+        session.get.assert_called_once()  # /status only; no player endpoint
+        self.assertEqual(client.request_count, 0)

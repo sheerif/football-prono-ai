@@ -2,7 +2,7 @@ import streamlit as st
 import datetime
 import os
 
-from services import background_jobs, git_backup, import_service, schema_guard
+from services import background_jobs, git_backup, import_service, live_priority_watcher, schema_guard
 from components import auth, sidebar, ui
 from pages import dashboard, data_management, api_widgets, matchs_a_venir, analyse_match, prediction_ia
 
