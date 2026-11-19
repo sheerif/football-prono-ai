@@ -40,6 +40,7 @@ def _fixture_signature(items: list[dict]) -> tuple:
             str(status.get("short") or status.get("long") or ""),
             goals.get("home"),
             goals.get("away"),
+            fixture.get("date"),
             (teams.get("home") or {}).get("id"),
             (teams.get("away") or {}).get("id"),
         ))
