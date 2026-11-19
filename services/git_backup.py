@@ -38,8 +38,13 @@ def _setting(name: str, default: str = "") -> str:
         return default
 
 
+def _backup_token() -> str:
+    """Accept the legacy runtime name and the non-reserved secret alias."""
+    return _setting("GITHUB_BACKUP_TOKEN") or _setting("BACKUP_TOKEN")
+
+
 def backup_is_configured() -> bool:
-    return bool(_setting("GITHUB_BACKUP_TOKEN"))
+    return bool(_backup_token())
 
 
 def _request(method: str, endpoint: str, token: str, payload: dict | None = None):
@@ -144,7 +149,7 @@ def _backup_head(root: str, branch: str, token: str) -> dict | None:
 
 def latest_backup_info() -> dict:
     """Return the timestamp and commit id of the latest Git backup."""
-    token = _setting("GITHUB_BACKUP_TOKEN")
+    token = _backup_token()
     if not token:
         return {"status": "not_configured"}
     repository = _setting("GITHUB_BACKUP_REPOSITORY", _DEFAULT_REPOSITORY)
