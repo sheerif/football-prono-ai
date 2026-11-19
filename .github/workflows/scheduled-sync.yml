@@ -65,7 +65,7 @@ jobs:
           archive = bytearray()
           for part in manifest["parts"]:
               data = subprocess.check_output(["git", "show", f"origin/database-backup:{part['path']}"])
-              header = f"blob {len(data)}\\0".encode("ascii")
+              header = f"blob {len(data)}\0".encode("ascii")
               git_sha = hashlib.sha1(header + data).hexdigest()
               if len(data) != part["size_bytes"] or git_sha != part["git_blob_sha"]:
                   raise SystemExit(f"Fragment invalide: {part['path']}")
