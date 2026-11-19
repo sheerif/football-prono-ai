@@ -77,6 +77,10 @@ with st.sidebar:
 	st.caption(import_service.get_api_access_message())
 	cache_metrics = api_football.cache_metrics_snapshot()
 	st.caption(
-		f"Cache API · {cache_metrics['requests_avoided']} appels évités "
+		f"Cache API · {cache_metrics['requests_avoided']} requêtes data évitées "
 		f"({cache_metrics['cache_hits']} hits / {cache_metrics['cache_entries']} entrées)"
+	)
+	st.caption(
+		f"Quota · {cache_metrics['quota_status_checks']} préflights / "
+		f"{cache_metrics['quota_policy_blocks']} blocages · métriques locales au processus"
 	)
