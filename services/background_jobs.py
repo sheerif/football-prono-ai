@@ -862,6 +862,7 @@ def start_xg_sync(
                 ),
             )
             quota_reached = bool(result.get("quota_reached"))
+            preempted = bool(result.get("preempted"))
             quota_details = (
                 _quota_retry_metadata({**result, "job_id": job_id})
                 if quota_reached
