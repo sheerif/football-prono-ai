@@ -1,15 +1,12 @@
-"""Autonomous near-real-time monitor for live football fixtures.
+"""Autonomous near-real-time monitor for live and imminent fixtures.
 
-API-Football does not push events into this application, so this service polls
-its live-fixtures endpoint with quota-aware cadence and persists changed scores
-and statuses. It is a best-effort process-local worker, not a guaranteed
-always-on scheduler; production hosting must keep the app process alive.
+API-Football has no push events: this process-local worker polls with adaptive
+quota-aware cadence, shared request caching, and a best-effort prediction refresh.
+It is not an always-on scheduler and production must keep the app instance alive.
 """
 import datetime
 import logging
-import os
 import threading
-import time
 
 from services import import_service
 
@@ -20,14 +17,13 @@ _stop = threading.Event()
 _last_signature = None
 
 
-def _interval_seconds(*, has_live: bool, quota: dict | None = None) -> int:
-    """Adaptive cadence using quota ratio and reserve policy."""
+def _interval_seconds(*, has_live: bool, has_imminent: bool = False, quota: dict | None = None) -> int:
     from services import api_quota_policy
 
     snapshot = api_quota_policy.quota_snapshot(quota)
     return api_quota_policy.suggested_poll_seconds(
         live=has_live,
-        imminent=False,
+        imminent=has_imminent,
         snapshot=snapshot,
     )
 
@@ -50,8 +46,38 @@ def _fixture_signature(items: list[dict]) -> tuple:
     return tuple(sorted(signature))
 
 
+def _kickoff(item: dict) -> datetime.datetime | None:
+    raw = ((item.get("fixture") or {}).get("date") or "").strip()
+    if not raw:
+        return None
+    try:
+        value = datetime.datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=datetime.UTC)
+        return value.astimezone(datetime.UTC)
+    except (TypeError, ValueError):
+        return None
+
+
+def _filter_imminent(items: list[dict], *, now: datetime.datetime | None = None) -> list[dict]:
+    now = now or datetime.datetime.now(datetime.UTC)
+    horizon = now + datetime.timedelta(hours=24)
+    excluded_statuses = {"1H", "HT", "2H", "ET", "BT", "P", "LIVE", "INT", "SUSP", "FT", "AET", "PEN", "CANC", "ABD", "AWD", "WO"}
+    imminent = []
+    for item in items:
+        fixture = item.get("fixture") or {}
+        fixture_id = fixture.get("id") or item.get("id")
+        status = str(((fixture.get("status") or {}).get("short") or "")).upper()
+        kickoff = _kickoff(item)
+        if status in excluded_statuses or not kickoff:
+            continue
+        if now <= kickoff <= horizon and fixture_id:
+            imminent.append(item)
+    return imminent
+
+
 def _persist_live_fixtures(items: list[dict]) -> int:
-    """Write live scores/status/details through the same normalizers as imports."""
+    """Persist live and upcoming fixtures through shared import normalizers."""
     if not items:
         return 0
     import_service.init_db()
@@ -70,9 +96,6 @@ def _persist_live_fixtures(items: list[dict]) -> int:
             if not fixture_id or not league_id or not season:
                 continue
             existing = session.get(models.Match, int(fixture_id))
-            status_obj = fixture.get("status") or {}
-            status = status_obj.get("long") or status_obj.get("short")
-            goals = item.get("goals") or {}
             before = (
                 existing.status, existing.home_goals, existing.away_goals
             ) if existing else None
@@ -102,17 +125,33 @@ def _persist_live_fixtures(items: list[dict]) -> int:
     return changed
 
 
-def poll_once(client=None) -> dict:
-    """One API poll, suitable for tests and diagnostics."""
+def poll_once(client=None, *, now: datetime.datetime | None = None) -> dict:
+    """Poll live plus next-24h fixtures; exposed for mock-based integration tests."""
     client = client or import_service.client
-    payload = client._get("/fixtures", {"live": "all"})
-    errors = payload.get("errors") if isinstance(payload, dict) else None
-    if errors:
-        raise RuntimeError(f"API live fixtures returned errors: {errors}")
-    items = payload.get("response") or []
+    now = now or datetime.datetime.now(datetime.UTC)
+    live_payload = client._get("/fixtures", {"live": "all"})
+    live_errors = live_payload.get("errors") if isinstance(live_payload, dict) else None
+    if live_errors:
+        raise RuntimeError(f"API live fixtures returned errors: {live_errors}")
+    live_items = live_payload.get("response") or []
+
+    from_date = now.date().isoformat()
+    to_date = (now + datetime.timedelta(hours=24)).date().isoformat()
+    imminent_payload = client._get("/fixtures", {"from": from_date, "to": to_date})
+    imminent_errors = imminent_payload.get("errors") if isinstance(imminent_payload, dict) else None
+    if imminent_errors:
+        raise RuntimeError(f"API imminent fixtures returned errors: {imminent_errors}")
+    imminent_items = _filter_imminent(imminent_payload.get("response") or [], now=now)
+    live_ids = {int((item.get("fixture") or {}).get("id") or item.get("id") or 0) for item in live_items}
+    imminent_items = [
+        item for item in imminent_items
+        if int((item.get("fixture") or {}).get("id") or item.get("id") or 0) not in live_ids
+    ]
+    items = live_items + imminent_items
     changed = _persist_live_fixtures(items)
     return {
-        "live_count": len(items),
+        "live_count": len(live_items),
+        "imminent_count": len(imminent_items),
         "changed": changed,
         "signature": _fixture_signature(items),
         "quota": dict(getattr(client, "last_rate_limit", {}) or {}),
@@ -126,27 +165,32 @@ def _worker():
         try:
             result = poll_once(client)
             signature = result["signature"]
-            # Trigger the existing prediction updater only when the live feed
-            # changes, preventing repeated identical downloads.
-            if signature != _last_signature and (_last_signature is not None or result["changed"] > 0):
+            if signature != _last_signature and (
+                _last_signature is not None or result["changed"] > 0 or result["imminent_count"] > 0
+            ):
                 try:
                     from services import background_jobs
-                    background_jobs.start_prediction_sync(days=3)
+                    background_jobs.start_prediction_sync(days=1)
                 except Exception:
                     logger.exception("Could not enqueue priority prediction refresh")
             _last_signature = signature
             delay = _interval_seconds(
-                has_live=bool(result["live_count"]), quota=result["quota"]
+                has_live=bool(result["live_count"]),
+                has_imminent=bool(result["imminent_count"]),
+                quota=result["quota"],
             )
         except Exception:
-            logger.exception("Live priority polling failed")
+            logger.exception("Live/imminent priority polling failed")
             delay = 300
         _stop.wait(delay)
 
 
 def start():
-    """Start exactly one daemon watcher in this application process."""
+    """Start at most one daemon watcher in this process when API credentials exist."""
     global _started
+    if not getattr(import_service.client, "api_key", ""):
+        logger.info("Live priority watcher not started: API key is not configured")
+        return False
     with _lock:
         if _started:
             return False
@@ -154,5 +198,10 @@ def start():
     thread = threading.Thread(
         target=_worker, name="football-live-priority-watcher", daemon=True
     )
-    thread.start()
+    try:
+        thread.start()
+    except Exception:
+        with _lock:
+            _started = False
+        raise
     return True
