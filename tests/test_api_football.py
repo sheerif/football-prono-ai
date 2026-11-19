@@ -363,3 +363,21 @@ class ApiMetricsAndPriorityTests(unittest.TestCase):
 
     def test_historical_fixture_statistics_are_low_priority_enrichment(self):
         self.assertEqual(api_football._request_priority("/fixtures/statistics", {"fixture": 123}), "xg_enrichment")
+
+    def test_unknown_quota_allows_predictions_but_blocks_secondary_calls(self):
+        status = Mock()
+        status.headers = {}
+        status.json.return_value = {"response": []}
+        predictions = Mock()
+        predictions.headers = {}
+        predictions.json.return_value = {"response": [{"fixture": {"id": 42}}]}
+        session = Mock()
+        session.get.side_effect = [status, predictions, status]
+        client = ApiFootballClient(api_key="unknown-quota-key", session=session)
+
+        client.get_predictions(42)
+        with self.assertRaisesRegex(RuntimeError, "Appel API différé"):
+            client.get_teams(42, 2026)
+
+        self.assertEqual(session.get.call_count, 3)
+        self.assertEqual(api_football.cache_metrics_snapshot()["quota_policy_blocks"], 1)
