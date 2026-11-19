@@ -123,3 +123,10 @@ def test_preemption_event_is_cleared_by_test_isolation(monkeypatch):
     from services import background_jobs
     monkeypatch.setattr(background_jobs, "_priority_preemption_requested", threading.Event())
     assert not background_jobs.priority_preemption_requested()
+
+
+def test_watcher_backoff_grows_and_honors_retry_after():
+    assert live_priority_watcher._failure_delay(1) == 300
+    assert live_priority_watcher._failure_delay(3) == 1200
+    assert live_priority_watcher._failure_delay(10) == 1800
+    assert live_priority_watcher._failure_delay(1, {"retry_after": "900"}) == 900
