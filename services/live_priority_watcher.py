@@ -21,25 +21,15 @@ _last_signature = None
 
 
 def _interval_seconds(*, has_live: bool, quota: dict | None = None) -> int:
-    """Adaptive polling cadence; reserve quota and slow down when it is low."""
-    quota = quota or {}
-    try:
-        configured = max(30, int(os.getenv("LIVE_PRIORITY_POLL_SECONDS", "120")))
-    except (TypeError, ValueError):
-        configured = 120
-    remaining = quota.get("daily_remaining")
-    minute_remaining = quota.get("minute_remaining")
-    try:
-        if remaining is not None and int(remaining) < 1000:
-            return max(configured, 600)
-    except (TypeError, ValueError):
-        pass
-    try:
-        if minute_remaining is not None and int(minute_remaining) <= 2:
-            return max(configured, 300)
-    except (TypeError, ValueError):
-        pass
-    return min(configured, 120) if has_live else max(configured, 900)
+    """Adaptive cadence using quota ratio and reserve policy."""
+    from services import api_quota_policy
+
+    snapshot = api_quota_policy.quota_snapshot(quota)
+    return api_quota_policy.suggested_poll_seconds(
+        live=has_live,
+        imminent=False,
+        snapshot=snapshot,
+    )
 
 
 def _fixture_signature(items: list[dict]) -> tuple:
