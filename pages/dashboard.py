@@ -24,16 +24,20 @@ def _load_matches() -> pd.DataFrame:
     try:
         columns = ", ".join(MATCH_COLUMNS)
         return _normalize_matches_df(pd.read_sql(f"SELECT {columns} FROM matches", engine))
-    except Exception:
-        return pd.DataFrame(columns=MATCH_COLUMNS)
+    except Exception as exc:
+        empty = pd.DataFrame(columns=MATCH_COLUMNS)
+        empty.attrs["load_error"] = str(exc)
+        return empty
 
 
 @st.cache_data(ttl=300, show_spinner=False)
 def _load_league_seasons() -> pd.DataFrame:
     try:
         return pd.read_sql("SELECT league_id, season FROM league_seasons", engine)
-    except Exception:
-        return pd.DataFrame(columns=["league_id", "season"])
+    except Exception as exc:
+        empty = pd.DataFrame(columns=["league_id", "season"])
+        empty.attrs["load_error"] = str(exc)
+        return empty
 
 
 def _season_scope(seasons) -> str:
@@ -82,17 +86,21 @@ def _compute_kpis(matches_df: pd.DataFrame) -> dict:
 
 
 def _format_int(value) -> str:
+    if value is None:
+        return "Indisponible"
     try:
         return f"{int(value):,}".replace(",", " ")
-    except Exception:
-        return "0"
+    except (TypeError, ValueError):
+        return "Indisponible"
 
 
 def _format_percent(value) -> str:
+    if value is None:
+        return "Indisponible"
     try:
         return f"{float(value):.1f} %"
-    except Exception:
-        return "0.0 %"
+    except (TypeError, ValueError):
+        return "Indisponible"
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -134,13 +142,20 @@ def _load_data_health() -> dict:
         "analysis_snapshots": "SELECT COUNT(*) FROM match_analysis_snapshots",
         "xg_matches": "SELECT COUNT(DISTINCT fixture_id) FROM fixture_team_statistics WHERE expected_goals IS NOT NULL",
     }
-    health = {}
-    with engine.begin() as conn:
-        for key, query in queries.items():
-            try:
-                health[key] = int(conn.execute(text(query)).scalar() or 0)
-            except Exception:
-                health[key] = 0
+    health = {"errors": {}}
+    try:
+        with engine.begin() as conn:
+            for key, query in queries.items():
+                try:
+                    result = conn.execute(text(query)).scalar()
+                    health[key] = int(result or 0)
+                except Exception as exc:
+                    health[key] = None
+                    health["errors"][key] = str(exc)
+    except Exception as exc:
+        for key in queries:
+            health.setdefault(key, None)
+        health["errors"]["database"] = str(exc)
     return health
 
 
@@ -187,6 +202,8 @@ def _league_readiness_table(matches_df: pd.DataFrame, league_seasons_df: pd.Data
 
 
 def _next_action(health: dict, matches_df: pd.DataFrame) -> str:
+    if matches_df.attrs.get("load_error") or health.get("errors"):
+        return "Corriger ou vérifier la connexion à la base avant d'interpréter les KPI."
     if matches_df.empty:
         return "Importer les championnats dans Mise à jour."
     if health["upcoming"] == 0:
@@ -242,6 +259,8 @@ def _top_leagues_table(matches_df: pd.DataFrame, league_seasons_df: pd.DataFrame
 
 
 def _quick_read_sentence(kpis: dict) -> str:
+    if kpis.get("completed_count") is None:
+        return "Tendances indisponibles : la lecture des matchs a échoué."
     if not kpis["completed_count"]:
         return "Aucun match terminé n’est encore disponible pour calculer des tendances fiables."
     dominant = max(
@@ -300,8 +319,9 @@ def show():
     league_seasons_df = _load_league_seasons()
     kpis = _compute_kpis(matches_df)
     health = _load_data_health()
-
-    matches_count = len(matches_df)
+    if matches_df.attrs.get("load_error"):
+        kpis = {key: None for key in kpis}
+    matches_count = None if matches_df.attrs.get("load_error") else len(matches_df)
     seasons = league_seasons_df["season"].nunique() if not league_seasons_df.empty else (
         matches_df["season"].nunique() if not matches_df.empty else 0
     )
@@ -313,7 +333,20 @@ def show():
         season_scope = _season_scope(league_seasons_df["season"])
         league_scope = str(league_seasons_df["league_id"].nunique())
 
-    if matches_df.empty:
+    load_errors = []
+    if matches_df.attrs.get("load_error"):
+        load_errors.append("Lecture des matchs : " + matches_df.attrs["load_error"])
+    if league_seasons_df.attrs.get("load_error"):
+        load_errors.append("Lecture des saisons : " + league_seasons_df.attrs["load_error"])
+    if health.get("errors"):
+        load_errors.extend(f"{key} : {message}" for key, message in health["errors"].items())
+
+    if load_errors:
+        st.error("Certaines mesures sont indisponibles à cause d'une erreur de lecture. Elles ne sont pas affichées comme des zéros.")
+        with st.expander("Détails des erreurs de lecture"):
+            for error in load_errors:
+                st.write(f"- {error}")
+    elif matches_df.empty:
         st.warning("Aucune donnée disponible. Ouvrez 'Mise à jour' pour lancer l’import.")
 
     ui.dashboard_hero(
@@ -415,19 +448,27 @@ def show():
             {
                 "label": "Couverture API future",
                 "value": _format_percent(
-                    health["upcoming_predictions"] / max(1, health["upcoming"]) * 100
+                    None if health["upcoming_predictions"] is None or health["upcoming"] is None
+                    else health["upcoming_predictions"] / max(1, health["upcoming"]) * 100
                 ),
-                "caption": f"{health['upcoming_predictions']} / {health['upcoming']} matchs",
+                "caption": (
+                    "Mesure indisponible en cas d'erreur SQL"
+                    if health["upcoming_predictions"] is None or health["upcoming"] is None
+                    else f"{health['upcoming_predictions']} / {health['upcoming']} matchs"
+                ),
                 "accent": "#2aa198",
             },
             {
                 "label": "Conseils API informatifs",
                 "value": _format_percent(
-                    health["informative_upcoming_predictions"]
-                    / max(1, health["upcoming_predictions"])
-                    * 100
+                    None if health["informative_upcoming_predictions"] is None or health["upcoming_predictions"] is None
+                    else health["informative_upcoming_predictions"] / max(1, health["upcoming_predictions"]) * 100
                 ),
-                "caption": "Réponses neutres exclues du calcul",
+                "caption": (
+                    "Mesure indisponible en cas d'erreur SQL"
+                    if health["informative_upcoming_predictions"] is None or health["upcoming_predictions"] is None
+                    else "Réponses neutres exclues du calcul"
+                ),
                 "accent": "#164d73",
             },
         ]
