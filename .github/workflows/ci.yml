@@ -19,9 +19,9 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt pip-audit
+          python -m pip install -r requirements.txt pip-audit pytest
       - name: Test
-        run: python -m unittest discover -s tests -v
+        run: python -m pytest -q
       - name: Compile
         run: python -m compileall -q app.py components database pages services scripts tests
       - name: Check dependencies
@@ -53,6 +53,7 @@ jobs:
           APP_PASSWORD: ci-test-password-not-used-in-production
           DATABASE_URL: sqlite:///ci-e2e-test.db
           STREAMLIT_STARTUP_UPDATES: "false"
+          STREAMLIT_LIVE_PRIORITY_WATCHER: "false"
           AUTO_REFRESH_ON_CONNECTION: "false"
           AUTO_REFRESH_CURRENT_ON_CONNECTION: "false"
           STREAMLIT_RECORD_CONNECTIONS: "false"
