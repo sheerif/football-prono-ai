@@ -101,7 +101,9 @@ def _request_priority(path: str, params: dict | None) -> str:
             pass
     if path in {"/predictions", "/fixtures/lineups", "/fixtures/players"}:
         return "prediction_blocking" if path == "/predictions" else "lineups"
-    if path in {"/fixtures", "/fixtures/statistics"}:
+    if path == "/fixtures/statistics":
+        return "xg_enrichment"
+    if path == "/fixtures":
         return "current_fixtures"
     if path == "/standings":
         return "standings"
