@@ -151,6 +151,15 @@ class GitBackupTests(unittest.TestCase):
         self.assertEqual(tree_payload["base_tree"], "old-tree")
         self.assertEqual(commit_payload["parents"], ["old-commit"])
         self.assertFalse(ref_payload["force"])
+        self.assertFalse(result["history_reset"])
+
+    def test_backup_history_resets_at_utc_month_boundary(self):
+        now = datetime(2026, 11, 20, 0, 0, tzinfo=timezone.utc)
+        same_month = {"committed_at": "2026-11-01T00:00:00Z"}
+        previous_month = {"committed_at": "2026-10-31T23:59:00Z"}
+        self.assertFalse(git_backup._should_reset_backup_history(same_month, now))
+        self.assertTrue(git_backup._should_reset_backup_history(previous_month, now))
+        self.assertFalse(git_backup._should_reset_backup_history(None, now))
 
     def test_skips_duplicate_backup_for_utc_day(self):
         today = datetime.now(timezone.utc).strftime(
