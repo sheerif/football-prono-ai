@@ -360,3 +360,6 @@ class ApiMetricsAndPriorityTests(unittest.TestCase):
         today = api_football.datetime.datetime.now(api_football.datetime.UTC).date().isoformat()
         tomorrow = (api_football.datetime.datetime.now(api_football.datetime.UTC).date() + api_football.datetime.timedelta(days=1)).isoformat()
         self.assertEqual(api_football._request_priority("/fixtures", {"from": today, "to": tomorrow}), "imminent")
+
+    def test_historical_fixture_statistics_are_low_priority_enrichment(self):
+        self.assertEqual(api_football._request_priority("/fixtures/statistics", {"fixture": 123}), "xg_enrichment")
