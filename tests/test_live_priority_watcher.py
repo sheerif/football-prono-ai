@@ -111,12 +111,14 @@ def test_priority_prediction_requests_signal_active_secondary_job(monkeypatch):
     monkeypatch.setattr(background_jobs, "_priority_preemption_requested", threading.Event())
     monkeypatch.setattr(background_jobs, "_pending_priority_prediction_days", None)
     monkeypatch.setattr(background_jobs, "_priority_prediction_pending", False)
-    job_id = background_jobs._create_job("full_sync", "secondary")
+    monkeypatch.setattr(background_jobs, "_priority_secondary_resume", None)
+    job_id = background_jobs._create_job("full_sync", "secondary", {"persistent": True})
     reused_id, created = background_jobs._create_unique_data_job("prediction_sync", "priority", {"days": 1})
     assert reused_id == job_id and not created
     assert background_jobs.priority_preemption_requested()
     assert background_jobs._priority_prediction_pending
     assert background_jobs._jobs[job_id]["details"]["priority_prediction_pending"]
+    assert background_jobs._priority_secondary_resume == {"kind": "full_sync", "details": {"persistent": True, "priority_prediction_pending": True}}
 
 
 def test_preemption_event_is_cleared_by_test_isolation(monkeypatch):
