@@ -16,6 +16,7 @@ _startup_started = False
 _priority_preemption_requested = threading.Event()
 _pending_priority_prediction_days = None
 _priority_prediction_pending = False
+_priority_secondary_resume = None
 _full_progress_cache: tuple[datetime.datetime, dict] | None = None
 _quota_status_cache: tuple[datetime.datetime, dict] | None = None
 _full_state_read_cache: tuple[float, dict | None] | None = None
@@ -39,10 +40,11 @@ def _now() -> str:
 
 
 def _set_job(job_id: str, **updates):
-    global _pending_priority_prediction_days, _priority_prediction_pending
+    global _pending_priority_prediction_days, _priority_prediction_pending, _priority_secondary_resume
     should_backup = False
     priority_days = None
     priority_pending = False
+    secondary_resume = None
     with _lock:
         job = _jobs.get(job_id)
         if not job:
@@ -56,22 +58,31 @@ def _set_job(job_id: str, **updates):
         if should_backup:
             _backup_started_jobs.add(job_id)
             job["backup_status"] = "pending"
+        no_other_active = not any(
+            other_id != job_id
+            and other.get("kind") in DATA_JOB_KINDS
+            and other.get("status") in ACTIVE_JOB_STATUSES
+            for other_id, other in _jobs.items()
+        )
         if (
             job.get("status") in {"done", "partial", "error"}
             and job.get("kind") != "prediction_sync"
             and _priority_prediction_pending
-            and not any(
-                other_id != job_id
-                and other.get("kind") in DATA_JOB_KINDS
-                and other.get("status") in ACTIVE_JOB_STATUSES
-                for other_id, other in _jobs.items()
-            )
+            and no_other_active
         ):
             priority_days = _pending_priority_prediction_days
             priority_pending = True
             _pending_priority_prediction_days = None
             _priority_prediction_pending = False
             _priority_preemption_requested.clear()
+        if (
+            job.get("status") in {"done", "partial", "error"}
+            and job.get("kind") == "prediction_sync"
+            and _priority_secondary_resume
+            and no_other_active
+        ):
+            secondary_resume = _priority_secondary_resume
+            _priority_secondary_resume = None
     if should_backup:
         threading.Thread(
             target=lambda: _backup_after_data_job(job_id),
@@ -84,6 +95,24 @@ def _set_job(job_id: str, **updates):
             name="football-prono-priority-predictions",
             daemon=True,
         ).start()
+    if secondary_resume:
+        if secondary_resume.get("kind") == "full_sync":
+            threading.Thread(
+                target=lambda: start_full_sync(resumed=True),
+                name="football-prono-resume-full-sync",
+                daemon=True,
+            ).start()
+        elif secondary_resume.get("kind") == "xg_sync":
+            details = secondary_resume.get("details") or {}
+            threading.Thread(
+                target=lambda: start_xg_sync(
+                    league_ids=details.get("league_ids"),
+                    seasons=details.get("seasons"),
+                    max_matches=details.get("max_matches", 100),
+                ),
+                name="football-prono-resume-xg",
+                daemon=True,
+            ).start()
 
 
 def _backup_after_data_job(job_id: str):
@@ -152,7 +181,7 @@ def _create_unique_data_job(
     details: dict | None = None,
 ) -> tuple[str, bool]:
     """Reuse active jobs; prediction requests cooperatively preempt secondary work."""
-    global _pending_priority_prediction_days, _priority_prediction_pending
+    global _pending_priority_prediction_days, _priority_prediction_pending, _priority_secondary_resume
     with _lock:
         existing = next(
             (
@@ -168,6 +197,11 @@ def _create_unique_data_job(
                 _priority_preemption_requested.set()
                 _pending_priority_prediction_days = (details or {}).get("days")
                 _priority_prediction_pending = True
+                if existing.get("kind") in {"full_sync", "xg_sync"}:
+                    _priority_secondary_resume = {
+                        "kind": existing.get("kind"),
+                        "details": dict(existing.get("details") or {}),
+                    }
                 existing.setdefault("details", {})["priority_prediction_pending"] = True
                 existing["message"] = "Collecte prioritaire demandée : arrêt au prochain checkpoint sûr."
             return existing["id"], False
