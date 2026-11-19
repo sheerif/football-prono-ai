@@ -192,8 +192,10 @@ def _worker():
                     background_jobs.start_prediction_sync(days=1)
                 except Exception:
                     logger.exception("Could not enqueue priority prediction refresh")
-            if not job_active:
-                _last_signature = signature
+            # Remember the detected signature even when writes are deferred;
+            # otherwise the same event would enqueue a second refresh after
+            # the priority job completes. The next idle poll still persists it.
+            _last_signature = signature
             delay = _interval_seconds(
                 has_live=bool(result["live_count"]),
                 has_imminent=bool(result["imminent_count"]),
