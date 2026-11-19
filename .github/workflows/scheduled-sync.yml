@@ -19,7 +19,7 @@ jobs:
     timeout-minutes: 45
     env:
       API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
-      GITHUB_BACKUP_TOKEN: ${{ secrets.GITHUB_BACKUP_TOKEN }}
+      GITHUB_BACKUP_TOKEN: ${{ secrets.BACKUP_TOKEN }}
       GITHUB_BACKUP_REPOSITORY: sheerif/football-prono-ai
       GITHUB_BACKUP_BRANCH: database-backup
       DATABASE_URL: sqlite:///football.db
@@ -35,7 +35,7 @@ jobs:
             missing+=("API_FOOTBALL_KEY")
           fi
           if [ -z "$GITHUB_BACKUP_TOKEN" ]; then
-            missing+=("GITHUB_BACKUP_TOKEN")
+            missing+=("BACKUP_TOKEN")
           fi
           if [ "${#missing[@]}" -gt 0 ]; then
             printf '::error::Scheduled sync cannot run; missing required Actions secrets: %s\n' "${missing[*]}"
