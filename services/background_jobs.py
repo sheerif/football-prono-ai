@@ -13,6 +13,8 @@ _lock = threading.RLock()
 _jobs: dict[str, dict] = {}
 _backup_started_jobs: set[str] = set()
 _startup_started = False
+_priority_preemption_requested = threading.Event()
+_pending_priority_prediction_days = None
 _full_progress_cache: tuple[datetime.datetime, dict] | None = None
 _quota_status_cache: tuple[datetime.datetime, dict] | None = None
 _full_state_read_cache: tuple[float, dict | None] | None = None
@@ -36,7 +38,10 @@ def _now() -> str:
 
 
 def _set_job(job_id: str, **updates):
+    global _pending_priority_prediction_days
     should_backup = False
+    priority_days = None
+    priority_pending = False
     with _lock:
         job = _jobs.get(job_id)
         if not job:
@@ -50,10 +55,31 @@ def _set_job(job_id: str, **updates):
         if should_backup:
             _backup_started_jobs.add(job_id)
             job["backup_status"] = "pending"
+        if (
+            job.get("status") in {"done", "partial", "error"}
+            and job.get("kind") != "prediction_sync"
+            and _pending_priority_prediction_days is not None
+            and not any(
+                other_id != job_id
+                and other.get("kind") in DATA_JOB_KINDS
+                and other.get("status") in ACTIVE_JOB_STATUSES
+                for other_id, other in _jobs.items()
+            )
+        ):
+            priority_days = _pending_priority_prediction_days
+            priority_pending = True
+            _pending_priority_prediction_days = None
+            _priority_preemption_requested.clear()
     if should_backup:
         threading.Thread(
             target=lambda: _backup_after_data_job(job_id),
             name=f"football-prono-backup-{job_id[:8]}",
+            daemon=True,
+        ).start()
+    if priority_pending:
+        threading.Thread(
+            target=lambda: start_prediction_sync(days=priority_days),
+            name="football-prono-priority-predictions",
             daemon=True,
         ).start()
 
@@ -123,11 +149,12 @@ def _create_unique_data_job(
     label: str,
     details: dict | None = None,
 ) -> tuple[str, bool]:
-    """Atomically reuse the active data job or create a new one."""
+    """Reuse active jobs; prediction requests cooperatively preempt secondary work."""
+    global _pending_priority_prediction_days
     with _lock:
         existing = next(
             (
-                job["id"]
+                job
                 for job in _jobs.values()
                 if job.get("kind") in DATA_JOB_KINDS
                 and job.get("status") in ACTIVE_JOB_STATUSES
@@ -135,8 +162,18 @@ def _create_unique_data_job(
             None,
         )
         if existing:
-            return existing, False
+            if kind == "prediction_sync" and existing.get("kind") != "prediction_sync":
+                _priority_preemption_requested.set()
+                _pending_priority_prediction_days = (details or {}).get("days")
+                existing.setdefault("details", {})["priority_prediction_pending"] = True
+                existing["message"] = "Collecte prioritaire demandée : arrêt au prochain checkpoint sûr."
+            return existing["id"], False
         return _create_job(kind, label, details), True
+
+
+def priority_preemption_requested() -> bool:
+    """Signal consumed at safe checkpoints by long-running secondary collectors."""
+    return _priority_preemption_requested.is_set()
 
 
 def list_jobs() -> list[dict]:
