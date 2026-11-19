@@ -138,7 +138,7 @@ def _worker():
             signature = result["signature"]
             # Trigger the existing prediction updater only when the live feed
             # changes, preventing repeated identical downloads.
-            if _last_signature is not None and signature != _last_signature:
+            if signature != _last_signature and (\n                _last_signature is not None or result["changed"] > 0\n            ):
                 try:
                     from services import background_jobs
                     background_jobs.start_prediction_sync(days=3)
