@@ -1,0 +1,99 @@
+name: Validate database backup restoration
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate-restore:
+    name: Restore backup into temporary runner and verify SQLite
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Fetch backup branch
+        run: |
+          git fetch --no-tags --depth=1 origin \\
+            refs/heads/database-backup:refs/remotes/origin/database-backup
+
+      - name: Reconstruct and restore archive in runner workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git cat-file -e origin/database-backup:football.db.gz 2>/dev/null; then
+            git show origin/database-backup:football.db.gz > football.db.gz
+          elif git cat-file -e origin/database-backup:football.db.manifest.json 2>/dev/null; then
+            git show origin/database-backup:football.db.manifest.json > football.db.manifest.json
+            python - <<'PY'
+          import hashlib, json, subprocess
+          from pathlib import Path
+
+          manifest = json.loads(Path("football.db.manifest.json").read_text())
+          if not manifest.get("parts"):
+              raise SystemExit("Manifeste sans fragments.")
+          archive = bytearray()
+          for part in manifest["parts"]:
+              data = subprocess.check_output(
+                  ["git", "show", f"origin/database-backup:{part['path']}"]
+              )
+              blob_header = f"blob {len(data)}\\0".encode("ascii")
+              if len(data) != part["size_bytes"] or hashlib.sha1(blob_header + data).hexdigest() != part["git_blob_sha"]:
+                  raise SystemExit(f"Fragment invalide: {part['path']}")
+              archive.extend(data)
+          if len(archive) != manifest["size_bytes"]:
+              raise SystemExit("Taille archive reconstruite incorrecte.")
+          if hashlib.sha256(archive).hexdigest() != manifest["sha256"]:
+              raise SystemExit("SHA-256 archive reconstruite incorrect.")
+          Path("football.db.gz").write_bytes(archive)
+          PY
+          else
+            echo "::error::Aucune archive ou manifeste trouvé sur database-backup."
+            exit 1
+          fi
+          gzip -t football.db.gz
+          gzip -dc football.db.gz > football.db
+          test -s football.db
+
+      - name: Verify restored SQLite database (read-only test)
+        shell: bash
+        run: |
+          python - <<'PY'
+          import sqlite3
+          from pathlib import Path
+
+          db = Path("football.db")
+          connection = sqlite3.connect(db)
+          try:
+              result = connection.execute("PRAGMA integrity_check").fetchone()
+              if not result or result[0] != "ok":
+                  raise SystemExit(f"SQLite integrity_check failed: {result}")
+              tables = {
+                  row[0] for row in connection.execute(
+                      "SELECT name FROM sqlite_master WHERE type='table'"
+                  )
+              }
+              required = {"leagues", "teams", "matches", "standings"}
+              missing = required - tables
+              if missing:
+                  raise SystemExit(f"Tables core absentes: {sorted(missing)}")
+              counts = {
+                  name: int(connection.execute(f'SELECT COUNT(*) FROM "{name}"').fetchone()[0])
+                  for name in sorted(required)
+              }
+          finally:
+              connection.close()
+          print("RESTORE VALIDATION: OK")
+          print("SQLite integrity_check: ok")
+          print("Core tables:", ", ".join(sorted(required)))
+          print("Counts:", counts)
+          with open("$GITHUB_STEP_SUMMARY", "a", encoding="utf-8") as summary:
+              summary.write("## Validation de restauration réussie\\n\\n")
+              summary.write("- Archive GZIP et empreintes vérifiées\\n")
+              summary.write("- SQLite `PRAGMA integrity_check`: `ok`\\n")
+              summary.write("- Tables core présentes\\n")
+              summary.write("- Volumes: " + ", ".join(f"{name}={count}" for name, count in counts.items()) + "\\n")
+          PY
