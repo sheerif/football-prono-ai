@@ -174,7 +174,7 @@ def latest_backup_info() -> dict:
 
 def backup_to_github(*, database_engine=engine, force: bool = False) -> dict:
     """Publish a changed snapshot daily, retaining Git's differential history."""
-    token = _setting("GITHUB_BACKUP_TOKEN")
+    token = _backup_token()
     if not token:
         return {"status": "not_configured"}
     repository = _setting("GITHUB_BACKUP_REPOSITORY", _DEFAULT_REPOSITORY)
