@@ -1,3 +1,6 @@
+import datetime
+import threading
+
 from services import live_priority_watcher
 
 
@@ -35,16 +38,19 @@ def test_live_fixture_signature_tracks_score_and_status():
 
 def test_poll_once_uses_live_endpoint_and_persists_changes(monkeypatch):
     class FakeClient:
-        last_rate_limit = {"daily_remaining": 4000}
+        last_rate_limit = {"daily_remaining": 4000, "daily_limit": 7500}
 
         def _get(self, path, params):
             assert path == "/fixtures"
-            assert params == {"live": "all"}
-            return {"response": [{"fixture": {"id": 123}}]}
+            if params == {"live": "all"}:
+                return {"response": [{"fixture": {"id": 123, "status": {"short": "1H"}}}]}
+            assert "from" in params and "to" in params
+            return {"response": []}
 
     monkeypatch.setattr(live_priority_watcher, "_persist_live_fixtures", lambda items: 1)
     result = live_priority_watcher.poll_once(FakeClient())
     assert result["live_count"] == 1
+    assert result["imminent_count"] == 0
     assert result["changed"] == 1
 
 
