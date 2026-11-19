@@ -126,8 +126,8 @@ def _persist_live_fixtures(items: list[dict]) -> int:
     return changed
 
 
-def poll_once(client=None, *, now: datetime.datetime | None = None) -> dict:
-    """Poll live plus next-24h fixtures; exposed for mock-based integration tests."""
+def poll_once(client=None, *, now: datetime.datetime | None = None, persist: bool = True) -> dict:
+    """Poll live plus next-24h fixtures; optionally defer writes during another job."""
     client = client or import_service.client
     now = now or datetime.datetime.now(datetime.UTC)
     live_payload = client._get("/fixtures", {"live": "all"})
@@ -149,7 +149,7 @@ def poll_once(client=None, *, now: datetime.datetime | None = None) -> dict:
         if int((item.get("fixture") or {}).get("id") or item.get("id") or 0) not in live_ids
     ]
     items = live_items + imminent_items
-    changed = _persist_live_fixtures(items)
+    changed = _persist_live_fixtures(items) if persist else 0
     return {
         "live_count": len(live_items),
         "imminent_count": len(imminent_items),
@@ -176,20 +176,24 @@ def _worker():
     while not _stop.is_set():
         try:
             from services import background_jobs
-            if background_jobs.data_job_running():
-                _stop.wait(60)
-                continue
-            result = poll_once(client)
+            job_active = background_jobs.data_job_running()
+            # Keep monitoring priority fixtures while secondary data jobs run,
+            # but defer SQLite writes until the active job reaches a checkpoint.
+            result = poll_once(client, persist=not job_active)
             failures = 0
             signature = result["signature"]
             if signature != _last_signature and (
-                _last_signature is not None or result["changed"] > 0 or result["imminent_count"] > 0
+                _last_signature is not None
+                or result["changed"] > 0
+                or result["live_count"] > 0
+                or result["imminent_count"] > 0
             ):
                 try:
                     background_jobs.start_prediction_sync(days=1)
                 except Exception:
                     logger.exception("Could not enqueue priority prediction refresh")
-            _last_signature = signature
+            if not job_active:
+                _last_signature = signature
             delay = _interval_seconds(
                 has_live=bool(result["live_count"]),
                 has_imminent=bool(result["imminent_count"]),
