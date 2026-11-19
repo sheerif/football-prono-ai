@@ -313,7 +313,13 @@ class ApiFootballClient:
         except (TypeError, ValueError):
             current = daily_limit = None
 
-        headers = self.last_rate_limit or {}
+        headers = dict(self.last_rate_limit or {})
+        status_daily_limit = daily_limit
+        try:
+            header_daily_limit = int(headers.get("daily_limit"))
+        except (TypeError, ValueError):
+            header_daily_limit = None
+        daily_limit = header_daily_limit or status_daily_limit
         try:
             daily_remaining = int(headers.get("daily_remaining"))
         except (TypeError, ValueError):
@@ -347,12 +353,8 @@ class ApiFootballClient:
         # Fallback to /status response counters when rate-limit headers are
         # absent. If both sources are unknown, preserve an unknown snapshot:
         # the policy blocks secondary work but still permits urgent predictions.
-        if daily_limit is None and daily_limit_from_status if False else False:
-            pass
         if daily_remaining is None and current is not None and daily_limit is not None and daily_limit > 0:
             daily_remaining = max(0, daily_limit - current)
-        if daily_limit is None and daily_limit_from_status is not None:
-            daily_limit = daily_limit_from_status
         if daily_remaining is not None:
             headers["daily_remaining"] = daily_remaining
         if daily_limit is not None:
