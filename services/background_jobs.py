@@ -15,6 +15,7 @@ _backup_started_jobs: set[str] = set()
 _startup_started = False
 _priority_preemption_requested = threading.Event()
 _pending_priority_prediction_days = None
+_priority_prediction_pending = False
 _full_progress_cache: tuple[datetime.datetime, dict] | None = None
 _quota_status_cache: tuple[datetime.datetime, dict] | None = None
 _full_state_read_cache: tuple[float, dict | None] | None = None
@@ -38,7 +39,7 @@ def _now() -> str:
 
 
 def _set_job(job_id: str, **updates):
-    global _pending_priority_prediction_days
+    global _pending_priority_prediction_days, _priority_prediction_pending
     should_backup = False
     priority_days = None
     priority_pending = False
@@ -58,7 +59,7 @@ def _set_job(job_id: str, **updates):
         if (
             job.get("status") in {"done", "partial", "error"}
             and job.get("kind") != "prediction_sync"
-            and _pending_priority_prediction_days is not None
+            and _priority_prediction_pending
             and not any(
                 other_id != job_id
                 and other.get("kind") in DATA_JOB_KINDS
@@ -69,6 +70,7 @@ def _set_job(job_id: str, **updates):
             priority_days = _pending_priority_prediction_days
             priority_pending = True
             _pending_priority_prediction_days = None
+            _priority_prediction_pending = False
             _priority_preemption_requested.clear()
     if should_backup:
         threading.Thread(
@@ -150,7 +152,7 @@ def _create_unique_data_job(
     details: dict | None = None,
 ) -> tuple[str, bool]:
     """Reuse active jobs; prediction requests cooperatively preempt secondary work."""
-    global _pending_priority_prediction_days
+    global _pending_priority_prediction_days, _priority_prediction_pending
     with _lock:
         existing = next(
             (
@@ -165,6 +167,7 @@ def _create_unique_data_job(
             if kind == "prediction_sync" and existing.get("kind") != "prediction_sync":
                 _priority_preemption_requested.set()
                 _pending_priority_prediction_days = (details or {}).get("days")
+                _priority_prediction_pending = True
                 existing.setdefault("details", {})["priority_prediction_pending"] = True
                 existing["message"] = "Collecte prioritaire demandée : arrêt au prochain checkpoint sûr."
             return existing["id"], False
@@ -662,13 +665,33 @@ def start_manual_import(
                 return
             _progress(job_id, 0, 1, "Initialisation de la base...")
             import_service.init_db()
-            import_service.import_leagues_cautious(
+            import_result = import_service.import_leagues_cautious(
                 league_ids,
                 seasons=seasons,
                 pause=float(pause),
                 max_retries=int(max_retries),
                 progress_callback=lambda current, total, label: _progress(job_id, current, total, label),
+                priority_preemption_check=priority_preemption_requested,
             )
+            if import_result and import_result.get("preempted"):
+                message = "Import secondaire arrêté au checkpoint pour les pronostics prioritaires."
+                _set_job(
+                    job_id,
+                    status="partial",
+                    message=message,
+                    finished_at=_now(),
+                    details=import_result,
+                )
+                import_service.record_update_log(
+                    event_type="import_manuel",
+                    status="interrompue_priorité",
+                    started_at=started_at,
+                    reason=message,
+                    leagues=league_ids,
+                    seasons=seasons,
+                    details={**import_result, "background": True, "priority_preemption": True},
+                )
+                return
             _set_job(job_id, status="done", progress=1.0, message="Import terminé", finished_at=_now())
             import_service.record_update_log(
                 event_type="import_manuel",
@@ -759,6 +782,7 @@ def start_prediction_sync(days: int | None = None) -> str:
                 ),
             )
             quota_reached = bool(result.get("quota_reached"))
+            preempted = bool(result.get("preempted"))
             quota_details = (
                 _quota_retry_metadata({**result, "job_id": job_id})
                 if quota_reached
@@ -846,11 +870,11 @@ def start_xg_sync(
             message = (
                 "Quota ou réserve API atteint : les xG enregistrés sont conservés."
                 if quota_reached
-                else "xG historiques synchronisés"
+                else ("xG interrompus au checkpoint pour les pronostics prioritaires." if preempted else "xG historiques synchronisés")
             )
             _set_job(
                 job_id,
-                status="partial" if quota_reached else "done",
+                status="partial" if (quota_reached or preempted) else "done",
                 message=message,
                 finished_at=_now(),
                 details={**result, **quota_details},
@@ -1068,11 +1092,11 @@ def start_full_sync(*, resumed: bool = False) -> str:
 
             has_partial_data = bool(result.get("partial")) or bool(
                 result.get("errors")
-            )
+            ) or bool(result.get("preempted"))
             message = (
-                "Synchronisation terminée avec des données indisponibles signalées."
-                if has_partial_data
-                else "Synchronisation exhaustive terminée"
+                "Synchronisation interrompue au checkpoint pour les pronostics prioritaires."
+                if result.get("preempted")
+                else ("Synchronisation terminée avec des données indisponibles signalées." if has_partial_data else "Synchronisation exhaustive terminée")
             )
             _set_job(
                 job_id,
