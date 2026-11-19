@@ -28,23 +28,28 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Check required repository secrets
-        id: config
         shell: bash
         run: |
-          if [ -n "$API_FOOTBALL_KEY" ] && [ -n "$GITHUB_BACKUP_TOKEN" ]; then
-            echo "configured=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "configured=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::Sync skipped. Configure API_FOOTBALL_KEY and GITHUB_BACKUP_TOKEN in repository Actions secrets."
-            {
-              echo "## Synchronisation planifiée non exécutée"
-              echo
-              echo "Configurez les secrets Actions `API_FOOTBALL_KEY` et `GITHUB_BACKUP_TOKEN` pour activer l'archivage pré-match persistant."
-            } >> "$GITHUB_STEP_SUMMARY"
+          missing=()
+          if [ -z "$API_FOOTBALL_KEY" ]; then
+            missing+=("API_FOOTBALL_KEY")
           fi
+          if [ -z "$GITHUB_BACKUP_TOKEN" ]; then
+            missing+=("GITHUB_BACKUP_TOKEN")
+          fi
+          if [ "${#missing[@]}" -gt 0 ]; then
+            printf '::error::Scheduled sync cannot run; missing required Actions secrets: %s\n' "${missing[*]}"
+            {
+              echo "## Synchronisation non exécutée"
+              echo
+              echo "Les secrets Actions requis sont manquants : ${missing[*]}."
+              echo "Le workflow échoue explicitement au lieu de signaler une synchronisation verte mais ignorée."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "Required secrets are configured."
 
       - name: Restore persistent SQLite database
-        if: steps.config.outputs.configured == 'true'
         shell: bash
         run: |
           git fetch --no-tags --depth=1 origin \
@@ -60,7 +65,7 @@ jobs:
           archive = bytearray()
           for part in manifest["parts"]:
               data = subprocess.check_output(["git", "show", f"origin/database-backup:{part['path']}"])
-              header = f"blob {len(data)}\0".encode("ascii")
+              header = f"blob {len(data)}\\0".encode("ascii")
               git_sha = hashlib.sha1(header + data).hexdigest()
               if len(data) != part["size_bytes"] or git_sha != part["git_blob_sha"]:
                   raise SystemExit(f"Fragment invalide: {part['path']}")
@@ -76,18 +81,15 @@ jobs:
           sha256sum football.db.gz football.db
 
       - name: Set up Python
-        if: steps.config.outputs.configured == 'true'
         uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
 
       - name: Install application dependencies
-        if: steps.config.outputs.configured == 'true'
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
 
       - name: Synchronize and archive pre-match forecasts
-        if: steps.config.outputs.configured == 'true'
         run: python -m scripts.run_scheduled_sync
