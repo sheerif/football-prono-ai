@@ -1248,6 +1248,7 @@ def import_leagues_cautious(
     max_retries: int = 5,
     force_refresh_seasons: List[int] | None = None,
     progress_callback=None,
+    priority_preemption_check=None,
 ):
     """Import several leagues with polite pauses, retries and logging.
 
@@ -1272,6 +1273,8 @@ def import_leagues_cautious(
             logging.info(f"Starting import for league {lid}")
             for season in seasons:
                 logging.info(f"Importing {lid} season {season}")
+                if priority_preemption_check and priority_preemption_check():
+                    return {"preempted": True, "checkpoint": f"core:{lid}:{season}", "league_id": lid, "season": season}
                 _progress(f"Ligue {lid} - {season}: préparation")
                 # Check existing
                 existing_count = session.query(models.Match).filter_by(league_id=lid, season=season).count()
@@ -1288,6 +1291,8 @@ def import_leagues_cautious(
                     _sync_league_metadata(session, lid, season)
 
                 # Teams
+                if priority_preemption_check and priority_preemption_check():
+                    return {"preempted": True, "checkpoint": f"teams:{lid}:{season}", "league_id": lid, "season": season}
                 _progress(f"Ligue {lid} - {season}: téléchargement des équipes")
                 tries = 0
                 teams_ok = team_count > 0
@@ -1329,6 +1334,8 @@ def import_leagues_cautious(
                 time.sleep(pause)
 
                 # Fixtures
+                if priority_preemption_check and priority_preemption_check():
+                    return {"preempted": True, "checkpoint": f"fixtures:{lid}:{season}", "league_id": lid, "season": season}
                 _progress(f"Ligue {lid} - {season}: téléchargement des matchs")
                 tries = 0
                 fixtures_ok = (
@@ -1356,6 +1363,8 @@ def import_leagues_cautious(
                                 _save_match(session, item, lid, season)
                                 _save_fixture_api_detail(session, item, lid, season)
                             session.commit()
+                            if priority_preemption_check and priority_preemption_check():
+                                return {"preempted": True, "checkpoint": f"fixtures-page:{lid}:{season}:{page + 1}", "league_id": lid, "season": season}
                             if page >= total_pages:
                                 break
                             page += 1
@@ -1393,6 +1402,8 @@ def import_leagues_cautious(
                 time.sleep(pause)
 
                 # Standings
+                if priority_preemption_check and priority_preemption_check():
+                    return {"preempted": True, "checkpoint": f"standings:{lid}:{season}", "league_id": lid, "season": season}
                 _progress(f"Ligue {lid} - {season}: téléchargement du classement")
                 tries = 0
                 standings_ok = (
