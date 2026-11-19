@@ -83,6 +83,13 @@ def _set_job(job_id: str, **updates):
         ):
             secondary_resume = _priority_secondary_resume
             _priority_secondary_resume = None
+        if (
+            job.get("status") in {"done", "partial", "error"}
+            and job.get("kind") in {"full_sync", "xg_sync"}
+            and _priority_secondary_resume
+            and not (job.get("details") or {}).get("preempted")
+        ):
+            _priority_secondary_resume = None
     if should_backup:
         threading.Thread(
             target=lambda: _backup_after_data_job(job_id),
@@ -816,7 +823,6 @@ def start_prediction_sync(days: int | None = None) -> str:
                 ),
             )
             quota_reached = bool(result.get("quota_reached"))
-            preempted = bool(result.get("preempted"))
             quota_details = (
                 _quota_retry_metadata({**result, "job_id": job_id})
                 if quota_reached
@@ -918,7 +924,7 @@ def start_xg_sync(
             )
             import_service.record_update_log(
                 event_type="synchronisation_xg",
-                status="partielle" if quota_reached else "effectuée",
+                status="partielle" if (quota_reached or preempted) else "effectuée",
                 started_at=started_at,
                 reason=message,
                 leagues=league_ids,
@@ -1153,6 +1159,8 @@ def start_full_sync(*, resumed: bool = False) -> str:
                     "job_id": job_id,
                     "started_at": started_at,
                     "finished_at": _now(),
+                    "checkpoint": result.get("checkpoint"),
+                    "priority_preemption": bool(result.get("preempted")),
                 },
             )
             import_service.record_update_log(
