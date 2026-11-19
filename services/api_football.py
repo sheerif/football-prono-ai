@@ -65,6 +65,57 @@ def _cache_ttl_seconds() -> int:
         return 60
 
 
+
+def _request_priority(path: str, params: dict | None) -> str:
+    """Classify API calls so the quota policy governs every uncached request."""
+    params = params or {}
+    if path == "/fixtures" and params.get("live"):
+        return "live"
+    if path in {"/predictions", "/fixtures/lineups", "/fixtures/players"}:
+        return "prediction_blocking" if path == "/predictions" else "lineups"
+    if path in {"/fixtures", "/fixtures/statistics"}:
+        return "current_fixtures"
+    if path == "/standings":
+        return "standings"
+    if path == "/teams/statistics":
+        return "xg_enrichment"
+    if path == "/players":
+        return "player_stats"
+    if path in {"/fixtures/headtohead"}:
+        return "recent_results"
+    if path in {"/teams", "/leagues"}:
+        return "current_fixtures"
+    return "historical_backfill"
+
+
+def _request_cache_ttl(path: str, params: dict | None) -> int:
+    """Use freshness appropriate to each shared dataset, not one TTL for all."""
+    env_name = "API_FOOTBALL_CACHE_TTL_" + path.strip("/").replace("/", "_").upper()
+    try:
+        configured = os.getenv(env_name)
+        if configured is not None:
+            return max(0, int(configured))
+    except (TypeError, ValueError):
+        pass
+    defaults = {
+        "/fixtures": 30 if (params or {}).get("live") else 300,
+        "/fixtures/lineups": 120,
+        "/fixtures/players": 120,
+        "/predictions": 180,
+        "/fixtures/statistics": 300,
+        "/standings": 900,
+        "/teams/statistics": 3600,
+        "/players": 3600,
+        "/fixtures/headtohead": 21600,
+        "/teams": 21600,
+        "/leagues": 86400,
+    }
+    try:
+        return max(0, int(os.getenv("API_FOOTBALL_REQUEST_CACHE_SECONDS", str(defaults.get(path, 60)))))
+    except (TypeError, ValueError):
+        return defaults.get(path, 60)
+
+
 def _cache_key(api_key: str, path: str, params) -> tuple:
     normalized = tuple(sorted((str(key), str(value)) for key, value in (params or {}).items()))
     return hash(api_key), str(path), normalized
@@ -81,8 +132,8 @@ def _cached_response(key: tuple):
     return copy.deepcopy(payload)
 
 
-def _remember_response(key: tuple, payload: dict) -> None:
-    ttl = _cache_ttl_seconds()
+def _remember_response(key: tuple, payload: dict, ttl: int | None = None) -> None:
+    ttl = _cache_ttl_seconds() if ttl is None else max(0, int(ttl))
     if ttl <= 0:
         return
     now = time.monotonic()
@@ -170,18 +221,27 @@ class ApiFootballClient:
             cached = None if path == "/status" else _cached_response(key)
             if cached is not None:
                 return cached
+            priority = _request_priority(path, params)
+            quota_snapshot = None
             if path != "/status":
-                self._preflight_quota()
+                quota_snapshot = self._preflight_quota()
+                from services import api_quota_policy
+                decision = api_quota_policy.can_spend(quota_snapshot, priority)
+                if not decision["allowed"]:
+                    raise RuntimeError(
+                        f"Appel API différé ({priority}) : {decision['reason']}; "
+                        f"réserve protégée={decision.get('reserve', 0)}."
+                    )
             payload = self._get_unlocked(
                 path,
                 params,
                 count_request=path != "/status",
             )
             if path != "/status":
-                _remember_response(key, payload)
+                _remember_response(key, payload, _request_cache_ttl(path, params))
             return payload
 
-    def _preflight_quota(self) -> None:
+    def _preflight_quota(self) -> dict:
         """Refresh quota immediately before every uncached data request."""
         payload = self._get_unlocked(
             "/status",
@@ -249,6 +309,8 @@ class ApiFootballClient:
             raise RuntimeError(
                 "Impossible de vérifier le quota API : téléchargement annulé par prudence."
             )
+        from services import api_quota_policy
+        return api_quota_policy.quota_snapshot(headers)
 
     def _get_unlocked(
         self,
