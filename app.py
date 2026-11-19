@@ -29,12 +29,6 @@ except Exception:
 	st.stop()
 
 
-if os.getenv("STREAMLIT_LIVE_PRIORITY_WATCHER", "true").strip().lower() in {
-	"1", "true", "yes", "oui"
-}:
-	live_priority_watcher.start()
-
-
 @st.fragment(run_every="1h")
 def _check_daily_database_backup():
 	git_backup.start_daily_backup_check()
@@ -60,6 +54,11 @@ if "connection_started_at" not in st.session_state:
 			st.session_state["connection_log_id"] = None
 
 background_jobs.start_startup_updates_once(st.session_state.get("connection_log_id"))
+
+if os.getenv("STREAMLIT_LIVE_PRIORITY_WATCHER", "true").strip().lower() in {
+	"1", "true", "yes", "oui"
+}:
+	live_priority_watcher.start()
 
 sidebar.render_app_rail("Tableau de bord")
 
