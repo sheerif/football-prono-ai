@@ -159,18 +159,33 @@ def poll_once(client=None, *, now: datetime.datetime | None = None) -> dict:
     }
 
 
+def _failure_delay(error_count: int, quota: dict | None = None) -> int:
+    delay = min(300 * (2 ** max(0, int(error_count) - 1)), 1800)
+    retry_after = (quota or {}).get("retry_after")
+    try:
+        delay = max(delay, min(1800, int(retry_after)))
+    except (TypeError, ValueError):
+        pass
+    return delay
+
+
 def _worker():
     global _last_signature
     client = import_service.client
+    failures = 0
     while not _stop.is_set():
         try:
+            from services import background_jobs
+            if background_jobs.data_job_running():
+                _stop.wait(60)
+                continue
             result = poll_once(client)
+            failures = 0
             signature = result["signature"]
             if signature != _last_signature and (
                 _last_signature is not None or result["changed"] > 0 or result["imminent_count"] > 0
             ):
                 try:
-                    from services import background_jobs
                     background_jobs.start_prediction_sync(days=1)
                 except Exception:
                     logger.exception("Could not enqueue priority prediction refresh")
@@ -181,8 +196,9 @@ def _worker():
                 quota=result["quota"],
             )
         except Exception:
+            failures += 1
             logger.exception("Live/imminent priority polling failed")
-            delay = 300
+            delay = _failure_delay(failures, getattr(client, "last_rate_limit", {}))
         _stop.wait(delay)
 
 
