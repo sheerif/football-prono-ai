@@ -96,3 +96,18 @@ def test_start_is_idempotent_and_skips_without_credentials(monkeypatch):
     assert fake.started
     assert live_priority_watcher.start() is False
     monkeypatch.setattr(live_priority_watcher, "_started", False)
+
+
+def test_priority_prediction_requests_signal_active_secondary_job(monkeypatch):
+    from services import background_jobs
+    monkeypatch.setattr(background_jobs, "_jobs", {})
+    monkeypatch.setattr(background_jobs, "_backup_started_jobs", set())
+    monkeypatch.setattr(background_jobs, "_priority_preemption_requested", threading.Event())
+    monkeypatch.setattr(background_jobs, "_pending_priority_prediction_days", None)
+    monkeypatch.setattr(background_jobs, "_priority_prediction_pending", False)
+    job_id = background_jobs._create_job("full_sync", "secondary")
+    reused_id, created = background_jobs._create_unique_data_job("prediction_sync", "priority", {"days": 1})
+    assert reused_id == job_id and not created
+    assert background_jobs.priority_preemption_requested()
+    assert background_jobs._priority_prediction_pending
+    assert background_jobs._jobs[job_id]["details"]["priority_prediction_pending"]
