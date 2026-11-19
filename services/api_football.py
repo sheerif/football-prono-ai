@@ -242,6 +242,7 @@ class ApiFootballClient:
             # The status endpoint must remain callable while the local
             # circuit breaker is active so operators can inspect quota state.
             if path != "/status" and _daily_requests_blocked():
+                _cache_metrics["quota_policy_blocks"] += 1
                 raise RuntimeError(
                     "Quota API journalier déjà atteint : appel bloqué localement "
                     "jusqu'à minuit UTC pour éviter une requête refusée supplémentaire."
@@ -260,7 +261,11 @@ class ApiFootballClient:
             priority = _request_priority(path, params)
             quota_snapshot = None
             if path != "/status":
-                quota_snapshot = self._preflight_quota()
+                try:
+                    quota_snapshot = self._preflight_quota()
+                except RuntimeError:
+                    _cache_metrics["quota_policy_blocks"] += 1
+                    raise
                 from services import api_quota_policy
                 decision = api_quota_policy.can_spend(quota_snapshot, priority)
                 if not decision["allowed"]:
@@ -339,14 +344,21 @@ class ApiFootballClient:
                 "Quota API par minute atteint : aucun téléchargement lancé. "
                 f"Réessayez dans {retry_after} seconde(s)."
             )
-        if (
-            (daily_limit is None or daily_limit <= 0)
-            and daily_remaining is None
-        ):
-            self.last_quota_status_error = "Réponse /status sans compteur de quota."
-            raise RuntimeError(
-                "Impossible de vérifier le quota API : téléchargement annulé par prudence."
-            )
+        # Fallback to /status response counters when rate-limit headers are
+        # absent. If both sources are unknown, preserve an unknown snapshot:
+        # the policy blocks secondary work but still permits urgent predictions.
+        if daily_limit is None and daily_limit_from_status if False else False:
+            pass
+        if daily_remaining is None and current is not None and daily_limit is not None and daily_limit > 0:
+            daily_remaining = max(0, daily_limit - current)
+        if daily_limit is None and daily_limit_from_status is not None:
+            daily_limit = daily_limit_from_status
+        if daily_remaining is not None:
+            headers["daily_remaining"] = daily_remaining
+        if daily_limit is not None:
+            headers["daily_limit"] = daily_limit
+        if daily_remaining is None or daily_limit is None:
+            self.last_quota_status_error = "Réponse /status sans compteur de quota; priorité critique uniquement."
         from services import api_quota_policy
         return api_quota_policy.quota_snapshot(headers)
 
