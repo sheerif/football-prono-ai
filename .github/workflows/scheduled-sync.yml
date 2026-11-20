@@ -2,7 +2,7 @@ name: Scheduled priority data sync and historical backfill
 
 on:
   schedule:
-    - cron: "17 * * * *"
+    - cron: "23 * * * *"
   workflow_dispatch:
 
 permissions:
