@@ -228,9 +228,34 @@ class ApiFootballClientTests(unittest.TestCase):
         second_client = ApiFootballClient(api_key="test-key", session=second_session)
 
         self.assertEqual(first_client.get_leagues(), {"response": []})
+        # The shared cache may serve this response after quota exhaustion;
+        # an uncached request from another client must still be blocked.
         with self.assertRaisesRegex(RuntimeError, "bloqué localement"):
-            second_client.get_leagues()
+            second_client.get_teams(61, 2026)
         second_session.get.assert_not_called()
+
+    def test_valid_cache_is_served_during_daily_circuit_breaker(self):
+        response = Mock()
+        response.headers = {}
+        response.json.return_value = {"response": [{"id": 61}]}
+        session = Mock()
+        session.get.side_effect = [self._status_response(), response]
+        client = ApiFootballClient(api_key="test-key", session=session)
+        api_football.cache_metrics_snapshot(reset=True)
+
+        first = client.get_leagues(country="France")
+        api_football._daily_blocked_until = (
+            api_football.datetime.datetime.now(api_football.datetime.UTC)
+            + api_football.datetime.timedelta(hours=1)
+        )
+        second = client.get_leagues(country="France")
+
+        self.assertEqual(first, second)
+        self.assertEqual(session.get.call_count, 2)  # status + first data download
+        metrics = api_football.cache_metrics_snapshot()
+        self.assertEqual(metrics["cache_hits"], 1)
+        self.assertEqual(metrics["requests_avoided"], 1)
+        self.assertEqual(metrics["api_data_requests"], 1)
 
     def test_status_endpoint_remains_available_during_daily_circuit_breaker(self):
         api_football._daily_blocked_until = (
