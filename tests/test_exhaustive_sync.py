@@ -599,7 +599,7 @@ class ExhaustiveSyncTests(unittest.TestCase):
             patch.object(full_sync_service.sync_registry, "mark"),
             patch.object(full_sync_service.import_service, "get_auto_refresh_config", return_value=config),
             patch.object(
-                full_sync_service.import_service, "import_leagues_cautious"
+                full_sync_service.import_service, "import_leagues_cautious", return_value={}
             ) as core_import,
             patch.object(full_sync_service, "_missing_core_scopes", return_value=[]),
             patch.object(full_sync_service, "_all_matches", return_value=[played]),
@@ -667,7 +667,7 @@ class ExhaustiveSyncTests(unittest.TestCase):
             ),
             patch.object(full_sync_service, "_registry_refresh_due", return_value=False),
             patch.object(
-                full_sync_service.import_service, "import_leagues_cautious"
+                full_sync_service.import_service, "import_leagues_cautious", return_value={}
             ) as core_import,
             patch.object(full_sync_service, "_all_matches", return_value=[]),
             patch.object(full_sync_service, "_upcoming_matches", return_value=[]),

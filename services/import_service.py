@@ -544,7 +544,15 @@ def record_update_log(
 
 
 def record_update_result(event_type: str, started_at: str, result: dict, error: str | None = None) -> int:
-    status = "erreur" if error else "effectuée" if result.get("ran") else "ignorée"
+    status = (
+        "erreur"
+        if error
+        else "interrompue_priorité"
+        if result.get("preempted")
+        else "effectuée"
+        if result.get("ran")
+        else "ignorée"
+    )
     config = result.get("config") or {}
     leagues = result.get("refreshed") or config.get("league_ids")
     return record_update_log(
@@ -679,6 +687,7 @@ def _last_refresh_is_recent(interval_minutes: int) -> bool:
 def audit_configured_season_access(
     config: dict | None = None,
     progress_callback=None,
+    priority_preemption_check=None,
 ) -> dict:
     config = config or get_auto_refresh_config()
     seasons = list(range(config["start_season"], config["end_season"] + 1))
@@ -703,6 +712,14 @@ def audit_configured_season_access(
     if progress_callback:
         progress_callback(0, total_seasons, "Vérification de l’accès aux saisons")
     for index, season in enumerate(seasons, start=1):
+        if priority_preemption_check and priority_preemption_check():
+            return {
+                "sample_league": sample_league,
+                "accessible": accessible,
+                "unavailable": unavailable,
+                "preempted": True,
+                "checkpoint": f"season-access:{season}",
+            }
         try:
             resp = client.get_fixtures(sample_league, season)
             errors = resp.get("errors") or {}
@@ -1034,16 +1051,23 @@ def _refresh_league_season(
     pause: float,
     max_retries: int,
     progress_callback=None,
+    priority_preemption_check=None,
 ):
+    if priority_preemption_check and priority_preemption_check():
+        return {"preempted": True, "checkpoint": f"league-metadata:{league_id}:{season}"}
     league = session.get(models.League, league_id)
     if not league or not league.name or not league.logo:
         _sync_league_metadata(session, league_id, season)
 
+    if priority_preemption_check and priority_preemption_check():
+        return {"preempted": True, "checkpoint": f"teams:{league_id}:{season}"}
     tries = 0
     existing_teams = session.query(models.Team).filter_by(
         league_id=league_id
     ).count()
     while existing_teams <= 0 and tries < max_retries:
+        if priority_preemption_check and priority_preemption_check():
+            return {"preempted": True, "checkpoint": f"teams:{league_id}:{season}"}
         try:
             resp = client.get_teams(league_id, season)
             for item in resp.get("response", []):
@@ -1070,8 +1094,12 @@ def _refresh_league_season(
 
     time.sleep(pause)
 
+    if priority_preemption_check and priority_preemption_check():
+        return {"preempted": True, "checkpoint": f"fixtures:{league_id}:{season}"}
     tries = 0
     while tries < max_retries:
+        if priority_preemption_check and priority_preemption_check():
+            return {"preempted": True, "checkpoint": f"fixtures:{league_id}:{season}"}
         try:
             resp = client.get_fixtures(league_id, season)
             items = resp.get("response", [])
@@ -1091,6 +1119,8 @@ def _refresh_league_season(
                 session.commit()
                 if page >= total_pages:
                     break
+                if priority_preemption_check and priority_preemption_check():
+                    return {"preempted": True, "checkpoint": f"fixtures-page:{league_id}:{season}:{page + 1}"}
                 page += 1
                 resp = client._get("/fixtures", {"league": league_id, "season": season, "page": page})
                 items = resp.get("response", [])
@@ -1113,8 +1143,12 @@ def _refresh_league_season(
 
     time.sleep(pause)
 
+    if priority_preemption_check and priority_preemption_check():
+        return {"preempted": True, "checkpoint": f"standings:{league_id}:{season}"}
     tries = 0
     while tries < max_retries:
+        if priority_preemption_check and priority_preemption_check():
+            return {"preempted": True, "checkpoint": f"standings:{league_id}:{season}"}
         try:
             resp = client.get_standings(league_id, season)
             for item in resp.get("response", []):
@@ -1173,7 +1207,10 @@ def _refresh_league_season(
         progress_callback(3, 3, f"Classement {league_id}/{season} vérifié")
 
 
-def refresh_current_competitions_on_connection(progress_callback=None) -> dict:
+def refresh_current_competitions_on_connection(
+    progress_callback=None,
+    priority_preemption_check=None,
+) -> dict:
     """Refresh active seasons for every configured competition once per app session."""
     config = get_auto_refresh_config()
     if not config["enabled"] or not config["current_enabled"]:
@@ -1202,8 +1239,16 @@ def refresh_current_competitions_on_connection(progress_callback=None) -> dict:
     try:
         for league_index, league_id in enumerate(league_ids):
             season = _active_season_for_league(session, league_id, config["end_season"])
+            if priority_preemption_check and priority_preemption_check():
+                return {
+                    "ran": True,
+                    "preempted": True,
+                    "checkpoint": f"current-refresh:{league_id}:{season}",
+                    "config": config,
+                    "refreshed": refreshed,
+                }
             logger.info(f"Refreshing active competition {league_id} season {season}")
-            _refresh_league_season(
+            refresh_result = _refresh_league_season(
                 session,
                 league_id,
                 season,
@@ -1218,7 +1263,16 @@ def refresh_current_competitions_on_connection(progress_callback=None) -> dict:
                     if progress_callback
                     else None
                 ),
+                priority_preemption_check=priority_preemption_check,
             )
+            if refresh_result and refresh_result.get("preempted"):
+                return {
+                    "ran": True,
+                    "preempted": True,
+                    "checkpoint": refresh_result.get("checkpoint"),
+                    "config": config,
+                    "refreshed": refreshed,
+                }
             refreshed.append({"league_id": league_id, "season": season})
             time.sleep(config["pause"])
     finally:
@@ -1248,6 +1302,7 @@ def import_leagues_cautious(
     max_retries: int = 5,
     force_refresh_seasons: List[int] | None = None,
     progress_callback=None,
+    priority_preemption_check=None,
 ):
     """Import several leagues with polite pauses, retries and logging.
 
@@ -1272,6 +1327,8 @@ def import_leagues_cautious(
             logging.info(f"Starting import for league {lid}")
             for season in seasons:
                 logging.info(f"Importing {lid} season {season}")
+                if priority_preemption_check and priority_preemption_check():
+                    return {"preempted": True, "checkpoint": f"core:{lid}:{season}", "league_id": lid, "season": season}
                 _progress(f"Ligue {lid} - {season}: préparation")
                 # Check existing
                 existing_count = session.query(models.Match).filter_by(league_id=lid, season=season).count()
@@ -1288,6 +1345,8 @@ def import_leagues_cautious(
                     _sync_league_metadata(session, lid, season)
 
                 # Teams
+                if priority_preemption_check and priority_preemption_check():
+                    return {"preempted": True, "checkpoint": f"teams:{lid}:{season}", "league_id": lid, "season": season}
                 _progress(f"Ligue {lid} - {season}: téléchargement des équipes")
                 tries = 0
                 teams_ok = team_count > 0
@@ -1329,6 +1388,8 @@ def import_leagues_cautious(
                 time.sleep(pause)
 
                 # Fixtures
+                if priority_preemption_check and priority_preemption_check():
+                    return {"preempted": True, "checkpoint": f"fixtures:{lid}:{season}", "league_id": lid, "season": season}
                 _progress(f"Ligue {lid} - {season}: téléchargement des matchs")
                 tries = 0
                 fixtures_ok = (
@@ -1356,6 +1417,8 @@ def import_leagues_cautious(
                                 _save_match(session, item, lid, season)
                                 _save_fixture_api_detail(session, item, lid, season)
                             session.commit()
+                            if priority_preemption_check and priority_preemption_check():
+                                return {"preempted": True, "checkpoint": f"fixtures-page:{lid}:{season}:{page + 1}", "league_id": lid, "season": season}
                             if page >= total_pages:
                                 break
                             page += 1
@@ -1393,6 +1456,8 @@ def import_leagues_cautious(
                 time.sleep(pause)
 
                 # Standings
+                if priority_preemption_check and priority_preemption_check():
+                    return {"preempted": True, "checkpoint": f"standings:{lid}:{season}", "league_id": lid, "season": season}
                 _progress(f"Ligue {lid} - {season}: téléchargement du classement")
                 tries = 0
                 standings_ok = (
@@ -1478,6 +1543,7 @@ def auto_refresh_if_due(
     force: bool = False,
     progress_callback=None,
     skip_force_refresh_seasons=None,
+    priority_preemption_check=None,
 ) -> dict:
     """Refresh imported football data when the configured interval has elapsed.
 
@@ -1511,7 +1577,16 @@ def auto_refresh_if_due(
             15,
             label,
         ),
+        priority_preemption_check=priority_preemption_check,
     )
+    if audit.get("preempted"):
+        return {
+            "ran": False,
+            "preempted": True,
+            "checkpoint": audit.get("checkpoint"),
+            "config": config,
+            "audit": audit,
+        }
     seasons = audit["accessible"]
     if not seasons:
         _set_sync_value("last_auto_refresh_utc", utc_now().isoformat())
@@ -1531,7 +1606,7 @@ def auto_refresh_if_due(
         if int(season) not in skipped_force_seasons
     ]
 
-    import_leagues_cautious(
+    import_result = import_leagues_cautious(
         config["league_ids"],
         seasons=seasons,
         pause=config["pause"],
@@ -1544,7 +1619,19 @@ def auto_refresh_if_due(
             100,
             label,
         ),
+        priority_preemption_check=priority_preemption_check,
     )
+    if import_result and import_result.get("preempted"):
+        return {
+            "ran": False,
+            "preempted": True,
+            "checkpoint": import_result.get("checkpoint"),
+            "config": config,
+            "seasons": seasons,
+            "force_refresh_seasons": force_refresh_seasons,
+            "audit": audit,
+            "import": import_result,
+        }
     now = utc_now().isoformat()
     _set_sync_value("last_auto_refresh_utc", now)
     return {

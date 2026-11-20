@@ -31,10 +31,11 @@ Use unique values for `APP_USERNAME` and `APP_PASSWORD`; known defaults such
 as `admin/admin` are rejected. Authentication remains in the Streamlit session
 and is never stored in the URL.
 
-The live widget uses `API_FOOTBALL_WIDGET_KEY` when configured, otherwise it
-falls back to `API_FOOTBALL_KEY`. Because the widget runs in the browser, the
-selected key is visible to authenticated users. Use a separate key restricted
-by domain and quota if that exposure becomes a concern.
+The live widget requires a dedicated `API_FOOTBALL_WIDGET_KEY`; it never
+falls back to the engine's `API_FOOTBALL_KEY`, so browser-side widget requests
+cannot bypass the engine's shared quota policy. The key is visible to authenticated
+users in the iframe; restrict it by domain and quota. Widget requests and their
+separate key are not included in the engine's API metrics.
 
 3. Run the Streamlit app:
 

@@ -18,7 +18,7 @@ class ResponsiveUiContractTests(unittest.TestCase):
         self.assertNotIn("st.iframe(_widget_html(widget_key), height=880, width=780)", source)
         self.assertIn('st.iframe(_widget_html(widget_key), height=880, width="stretch")', source)
         self.assertIn('os.getenv("API_FOOTBALL_WIDGET_KEY"', source)
-        self.assertIn('os.getenv("API_FOOTBALL_KEY"', source)
+        self.assertNotIn('os.getenv("API_FOOTBALL_KEY"', source)
 
     def test_mobile_columns_stack_and_media_is_present(self):
         css = (ROOT / "components" / "ui.py").read_text(encoding="utf-8")

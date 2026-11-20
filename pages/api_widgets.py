@@ -80,14 +80,11 @@ def show():
         "Liste officielle des ligues et pays fournie par API-Sports.",
     )
 
-    widget_key = (
-        os.getenv("API_FOOTBALL_WIDGET_KEY", "").strip()
-        or os.getenv("API_FOOTBALL_KEY", "").strip()
-    )
+    widget_key = os.getenv("API_FOOTBALL_WIDGET_KEY", "").strip()
     if not widget_key:
         st.error(
-            "API_FOOTBALL_KEY est absent. Configurez cette clé, ou une clé "
-            "API_FOOTBALL_WIDGET_KEY distincte, pour afficher le widget."
+            "API_FOOTBALL_WIDGET_KEY est absent. Configurez une clé distincte "
+            "pour ce widget afin de ne pas consommer le quota du moteur de collecte."
         )
         return
 

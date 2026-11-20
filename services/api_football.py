@@ -20,6 +20,25 @@ RETRY_STATUS_CODES = (500, 502, 503, 504)
 _request_lock = threading.RLock()
 _daily_blocked_until: datetime.datetime | None = None
 _response_cache: dict[tuple, tuple[float, dict]] = {}
+_cache_metrics = {
+    "cache_hits": 0,
+    "cache_misses": 0,
+    "requests_avoided": 0,
+    "api_data_requests": 0,
+    "quota_status_checks": 0,
+    "quota_policy_blocks": 0,
+    "cache_evictions": 0,
+}
+
+
+def cache_metrics_snapshot(*, reset: bool = False) -> dict:
+    """Expose process-local cache/quota savings without request payloads."""
+    with _request_lock:
+        snapshot = {**_cache_metrics, "cache_entries": len(_response_cache)}
+        if reset:
+            for key in _cache_metrics:
+                _cache_metrics[key] = 0
+        return snapshot
 
 
 def _next_midnight_utc() -> datetime.datetime:
@@ -71,9 +90,23 @@ def _request_priority(path: str, params: dict | None) -> str:
     params = params or {}
     if path == "/fixtures" and params.get("live"):
         return "live"
+    if path == "/fixtures" and (params.get("from") or params.get("date")):
+        try:
+            today = datetime.datetime.now(datetime.UTC).date()
+            tomorrow = today + datetime.timedelta(days=1)
+            start = datetime.date.fromisoformat(str(params.get("from") or params.get("date")))
+            end = datetime.date.fromisoformat(str(params.get("to") or params.get("from") or params.get("date")))
+            # Reserve quota only for a bounded today/tomorrow window. Broad
+            # date-range fixture syncs must not inherit imminent priority.
+            if today <= start <= tomorrow and today <= end <= tomorrow and start <= end:
+                return "imminent"
+        except (TypeError, ValueError):
+            pass
     if path in {"/predictions", "/fixtures/lineups", "/fixtures/players"}:
         return "prediction_blocking" if path == "/predictions" else "lineups"
-    if path in {"/fixtures", "/fixtures/statistics"}:
+    if path == "/fixtures/statistics":
+        return "xg_enrichment"
+    if path == "/fixtures":
         return "current_fixtures"
     if path == "/standings":
         return "standings"
@@ -143,6 +176,7 @@ def _remember_response(key: tuple, payload: dict, ttl: int | None = None) -> Non
     if len(_response_cache) >= 2048:
         oldest = min(_response_cache, key=lambda item: _response_cache[item][0])
         _response_cache.pop(oldest, None)
+        _cache_metrics["cache_evictions"] += 1
     _response_cache[key] = (now + ttl, copy.deepcopy(payload))
 
 
@@ -211,6 +245,7 @@ class ApiFootballClient:
             # The status endpoint must remain callable while the local
             # circuit breaker is active so operators can inspect quota state.
             if path != "/status" and _daily_requests_blocked():
+                _cache_metrics["quota_policy_blocks"] += 1
                 raise RuntimeError(
                     "Quota API journalier déjà atteint : appel bloqué localement "
                     "jusqu'à minuit UTC pour éviter une requête refusée supplémentaire."
@@ -220,14 +255,24 @@ class ApiFootballClient:
             # download and therefore does not need a quota preflight.
             cached = None if path == "/status" else _cached_response(key)
             if cached is not None:
+                _cache_metrics["cache_hits"] += 1
+                _cache_metrics["requests_avoided"] += 1
                 return cached
+            _cache_metrics["cache_misses"] += 1
+            if path == "/status":
+                _cache_metrics["quota_status_checks"] += 1
             priority = _request_priority(path, params)
             quota_snapshot = None
             if path != "/status":
-                quota_snapshot = self._preflight_quota()
+                try:
+                    quota_snapshot = self._preflight_quota()
+                except RuntimeError:
+                    _cache_metrics["quota_policy_blocks"] += 1
+                    raise
                 from services import api_quota_policy
                 decision = api_quota_policy.can_spend(quota_snapshot, priority)
                 if not decision["allowed"]:
+                    _cache_metrics["quota_policy_blocks"] += 1
                     raise RuntimeError(
                         f"Appel API différé ({priority}) : {decision['reason']}; "
                         f"réserve protégée={decision.get('reserve', 0)}."
@@ -243,6 +288,7 @@ class ApiFootballClient:
 
     def _preflight_quota(self) -> dict:
         """Refresh quota immediately before every uncached data request."""
+        _cache_metrics["quota_status_checks"] += 1
         payload = self._get_unlocked(
             "/status",
             count_request=False,
@@ -270,7 +316,13 @@ class ApiFootballClient:
         except (TypeError, ValueError):
             current = daily_limit = None
 
-        headers = self.last_rate_limit or {}
+        headers = dict(self.last_rate_limit or {})
+        status_daily_limit = daily_limit
+        try:
+            header_daily_limit = int(headers.get("daily_limit"))
+        except (TypeError, ValueError):
+            header_daily_limit = None
+        daily_limit = header_daily_limit or status_daily_limit
         try:
             daily_remaining = int(headers.get("daily_remaining"))
         except (TypeError, ValueError):
@@ -301,14 +353,17 @@ class ApiFootballClient:
                 "Quota API par minute atteint : aucun téléchargement lancé. "
                 f"Réessayez dans {retry_after} seconde(s)."
             )
-        if (
-            (daily_limit is None or daily_limit <= 0)
-            and daily_remaining is None
-        ):
-            self.last_quota_status_error = "Réponse /status sans compteur de quota."
-            raise RuntimeError(
-                "Impossible de vérifier le quota API : téléchargement annulé par prudence."
-            )
+        # Fallback to /status response counters when rate-limit headers are
+        # absent. If both sources are unknown, preserve an unknown snapshot:
+        # the policy blocks secondary work but still permits urgent predictions.
+        if daily_remaining is None and current is not None and daily_limit is not None and daily_limit > 0:
+            daily_remaining = max(0, daily_limit - current)
+        if daily_remaining is not None:
+            headers["daily_remaining"] = daily_remaining
+        if daily_limit is not None:
+            headers["daily_limit"] = daily_limit
+        if daily_remaining is None or daily_limit is None:
+            self.last_quota_status_error = "Réponse /status sans compteur de quota; priorité critique uniquement."
         from services import api_quota_policy
         return api_quota_policy.quota_snapshot(headers)
 
@@ -324,6 +379,7 @@ class ApiFootballClient:
         url = f"{self.base}{path}"
         if count_request:
             self.request_count += 1
+            _cache_metrics["api_data_requests"] += 1
         resp = self.session.get(
             url,
             headers=self.headers,

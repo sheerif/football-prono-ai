@@ -66,6 +66,14 @@ def _request_count(api_client) -> int:
         return 0
 
 
+def _priority_preemption_requested() -> bool:
+    try:
+        from services.background_jobs import priority_preemption_requested
+        return priority_preemption_requested()
+    except Exception:
+        return False
+
+
 def _daily_reserve_reached(
     api_client,
     initial_request_count: int,
@@ -871,6 +879,10 @@ def _sync_xg_rows(
     for index, row in enumerate(rows, start=1):
         fixture_id = int(row["fixture_id"])
         key = f"fixture-statistics:{fixture_id}"
+        if _priority_preemption_requested():
+            summary["preempted"] = True
+            summary["checkpoint"] = key
+            break
         if xg_service.fixture_statistics_present(fixture_id):
             sync_registry.mark(
                 key,
@@ -1125,6 +1137,12 @@ def run_full_sync(progress_callback=None) -> dict:
         summary["checkpoint"] = key
         return finalize()
 
+    def stop_for_priority(key: str) -> dict:
+        summary["preempted"] = True
+        summary["checkpoint"] = key
+        summary["message"] = "Rattrapage secondaire interrompu au checkpoint pour les pronostics prioritaires."
+        return finalize()
+
     seasons = list(range(config["start_season"], config["end_season"] + 1))
     recent_count = max(1, int(config.get("recent_seasons") or 1))
     recent_seasons = set(seasons[-recent_count:])
@@ -1156,6 +1174,8 @@ def run_full_sync(progress_callback=None) -> dict:
     # before any historical backfill can consume the API quota.
     for index, (league_id, season) in enumerate(priority_core_scopes, start=1):
         key = f"core:{league_id}:{season}"
+        if _priority_preemption_requested():
+            return stop_for_priority(key)
         if _daily_reserve_reached(
             tracked_clients["données principales"],
             initial_request_counts["données principales"],
@@ -1163,13 +1183,17 @@ def run_full_sync(progress_callback=None) -> dict:
             return stop_for_quota(key, RuntimeError(_reserve_message()))
         sync_registry.mark(key, "core_season", "running")
         try:
-            import_service.import_leagues_cautious(
+            import_result = import_service.import_leagues_cautious(
                 [league_id],
                 seasons=[season],
                 pause=pause,
                 max_retries=config["max_retries"],
                 force_refresh_seasons=[season],
+                priority_preemption_check=_priority_preemption_requested,
             )
+            if import_result and import_result.get("preempted"):
+                sync_registry.mark(key, "core_season", "partial", message="Checkpoint de préemption", metadata=import_result)
+                return stop_for_priority(import_result.get("checkpoint") or key)
             sync_registry.mark(key, "core_season", "complete", item_count=1)
             summary["downloaded"] += 1
         except Exception as exc:
@@ -1208,6 +1232,8 @@ def run_full_sync(progress_callback=None) -> dict:
     for match in upcoming:
         fixture_id = int(match["fixture_id"])
         key = f"fixture-prediction:{fixture_id}"
+        if _priority_preemption_requested():
+            return stop_for_priority(key)
         if _prediction_present(fixture_id):
             sync_registry.mark(key, "fixture_prediction", "complete", item_count=1, message="Déjà en base")
             result = "skipped"
@@ -1235,6 +1261,8 @@ def run_full_sync(progress_callback=None) -> dict:
     for match in priority_matches:
         fixture_id = int(match["fixture_id"])
         detail_key = f"fixture-detail:{fixture_id}"
+        if _priority_preemption_requested():
+            return stop_for_priority(detail_key)
         if _fixture_details_present(fixture_id):
             sync_registry.mark(detail_key, "fixture_detail", "complete", item_count=1, message="Déjà en base")
             result = "skipped"
@@ -1307,6 +1335,9 @@ def run_full_sync(progress_callback=None) -> dict:
 
     # The long historical xG backfill runs only after current fixtures have
     # received their priority refresh.
+    if _priority_preemption_requested():
+        return stop_for_priority("historical-xg")
+
     progress(25, 100, "Rattrapage historique xG : recherche des statistiques manquantes...")
 
     xg_result = sync_historical_xg(
@@ -1323,6 +1354,11 @@ def run_full_sync(progress_callback=None) -> dict:
     )
     summary["xg"] = xg_result
     summary["xg_api_calls"] = int(xg_result.get("api_calls") or 0)
+    if xg_result.get("preempted"):
+        summary["preempted"] = True
+        summary["checkpoint"] = xg_result.get("checkpoint") or "historical-xg"
+        summary["message"] = "Rattrapage xG interrompu au checkpoint pour les pronostics prioritaires."
+        return finalize()
     summary["xg_duplicates_avoided"] = int(
         xg_result.get("duplicates_avoided") or 0
     )
@@ -1356,6 +1392,8 @@ def run_full_sync(progress_callback=None) -> dict:
     )
     for index, (league_id, season) in enumerate(core_scopes, start=1):
         key = f"core:{league_id}:{season}"
+        if _priority_preemption_requested():
+            return stop_for_priority(key)
         if _daily_reserve_reached(
             tracked_clients["données principales"],
             initial_request_counts["données principales"],
@@ -1363,13 +1401,17 @@ def run_full_sync(progress_callback=None) -> dict:
             return stop_for_quota(key, RuntimeError(_reserve_message()))
         sync_registry.mark(key, "core_season", "running")
         try:
-            import_service.import_leagues_cautious(
+            import_result = import_service.import_leagues_cautious(
                 [league_id],
                 seasons=[season],
                 pause=pause,
                 max_retries=config["max_retries"],
                 force_refresh_seasons=[season] if season in recent_seasons else None,
+                priority_preemption_check=_priority_preemption_requested,
             )
+            if import_result and import_result.get("preempted"):
+                sync_registry.mark(key, "core_season", "partial", message="Checkpoint de préemption", metadata=import_result)
+                return stop_for_priority(import_result.get("checkpoint") or key)
             sync_registry.mark(key, "core_season", "complete", item_count=1)
             summary["downloaded"] += 1
         except Exception as exc:
@@ -1434,6 +1476,8 @@ def run_full_sync(progress_callback=None) -> dict:
     for match in completed_matches:
         fixture_id = int(match["fixture_id"])
         key = f"fixture-players:{fixture_id}"
+        if _priority_preemption_requested():
+            return stop_for_priority(key)
         try:
             if _fixture_players_present(fixture_id):
                 sync_registry.mark(
@@ -1478,6 +1522,8 @@ def run_full_sync(progress_callback=None) -> dict:
         league_id = int(scope["league_id"])
         season = int(scope["season"])
         key = f"season-players:{league_id}:{season}"
+        if _priority_preemption_requested():
+            return stop_for_priority(key)
         existing = int(scope["player_count"] or 0)
         player_state = sync_registry.get(key)
         if existing and player_state and player_state.get("status") == "complete":
@@ -1545,6 +1591,8 @@ def run_full_sync(progress_callback=None) -> dict:
     for match in historical_matches:
         fixture_id = int(match["fixture_id"])
         detail_key = f"fixture-detail:{fixture_id}"
+        if _priority_preemption_requested():
+            return stop_for_priority(detail_key)
         if _fixture_details_present(fixture_id):
             sync_registry.mark(
                 detail_key,
