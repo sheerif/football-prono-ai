@@ -544,7 +544,15 @@ def record_update_log(
 
 
 def record_update_result(event_type: str, started_at: str, result: dict, error: str | None = None) -> int:
-    status = "erreur" if error else "effectuée" if result.get("ran") else "ignorée"
+    status = (
+        "erreur"
+        if error
+        else "interrompue_priorité"
+        if result.get("preempted")
+        else "effectuée"
+        if result.get("ran")
+        else "ignorée"
+    )
     config = result.get("config") or {}
     leagues = result.get("refreshed") or config.get("league_ids")
     return record_update_log(
