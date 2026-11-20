@@ -47,11 +47,16 @@ GITHUB_BACKUP_TOKEN = "github_pat_..."
 Le dépôt cible est public : les copies de la base seront donc publiques. Par
 défaut, elles sont publiées une fois par jour dans la branche
 `database-backup`, sous `football.db.gz` pour les petites archives, ou en fragments de 8 Mio accompagnés de `football.db.manifest.json` pour les archives volumineuses. Une vérification non bloquante tourne
-à l'ouverture de l'application puis chaque heure. Les nouvelles copies sont
-ajoutées à l'historique de cette branche ; Git ne crée un nouvel objet que si
-le fichier SQLite a changé et compresse les différences entre versions. Les
-anciennes versions restent disponibles pour une restauration. Pour changer la
-destination, configurez aussi `GITHUB_BACKUP_REPOSITORY` (`proprietaire/depot`)
+à l'ouverture de l'application puis chaque heure. Les nouvelles copies sont conservées dans l'historique de cette branche.
+La synchronisation planifiée n'en publie qu'une par jour (elle n'impose plus de
+sauvegarde à chaque exécution horaire). Une fois par mois, au premier snapshot
+modifié, l'historique de la branche est réinitialisé à un commit racine tout en
+conservant le snapshot courant : cela limite l'historique accessible à environ
+un mois de sauvegardes quotidiennes. Les objets Git devenus inaccessibles
+peuvent rester comptabilisés jusqu'au nettoyage/GC de GitHub ; cette rotation
+borne l'historique référencé mais ne garantit pas une réduction immédiate de la
+taille physique du dépôt. Le bouton de sauvegarde manuelle reste forcé. Pour
+changer la destination, configurez aussi `GITHUB_BACKUP_REPOSITORY` (`proprietaire/depot`)
 et éventuellement `GITHUB_BACKUP_BRANCH` (`database-backup`).
 
 La sauvegarde quotidienne démarre en arrière-plan. Une tâche d'import ou de

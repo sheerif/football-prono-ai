@@ -195,7 +195,7 @@ def main() -> int:
         backup = (
             {"status": "skipped_active_sync"}
             if result.get("status") == "skipped"
-            else git_backup.backup_to_github(force=True)
+            else git_backup.backup_to_github(force=False)
         )
         result["database_backup"] = backup
         print(

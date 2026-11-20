@@ -172,8 +172,19 @@ def latest_backup_info() -> dict:
     }
 
 
+def _should_reset_backup_history(head: dict | None, now: datetime) -> bool:
+    """Reset reachable backup commits at the first changed snapshot of a new UTC month."""
+    if not head or not head.get("committed_at"):
+        return False
+    previous = datetime.fromisoformat(
+        head["committed_at"].replace("Z", "+00:00")
+    ).astimezone(timezone.utc)
+    current = now.astimezone(timezone.utc)
+    return (previous.year, previous.month) != (current.year, current.month)
+
+
 def backup_to_github(*, database_engine=engine, force: bool = False) -> dict:
-    """Publish a changed snapshot daily, retaining Git's differential history."""
+    """Publish a daily snapshot and reset reachable history at each month boundary."""
     token = _backup_token()
     if not token:
         return {"status": "not_configured"}
@@ -185,11 +196,15 @@ def backup_to_github(*, database_engine=engine, force: bool = False) -> dict:
     with _backup_lock:
         root = f"/repos/{repository}"
         head = _backup_head(root, branch, token)
-        today_utc = datetime.now(timezone.utc).date()
-        if head and not force and head.get("committed_at"):
-            committed_at = datetime.fromisoformat(
-                head["committed_at"].replace("Z", "+00:00")
-            )
+        now_utc = datetime.now(timezone.utc)
+        today_utc = now_utc.date()
+        committed_at = (
+            datetime.fromisoformat(head["committed_at"].replace("Z", "+00:00"))
+            if head and head.get("committed_at")
+            else None
+        )
+        reset_history = _should_reset_backup_history(head, now_utc)
+        if head and not force and committed_at and not reset_history:
             if committed_at.astimezone(timezone.utc).date() >= today_utc:
                 return {
                     "status": "skipped_daily_limit",
@@ -290,7 +305,7 @@ def backup_to_github(*, database_engine=engine, force: bool = False) -> dict:
                 "message": f"Sauvegarde SQLite {timestamp}",
                 "tree": tree["sha"],
             }
-            if head:
+            if head and not reset_history:
                 commit_payload["parents"] = [head["commit_sha"]]
             commit = _request(
                 "POST", f"{root}/git/commits", token, commit_payload
@@ -298,7 +313,7 @@ def backup_to_github(*, database_engine=engine, force: bool = False) -> dict:
             if head:
                 _request(
                     "PATCH", f"{root}/git/refs/heads/{branch}", token,
-                    {"sha": commit["sha"], "force": False},
+                    {"sha": commit["sha"], "force": reset_history},
                 )
             else:
                 _request(
@@ -332,6 +347,7 @@ def backup_to_github(*, database_engine=engine, force: bool = False) -> dict:
                 "commit": commit["sha"],
                 "size_bytes": len(archive_bytes),
                 "differential": bool(head),
+                "history_reset": reset_history,
                 "integrity_verified": True,
                 "gzip_verified": True,
                 "remote_verified": True,
