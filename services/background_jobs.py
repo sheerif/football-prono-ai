@@ -85,7 +85,7 @@ def _set_job(job_id: str, **updates):
             _priority_secondary_resume = None
         if (
             job.get("status") in {"done", "partial", "error"}
-            and job.get("kind") in {"full_sync", "xg_sync"}
+            and job.get("kind") in {"full_sync", "xg_sync", "manual_import", "startup_updates"}
             and _priority_secondary_resume
             and not (job.get("details") or {}).get("preempted")
         ):
@@ -103,6 +103,7 @@ def _set_job(job_id: str, **updates):
             daemon=True,
         ).start()
     if secondary_resume:
+        details = secondary_resume.get("details") or {}
         if secondary_resume.get("kind") == "full_sync":
             threading.Thread(
                 target=lambda: start_full_sync(resumed=True),
@@ -110,7 +111,6 @@ def _set_job(job_id: str, **updates):
                 daemon=True,
             ).start()
         elif secondary_resume.get("kind") == "xg_sync":
-            details = secondary_resume.get("details") or {}
             threading.Thread(
                 target=lambda: start_xg_sync(
                     league_ids=details.get("league_ids"),
@@ -118,6 +118,26 @@ def _set_job(job_id: str, **updates):
                     max_matches=details.get("max_matches", 100),
                 ),
                 name="football-prono-resume-xg",
+                daemon=True,
+            ).start()
+        elif secondary_resume.get("kind") == "manual_import":
+            threading.Thread(
+                target=lambda: start_manual_import(
+                    league_ids=details.get("league_ids") or [],
+                    seasons=details.get("seasons") or [],
+                    pause=details.get("pause", 1.5),
+                    max_retries=details.get("max_retries", 5),
+                    selected_presets=details.get("selected_presets") or [],
+                ),
+                name="football-prono-resume-manual-import",
+                daemon=True,
+            ).start()
+        elif secondary_resume.get("kind") == "startup_updates":
+            threading.Thread(
+                target=lambda: _resume_startup_updates(
+                    connection_log_id=details.get("connection_log_id")
+                ),
+                name="football-prono-resume-startup-updates",
                 daemon=True,
             ).start()
 
@@ -206,7 +226,7 @@ def _create_unique_data_job(
                 _priority_prediction_pending = True
                 existing.setdefault("details", {})["priority_prediction_pending"] = True
                 existing["message"] = "Collecte prioritaire demandée : arrêt au prochain checkpoint sûr."
-                if existing.get("kind") in {"full_sync", "xg_sync"}:
+                if existing.get("kind") in {"full_sync", "xg_sync", "manual_import", "startup_updates"}:
                     _priority_secondary_resume = {
                         "kind": existing.get("kind"),
                         "details": dict(existing.get("details") or {}),
@@ -1258,6 +1278,13 @@ def resume_pending_full_sync_if_due() -> str | None:
     return start_full_sync(resumed=True)
 
 
+def _resume_startup_updates(connection_log_id: int | None = None):
+    global _startup_started
+    with _lock:
+        _startup_started = False
+    return start_startup_updates_once(connection_log_id=connection_log_id)
+
+
 def start_startup_updates_once(connection_log_id: int | None = None) -> str | None:
     global _startup_started
     startup_setting = os.getenv("STREAMLIT_STARTUP_UPDATES")
@@ -1274,7 +1301,11 @@ def start_startup_updates_once(connection_log_id: int | None = None) -> str | No
             return None
         _startup_started = True
 
-    job_id = _create_job("startup_updates", "Mises à jour de démarrage")
+    job_id = _create_job(
+        "startup_updates",
+        "Mises à jour de démarrage",
+        {"connection_log_id": connection_log_id},
+    )
 
     def run():
         try:
@@ -1294,9 +1325,33 @@ def start_startup_updates_once(connection_log_id: int | None = None) -> str | No
                     0.02,
                     0.48,
                     label,
-                )
+                ),
+                priority_preemption_check=priority_preemption_requested,
             )
             import_service.record_update_result("championnats_en_cours", current_started_at, current_result)
+            if current_result.get("preempted"):
+                details = {
+                    "started_at": started_at,
+                    "current": current_result,
+                    "preempted": True,
+                    "checkpoint": current_result.get("checkpoint"),
+                }
+                message = "Mise à jour de démarrage interrompue au checkpoint pour les pronostics prioritaires."
+                _set_job(
+                    job_id,
+                    status="partial",
+                    message=message,
+                    finished_at=_now(),
+                    details=details,
+                )
+                import_service.record_update_log(
+                    event_type="mises_a_jour_demarrage",
+                    status="interrompue_priorité",
+                    started_at=started_at,
+                    reason=message,
+                    details={**details, "background": True},
+                )
+                return
             if current_result.get("ran") and connection_log_id:
                 import_service.mark_connection_current_refreshed(connection_log_id)
 
@@ -1316,9 +1371,34 @@ def start_startup_updates_once(connection_log_id: int | None = None) -> str | No
                     0.50,
                     0.98,
                     label,
-                )
+                ),
+                priority_preemption_check=priority_preemption_requested,
             )
             import_service.record_update_result("historique_auto", auto_started_at, auto_result)
+            if auto_result.get("preempted"):
+                details = {
+                    "started_at": started_at,
+                    "current": current_result,
+                    "auto": auto_result,
+                    "preempted": True,
+                    "checkpoint": auto_result.get("checkpoint"),
+                }
+                message = "Synchronisation historique interrompue au checkpoint pour les pronostics prioritaires."
+                _set_job(
+                    job_id,
+                    status="partial",
+                    message=message,
+                    finished_at=_now(),
+                    details=details,
+                )
+                import_service.record_update_log(
+                    event_type="mises_a_jour_demarrage",
+                    status="interrompue_priorité",
+                    started_at=started_at,
+                    reason=message,
+                    details={**details, "background": True},
+                )
+                return
 
             _progress(job_id, 100, 100, "Mises à jour de démarrage terminées")
             _set_job(
