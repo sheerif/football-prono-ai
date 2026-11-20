@@ -1,3 +1,4 @@
+import datetime
 import unittest
 from unittest.mock import Mock, patch
 from requests.exceptions import HTTPError
@@ -315,6 +316,24 @@ class ApiRequestPolicyTests(unittest.TestCase):
                         api_football._request_cache_ttl("/standings", {"league": 1}))
         self.assertLess(api_football._request_cache_ttl("/standings", {}),
                         api_football._request_cache_ttl("/teams", {}))
+
+    def test_imminent_fixtures_use_short_freshness_ttl(self):
+        today = datetime.datetime.now(datetime.UTC).date()
+        tomorrow = today + datetime.timedelta(days=1)
+        imminent = {
+            "from": today.isoformat(),
+            "to": tomorrow.isoformat(),
+        }
+        broad = {
+            "from": today.isoformat(),
+            "to": (today + datetime.timedelta(days=3)).isoformat(),
+        }
+        self.assertEqual(api_football._request_priority("/fixtures", imminent), "imminent")
+        self.assertEqual(api_football._request_cache_ttl("/fixtures", imminent), 180)
+        self.assertEqual(api_football._request_cache_ttl("/fixtures", broad), 300)
+        self.assertEqual(api_football._request_cache_ttl("/fixtures", {"live": "all"}), 30)
+        with patch.dict("os.environ", {"API_FOOTBALL_CACHE_TTL_IMMINENT": "45"}):
+            self.assertEqual(api_football._request_cache_ttl("/fixtures", imminent), 45)
 
     def test_quota_reserve_blocks_low_priority_call_before_download(self):
         status = ApiFootballClientTests._status_response(current=80, limit=100, daily_remaining=10)
