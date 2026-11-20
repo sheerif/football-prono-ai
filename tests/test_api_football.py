@@ -361,6 +361,14 @@ class ApiMetricsAndPriorityTests(unittest.TestCase):
         tomorrow = (api_football.datetime.datetime.now(api_football.datetime.UTC).date() + api_football.datetime.timedelta(days=1)).isoformat()
         self.assertEqual(api_football._request_priority("/fixtures", {"from": today, "to": tomorrow}), "imminent")
 
+    def test_broad_fixture_window_does_not_use_imminent_reserve(self):
+        today = api_football.datetime.datetime.now(api_football.datetime.UTC).date()
+        end = (today + api_football.datetime.timedelta(days=30)).isoformat()
+        self.assertEqual(
+            api_football._request_priority("/fixtures", {"from": today.isoformat(), "to": end}),
+            "current_fixtures",
+        )
+
     def test_historical_fixture_statistics_are_low_priority_enrichment(self):
         self.assertEqual(api_football._request_priority("/fixtures/statistics", {"fixture": 123}), "xg_enrichment")
 
