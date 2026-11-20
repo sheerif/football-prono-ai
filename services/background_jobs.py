@@ -50,6 +50,19 @@ def _set_job(job_id: str, **updates):
         if not job:
             return
         job.update(updates)
+        if (
+            job.get("kind") == "manual_import"
+            and job.get("status") in {"done", "partial", "error"}
+            and (job.get("details") or {}).get("preempted")
+            and _priority_secondary_resume
+        ):
+            resume_details = dict(
+                _priority_secondary_resume.get("details") or {}
+            )
+            resume_details["resume_checkpoint"] = (
+                job.get("details") or {}
+            ).get("checkpoint")
+            _priority_secondary_resume["details"] = resume_details
         should_backup = (
             job.get("kind") in DATA_JOB_KINDS
             and job.get("status") in {"done", "partial", "error"}
@@ -128,6 +141,7 @@ def _set_job(job_id: str, **updates):
                     pause=details.get("pause", 1.5),
                     max_retries=details.get("max_retries", 5),
                     selected_presets=details.get("selected_presets") or [],
+                    resume_checkpoint=details.get("resume_checkpoint"),
                 ),
                 name="football-prono-resume-manual-import",
                 daemon=True,
@@ -701,6 +715,7 @@ def start_manual_import(
     pause: float,
     max_retries: int,
     selected_presets=None,
+    resume_checkpoint=None,
 ) -> str:
     job_id, created = _create_unique_data_job(
         "manual_import",
@@ -711,6 +726,7 @@ def start_manual_import(
             "pause": pause,
             "max_retries": max_retries,
             "selected_presets": selected_presets or [],
+            "resume_checkpoint": resume_checkpoint,
         },
     )
     if not created:
@@ -733,6 +749,7 @@ def start_manual_import(
                 max_retries=int(max_retries),
                 progress_callback=lambda current, total, label: _progress(job_id, current, total, label),
                 priority_preemption_check=priority_preemption_requested,
+                resume_checkpoint=resume_checkpoint,
             )
             if import_result and import_result.get("preempted"):
                 message = "Import secondaire arrêté au checkpoint pour les pronostics prioritaires."

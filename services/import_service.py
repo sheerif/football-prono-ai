@@ -1295,6 +1295,33 @@ def import_multiple_leagues(league_ids: List[int], seasons: List[int] | None = N
         import_league_seasons_by_id(lid, seasons=seasons)
 
 
+def _manual_import_resume_plan(league_ids, seasons, checkpoint):
+    """Parse a manual-import checkpoint into an ordered resume position."""
+    if not checkpoint:
+        return None
+    parts = str(checkpoint).split(":")
+    if len(parts) < 3 or parts[0] not in {
+        "core", "teams", "fixtures", "fixtures-page", "standings"
+    }:
+        return None
+    try:
+        league_id = int(parts[1])
+        season = int(parts[2])
+        page = int(parts[3]) if parts[0] == "fixtures-page" and len(parts) > 3 else 1
+        league_index = list(league_ids).index(league_id)
+        season_index = list(seasons).index(season)
+    except (TypeError, ValueError, IndexError):
+        return None
+    return {
+        "league_id": league_id,
+        "season": season,
+        "league_index": league_index,
+        "season_index": season_index,
+        "phase": parts[0],
+        "page": max(1, page),
+    }
+
+
 def import_leagues_cautious(
     league_ids: List[int],
     seasons: List[int] | None = None,
@@ -1303,6 +1330,7 @@ def import_leagues_cautious(
     force_refresh_seasons: List[int] | None = None,
     progress_callback=None,
     priority_preemption_check=None,
+    resume_checkpoint=None,
 ):
     """Import several leagues with polite pauses, retries and logging.
 
@@ -1313,6 +1341,9 @@ def import_leagues_cautious(
     register_league_seasons(league_ids, seasons, source="import")
     session = SessionLocal()
     force_refresh_seasons = set(force_refresh_seasons or [])
+    resume_plan = _manual_import_resume_plan(league_ids, seasons, resume_checkpoint)
+    # The interrupted scope is refreshed locally below; do not force that
+    # season across every other league in the import.
     total_steps = max(1, len(league_ids) * len(seasons) * 3)
     completed_steps = 0
 
@@ -1323,9 +1354,27 @@ def import_leagues_cautious(
             progress_callback(completed_steps, total_steps, label)
 
     try:
-        for lid in league_ids:
+        for league_index, lid in enumerate(league_ids):
+            if resume_plan and league_index < resume_plan["league_index"]:
+                continue
             logging.info(f"Starting import for league {lid}")
-            for season in seasons:
+            for season_index, season in enumerate(seasons):
+                if resume_plan and (
+                    league_index < resume_plan["league_index"]
+                    or (
+                        league_index == resume_plan["league_index"]
+                        and season_index < resume_plan["season_index"]
+                    )
+                ):
+                    continue
+                resume_scope = bool(
+                    resume_plan
+                    and league_index == resume_plan["league_index"]
+                    and season_index == resume_plan["season_index"]
+                )
+                resume_phase = resume_plan["phase"] if resume_scope else None
+                resume_page = resume_plan["page"] if resume_scope and resume_phase == "fixtures-page" else 1
+                force_refresh_scope = season in force_refresh_seasons or resume_scope
                 logging.info(f"Importing {lid} season {season}")
                 if priority_preemption_check and priority_preemption_check():
                     return {"preempted": True, "checkpoint": f"core:{lid}:{season}", "league_id": lid, "season": season}
@@ -1335,7 +1384,7 @@ def import_leagues_cautious(
                 team_count = session.query(models.Team).filter_by(league_id=lid).count()
                 standing_count = session.query(models.Standing).filter_by(league_id=lid, season=season).count()
                 complete_core = existing_count > 0 and team_count > 0 and standing_count > 0
-                if complete_core and season not in force_refresh_seasons:
+                if complete_core and not force_refresh_scope:
                     logging.info(f"Season {season} déjà complète ({existing_count} matchs, {team_count} équipes, {standing_count} classements) — ignorée")
                     _progress(f"Ligue {lid} - {season}: déjà en base ({existing_count} matchs)", increment=3)
                     continue
@@ -1349,7 +1398,10 @@ def import_leagues_cautious(
                     return {"preempted": True, "checkpoint": f"teams:{lid}:{season}", "league_id": lid, "season": season}
                 _progress(f"Ligue {lid} - {season}: téléchargement des équipes")
                 tries = 0
-                teams_ok = team_count > 0
+                skip_teams = resume_scope and resume_phase in {
+                    "fixtures", "fixtures-page", "standings"
+                }
+                teams_ok = team_count > 0 or skip_teams
                 last_error = None
                 while not teams_ok and tries < max_retries:
                     try:
@@ -1392,19 +1444,26 @@ def import_leagues_cautious(
                     return {"preempted": True, "checkpoint": f"fixtures:{lid}:{season}", "league_id": lid, "season": season}
                 _progress(f"Ligue {lid} - {season}: téléchargement des matchs")
                 tries = 0
-                fixtures_ok = (
-                    existing_count > 0 and season not in force_refresh_seasons
+                skip_fixtures = resume_scope and resume_phase == "standings"
+                fixtures_ok = skip_fixtures or (
+                    existing_count > 0 and not force_refresh_scope
                 )
                 last_error = None
                 while not fixtures_ok and tries < max_retries:
                     try:
-                        resp = client.get_fixtures(lid, season)
+                        if resume_scope and resume_phase == "fixtures-page" and resume_page > 1:
+                            resp = client._get(
+                                "/fixtures",
+                                {"league": lid, "season": season, "page": resume_page},
+                            )
+                        else:
+                            resp = client.get_fixtures(lid, season)
                         if (api_error := _api_error(resp)):
                             raise RuntimeError(api_error)
                         items = resp.get('response', [])
                         # Support paging if present
                         paging = resp.get('paging') or {}
-                        page = 1
+                        page = resume_page if resume_scope and resume_phase == "fixtures-page" else 1
                         total_pages = paging.get('total') or 1
                         while True:
                             for item in items:
@@ -1417,10 +1476,10 @@ def import_leagues_cautious(
                                 _save_match(session, item, lid, season)
                                 _save_fixture_api_detail(session, item, lid, season)
                             session.commit()
-                            if priority_preemption_check and priority_preemption_check():
-                                return {"preempted": True, "checkpoint": f"fixtures-page:{lid}:{season}:{page + 1}", "league_id": lid, "season": season}
                             if page >= total_pages:
                                 break
+                            if priority_preemption_check and priority_preemption_check():
+                                return {"preempted": True, "checkpoint": f"fixtures-page:{lid}:{season}:{page + 1}", "league_id": lid, "season": season}
                             page += 1
                             resp = client._get('/fixtures', {'league': lid, 'season': season, 'page': page})
                             if (api_error := _api_error(resp)):
@@ -1461,7 +1520,7 @@ def import_leagues_cautious(
                 _progress(f"Ligue {lid} - {season}: téléchargement du classement")
                 tries = 0
                 standings_ok = (
-                    standing_count > 0 and season not in force_refresh_seasons
+                    standing_count > 0 and not force_refresh_scope
                 )
                 last_error = None
                 while not standings_ok and tries < max_retries:
