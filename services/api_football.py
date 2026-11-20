@@ -93,9 +93,12 @@ def _request_priority(path: str, params: dict | None) -> str:
     if path == "/fixtures" and (params.get("from") or params.get("date")):
         try:
             today = datetime.datetime.now(datetime.UTC).date()
+            tomorrow = today + datetime.timedelta(days=1)
             start = datetime.date.fromisoformat(str(params.get("from") or params.get("date")))
             end = datetime.date.fromisoformat(str(params.get("to") or params.get("from") or params.get("date")))
-            if start <= today + datetime.timedelta(days=1) and end >= today:
+            # Reserve quota only for a bounded today/tomorrow window. Broad
+            # date-range fixture syncs must not inherit imminent priority.
+            if today <= start <= tomorrow and today <= end <= tomorrow and start <= end:
                 return "imminent"
         except (TypeError, ValueError):
             pass
