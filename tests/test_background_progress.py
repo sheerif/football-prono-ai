@@ -264,12 +264,12 @@ class BackgroundProgressTests(unittest.TestCase):
         )
 
     def test_startup_job_forwards_detailed_progress_and_finishes(self):
-        def refresh_current(*, progress_callback):
+        def refresh_current(*, progress_callback, priority_preemption_check=None):
             progress_callback(1, 2, "Championnat 1 vérifié")
             progress_callback(2, 2, "Championnat 2 vérifié")
             return {"ran": False, "reason": "Test"}
 
-        def refresh_history(*, progress_callback, skip_force_refresh_seasons=None):
+        def refresh_history(*, progress_callback, skip_force_refresh_seasons=None, priority_preemption_check=None):
             self.assertEqual(skip_force_refresh_seasons, set())
             progress_callback(1, 4, "Saison 1 vérifiée")
             progress_callback(4, 4, "Historique vérifié")
@@ -307,7 +307,7 @@ class BackgroundProgressTests(unittest.TestCase):
     def test_startup_history_does_not_force_current_season_twice(self):
         captured = {}
 
-        def refresh_history(*, progress_callback, skip_force_refresh_seasons=None):
+        def refresh_history(*, progress_callback, skip_force_refresh_seasons=None, priority_preemption_check=None):
             captured["skipped"] = skip_force_refresh_seasons
             return {"ran": False, "reason": "Test"}
 
@@ -356,7 +356,7 @@ class BackgroundProgressTests(unittest.TestCase):
             "max_retries": 1,
         }
 
-        def audit(_config, *, progress_callback):
+        def audit(_config, *, progress_callback, priority_preemption_check=None):
             progress_callback(0, 2, "Audit lancé")
             progress_callback(2, 2, "Audit terminé")
             return {"accessible": [2024, 2025], "unavailable": []}
