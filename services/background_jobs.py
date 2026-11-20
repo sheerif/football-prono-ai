@@ -204,13 +204,13 @@ def _create_unique_data_job(
                 _priority_preemption_requested.set()
                 _pending_priority_prediction_days = (details or {}).get("days")
                 _priority_prediction_pending = True
+                existing.setdefault("details", {})["priority_prediction_pending"] = True
+                existing["message"] = "Collecte prioritaire demandée : arrêt au prochain checkpoint sûr."
                 if existing.get("kind") in {"full_sync", "xg_sync"}:
                     _priority_secondary_resume = {
                         "kind": existing.get("kind"),
                         "details": dict(existing.get("details") or {}),
                     }
-                existing.setdefault("details", {})["priority_prediction_pending"] = True
-                existing["message"] = "Collecte prioritaire demandée : arrêt au prochain checkpoint sûr."
             return existing["id"], False
         return _create_job(kind, label, details), True
 
