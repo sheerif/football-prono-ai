@@ -11,3 +11,6 @@ showSidebarNavigation = false
 [server]
 enableCORS = true
 enableXsrfProtection = true
+# Disable recursive file watching in deployed environments to avoid exhausting
+# Linux inotify watch limits (Errno 28) on Streamlit Cloud.
+fileWatcherType = "none"
