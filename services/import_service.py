@@ -1109,10 +1109,10 @@ def _refresh_league_season(
                     _save_match(session, item, league_id, season)
                     _save_fixture_api_detail(session, item, league_id, season)
                 session.commit()
-                if priority_preemption_check and priority_preemption_check():
-                    return {"preempted": True, "checkpoint": f"fixtures-page:{league_id}:{season}:{page + 1}"}
                 if page >= total_pages:
                     break
+                if priority_preemption_check and priority_preemption_check():
+                    return {"preempted": True, "checkpoint": f"fixtures-page:{league_id}:{season}:{page + 1}"}
                 page += 1
                 resp = client._get("/fixtures", {"league": league_id, "season": season, "page": page})
                 items = resp.get("response", [])
@@ -1240,7 +1240,7 @@ def refresh_current_competitions_on_connection(
                     "refreshed": refreshed,
                 }
             logger.info(f"Refreshing active competition {league_id} season {season}")
-            _refresh_league_season(
+            refresh_result = _refresh_league_season(
                 session,
                 league_id,
                 season,
