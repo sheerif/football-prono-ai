@@ -265,3 +265,67 @@ def test_manual_import_resume_plan_rejects_unknown_scope():
     assert import_service._manual_import_resume_plan(
         [61], [2026], "unknown:61:2026"
     ) is None
+
+
+
+def test_manual_import_resumes_fixture_pagination_at_checkpoint_page(monkeypatch):
+    from database import models
+
+    class Query:
+        def __init__(self, model):
+            self.model = model
+        def filter_by(self, **kwargs):
+            return self
+        def count(self):
+            if self.model is models.Team:
+                return 4
+            return 0
+
+    class FakeSession:
+        def query(self, model):
+            return Query(model)
+        def get(self, model, key):
+            if model is models.League:
+                return models.League(id=key, name="Test League", logo="logo")
+            return None
+        def commit(self):
+            pass
+        def rollback(self):
+            pass
+        def close(self):
+            pass
+
+    session = FakeSession()
+    monkeypatch.setattr(import_service, "SessionLocal", lambda: session)
+    monkeypatch.setattr(import_service, "register_league_seasons", lambda *args, **kwargs: None)
+    monkeypatch.setattr(import_service, "_get_or_create_team", lambda *args, **kwargs: None)
+    monkeypatch.setattr(import_service, "_save_match", lambda *args, **kwargs: None)
+    monkeypatch.setattr(import_service, "_save_fixture_api_detail", lambda *args, **kwargs: None)
+    requested = []
+
+    class Client:
+        def _get(self, path, params):
+            requested.append((path, params))
+            assert params == {"league": 61, "season": 2026, "page": 3}
+            return {
+                "response": [{"fixture": {"id": 3003}, "teams": {}}],
+                "paging": {"current": 3, "total": 4},
+            }
+        def get_fixtures(self, *args, **kwargs):
+            raise AssertionError("resume must not restart from page 1")
+        def get_standings(self, *args, **kwargs):
+            raise AssertionError("priority checkpoint should stop before standings")
+
+    monkeypatch.setattr(import_service, "client", Client())
+    checkpoint_checks = iter([False, False, False, True])
+    result = import_service.import_leagues_cautious(
+        [61],
+        seasons=[2026],
+        pause=0,
+        max_retries=1,
+        resume_checkpoint="fixtures-page:61:2026:3",
+        priority_preemption_check=lambda: next(checkpoint_checks),
+    )
+    assert requested == [("/fixtures", {"league": 61, "season": 2026, "page": 3})]
+    assert result["preempted"] is True
+    assert result["checkpoint"] == "fixtures-page:61:2026:4"
