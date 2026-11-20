@@ -196,3 +196,19 @@ def test_active_season_refresh_yields_before_metadata_api_call():
         "preempted": True,
         "checkpoint": "league-metadata:61:2026",
     }
+
+
+
+def test_record_update_result_marks_priority_preemption(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(
+        import_service,
+        "record_update_log",
+        lambda **kwargs: captured.update(kwargs) or 1,
+    )
+    import_service.record_update_result(
+        "historique_auto",
+        "2026-11-20T00:00:00",
+        {"ran": True, "preempted": True, "checkpoint": "fixtures:61:2026"},
+    )
+    assert captured["status"] == "interrompue_priorité"
