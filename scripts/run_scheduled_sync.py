@@ -8,6 +8,7 @@ un second traitement si Streamlit a déjà repris la tâche à minuit UTC.
 from __future__ import annotations
 
 import datetime
+import logging
 import os
 import sys
 
@@ -25,6 +26,13 @@ CONTROL_KEY = "full-sync:exhaustive"
 
 def _now() -> datetime.datetime:
     return datetime.datetime.now(datetime.UTC).replace(tzinfo=None)
+
+
+def _log_progress(current: int, total: int, label: str) -> None:
+    total = max(1, int(total or 1))
+    current = max(0, int(current or 0))
+    percent = min(100, int(round(current / total * 100)))
+    logging.info("Scheduled sync progress %s/%s (%s%%): %s", current, total, percent, label)
 
 
 def _recent_running_job(state: dict | None, *, max_age_hours: int = 6) -> bool:
@@ -116,7 +124,7 @@ def run() -> dict:
         },
     )
     try:
-        result = full_sync_service.run_full_sync()
+        result = full_sync_service.run_full_sync(progress_callback=_log_progress)
     except Exception as exc:
         sync_registry.mark(
             CONTROL_KEY,

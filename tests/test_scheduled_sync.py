@@ -55,12 +55,13 @@ class ScheduledSyncTests(unittest.TestCase):
                     "xg_api_calls": 30,
                     "errors": [],
                 },
-            ),
+            ) as sync,
         ):
             result = run_scheduled_sync.run()
 
         self.assertEqual(result["status"], "complete")
         self.assertEqual(result["api_calls"], 42)
+        self.assertTrue(callable(sync.call_args.kwargs["progress_callback"]))
         self.assertEqual([mark[2] for mark in marks], ["running", "complete"])
 
     def test_pre_match_archive_runs_before_quota_preflight(self):
