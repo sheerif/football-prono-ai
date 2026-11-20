@@ -20,6 +20,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: historical-backtest-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   snapshot-backtest:
     name: Evaluate bundled historical database

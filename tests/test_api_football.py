@@ -325,3 +325,59 @@ class ApiRequestPolicyTests(unittest.TestCase):
             client.get_players(season=2024)
         session.get.assert_called_once()  # /status only; no player endpoint
         self.assertEqual(client.request_count, 0)
+
+
+class ApiMetricsAndPriorityTests(unittest.TestCase):
+    def setUp(self):
+        api_football._daily_blocked_until = None
+        api_football._response_cache.clear()
+        api_football.cache_metrics_snapshot(reset=True)
+
+    def tearDown(self):
+        api_football._daily_blocked_until = None
+        api_football._response_cache.clear()
+        api_football.cache_metrics_snapshot(reset=True)
+
+    def test_shared_cache_metrics_count_avoided_api_calls(self):
+        response = Mock()
+        response.headers = {"x-ratelimit-requests-remaining": "100"}
+        response.json.return_value = {"response": [{"id": 61}]}
+        first_session = Mock()
+        first_session.get.side_effect = [ApiFootballClientTests._status_response(), response]
+        second_session = Mock()
+        first = ApiFootballClient(api_key="same-key", session=first_session)
+        second = ApiFootballClient(api_key="same-key", session=second_session)
+        first.get_teams(61, 2026)
+        second.get_teams(61, 2026)
+        metrics = api_football.cache_metrics_snapshot()
+        self.assertEqual(metrics["cache_hits"], 1)
+        self.assertEqual(metrics["requests_avoided"], 1)
+        self.assertEqual(metrics["api_data_requests"], 1)
+        self.assertEqual(metrics["cache_entries"], 1)
+        second_session.get.assert_not_called()
+
+    def test_fixture_window_near_today_is_classified_as_imminent(self):
+        today = api_football.datetime.datetime.now(api_football.datetime.UTC).date().isoformat()
+        tomorrow = (api_football.datetime.datetime.now(api_football.datetime.UTC).date() + api_football.datetime.timedelta(days=1)).isoformat()
+        self.assertEqual(api_football._request_priority("/fixtures", {"from": today, "to": tomorrow}), "imminent")
+
+    def test_historical_fixture_statistics_are_low_priority_enrichment(self):
+        self.assertEqual(api_football._request_priority("/fixtures/statistics", {"fixture": 123}), "xg_enrichment")
+
+    def test_unknown_quota_allows_predictions_but_blocks_secondary_calls(self):
+        status = Mock()
+        status.headers = {}
+        status.json.return_value = {"response": []}
+        predictions = Mock()
+        predictions.headers = {}
+        predictions.json.return_value = {"response": [{"fixture": {"id": 42}}]}
+        session = Mock()
+        session.get.side_effect = [status, predictions, status]
+        client = ApiFootballClient(api_key="unknown-quota-key", session=session)
+
+        client.get_predictions(42)
+        with self.assertRaisesRegex(RuntimeError, "Appel API différé"):
+            client.get_teams(42, 2026)
+
+        self.assertEqual(session.get.call_count, 3)
+        self.assertEqual(api_football.cache_metrics_snapshot()["quota_policy_blocks"], 1)

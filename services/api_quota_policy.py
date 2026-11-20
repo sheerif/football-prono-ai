@@ -75,15 +75,17 @@ def can_spend(snapshot: dict, priority: str, *, cost: int = 1) -> dict:
         return {"allowed": allowed, "reason": "quota_unknown" if not allowed else "critical_unknown_quota", "reserve": reserve}
     if remaining < cost:
         return {"allowed": False, "reason": "daily_quota_exhausted", "reserve": reserve}
-    if remaining - cost < reserve and priority_score < PRIORITIES["imminent"]:
+    if remaining - cost < reserve and priority_score < PRIORITIES["prediction_blocking"]:
         return {"allowed": False, "reason": "emergency_reserve_protected", "reserve": reserve}
     return {"allowed": True, "reason": "within_budget", "reserve": reserve}
 
 
 def suggested_poll_seconds(*, live: bool, imminent: bool, snapshot: dict) -> int:
     """Quota-adaptive cadence for the live watcher, with an emergency floor."""
-    if live or imminent:
+    if live:
         base = _env_int("LIVE_PRIORITY_POLL_SECONDS", 60, 30)
+    elif imminent:
+        base = _env_int("IMMINENT_PRIORITY_POLL_SECONDS", 180, 60)
     else:
         base = _env_int("LIVE_IDLE_POLL_SECONDS", 900, 120)
     remaining = snapshot.get("daily_remaining")
