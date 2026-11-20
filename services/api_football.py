@@ -123,15 +123,9 @@ def _request_priority(path: str, params: dict | None) -> str:
 
 def _request_cache_ttl(path: str, params: dict | None) -> int:
     """Use freshness appropriate to each shared dataset, not one TTL for all."""
-    env_name = "API_FOOTBALL_CACHE_TTL_" + path.strip("/").replace("/", "_").upper()
-    try:
-        configured = os.getenv(env_name)
-        if configured is not None:
-            return max(0, int(configured))
-    except (TypeError, ValueError):
-        pass
+    params = params or {}
     defaults = {
-        "/fixtures": 30 if (params or {}).get("live") else 300,
+        "/fixtures": 300,
         "/fixtures/lineups": 120,
         "/fixtures/players": 120,
         "/predictions": 180,
@@ -143,10 +137,26 @@ def _request_cache_ttl(path: str, params: dict | None) -> int:
         "/teams": 21600,
         "/leagues": 86400,
     }
-    try:
-        return max(0, int(os.getenv("API_FOOTBALL_REQUEST_CACHE_SECONDS", str(defaults.get(path, 60)))))
-    except (TypeError, ValueError):
-        return defaults.get(path, 60)
+    specific_env = None
+    default_ttl = defaults.get(path, 60)
+    if path == "/fixtures":
+        if params.get("live"):
+            specific_env = "API_FOOTBALL_CACHE_TTL_LIVE"
+            default_ttl = 30
+        elif _request_priority(path, params) == "imminent":
+            specific_env = "API_FOOTBALL_CACHE_TTL_IMMINENT"
+            default_ttl = 180
+    path_env = "API_FOOTBALL_CACHE_TTL_" + path.strip("/").replace("/", "_").upper()
+    for env_name in (specific_env, path_env, "API_FOOTBALL_REQUEST_CACHE_SECONDS"):
+        if not env_name:
+            continue
+        try:
+            configured = os.getenv(env_name)
+            if configured is not None:
+                return max(0, int(configured))
+        except (TypeError, ValueError):
+            pass
+    return default_ttl
 
 
 def _cache_key(api_key: str, path: str, params) -> tuple:
