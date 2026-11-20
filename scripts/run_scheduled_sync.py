@@ -208,7 +208,11 @@ def main() -> int:
             f"sauvegarde : {backup.get('status', 'unknown')}"
         )
         if backup.get("status") not in {
-            "uploaded", "unchanged", "not_configured", "skipped_active_sync"
+            "uploaded",
+            "unchanged",
+            "skipped_daily_limit",
+            "not_configured",
+            "skipped_active_sync",
         }:
             return 1
         return 0
