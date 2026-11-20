@@ -1190,6 +1190,7 @@ def run_full_sync(progress_callback=None) -> dict:
                 max_retries=config["max_retries"],
                 force_refresh_seasons=[season],
                 priority_preemption_check=_priority_preemption_requested,
+                progress_callback=progress_callback,
             )
             if import_result and import_result.get("preempted"):
                 sync_registry.mark(key, "core_season", "partial", message="Checkpoint de préemption", metadata=import_result)
@@ -1408,6 +1409,7 @@ def run_full_sync(progress_callback=None) -> dict:
                 max_retries=config["max_retries"],
                 force_refresh_seasons=[season] if season in recent_seasons else None,
                 priority_preemption_check=_priority_preemption_requested,
+                progress_callback=progress_callback,
             )
             if import_result and import_result.get("preempted"):
                 sync_registry.mark(key, "core_season", "partial", message="Checkpoint de préemption", metadata=import_result)
