@@ -148,3 +148,51 @@ def test_priority_prediction_completion_restarts_startup_updates(monkeypatch):
     resume_thread.kwargs["target"]()
     assert calls == [42]
     assert background_jobs._startup_started is False
+
+
+
+def test_current_competition_refresh_yields_before_first_league(monkeypatch):
+    config = {
+        "enabled": True,
+        "current_enabled": True,
+        "league_ids": [61],
+        "end_season": 2026,
+        "interval_minutes": 60,
+        "pause": 0,
+        "max_retries": 1,
+    }
+    class FakeSession:
+        closed = False
+        def close(self):
+            self.closed = True
+    session = FakeSession()
+    monkeypatch.setattr(import_service, "get_auto_refresh_config", lambda: config)
+    monkeypatch.setattr(import_service, "_get_sync_value", lambda key: None)
+    monkeypatch.setattr(import_service, "register_league_seasons", lambda *args, **kwargs: None)
+    monkeypatch.setattr(import_service, "SessionLocal", lambda: session)
+    monkeypatch.setattr(import_service, "_active_season_for_league", lambda *args: 2026)
+    result = import_service.refresh_current_competitions_on_connection(
+        priority_preemption_check=lambda: True,
+    )
+    assert result["preempted"] is True
+    assert result["checkpoint"] == "current-refresh:61:2026"
+    assert result["refreshed"] == []
+    assert session.closed
+
+
+def test_active_season_refresh_yields_before_metadata_api_call():
+    class FakeSession:
+        def get(self, *args, **kwargs):
+            raise AssertionError("priority checkpoint should precede DB/API work")
+    result = import_service._refresh_league_season(
+        FakeSession(),
+        61,
+        2026,
+        pause=0,
+        max_retries=1,
+        priority_preemption_check=lambda: True,
+    )
+    assert result == {
+        "preempted": True,
+        "checkpoint": "league-metadata:61:2026",
+    }
