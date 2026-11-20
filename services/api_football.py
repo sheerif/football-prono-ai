@@ -252,14 +252,6 @@ class ApiFootballClient:
                 "Clé API_FOOTBALL_KEY manquante. Ajoutez-la dans .env ou dans les secrets Streamlit avant de lancer une synchronisation."
             )
         with _request_lock:
-            # The status endpoint must remain callable while the local
-            # circuit breaker is active so operators can inspect quota state.
-            if path != "/status" and _daily_requests_blocked():
-                _cache_metrics["quota_policy_blocks"] += 1
-                raise RuntimeError(
-                    "Quota API journalier déjà atteint : appel bloqué localement "
-                    "jusqu'à minuit UTC pour éviter une requête refusée supplémentaire."
-                )
             key = _cache_key(self.api_key, path, params)
             # Status must always be fresh; cached football data avoids a real
             # download and therefore does not need a quota preflight.
@@ -269,6 +261,14 @@ class ApiFootballClient:
                 _cache_metrics["requests_avoided"] += 1
                 return cached
             _cache_metrics["cache_misses"] += 1
+            # The daily circuit breaker blocks network calls only. A still-valid
+            # cached response remains usable after the quota has been exhausted.
+            if path != "/status" and _daily_requests_blocked():
+                _cache_metrics["quota_policy_blocks"] += 1
+                raise RuntimeError(
+                    "Quota API journalier déjà atteint : appel bloqué localement "
+                    "jusqu'à minuit UTC pour éviter une requête refusée supplémentaire."
+                )
             if path == "/status":
                 _cache_metrics["quota_status_checks"] += 1
             priority = _request_priority(path, params)
