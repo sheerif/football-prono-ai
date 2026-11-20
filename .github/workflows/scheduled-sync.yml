@@ -16,7 +16,7 @@ jobs:
   sync:
     name: Priority refresh (hourly) and resumable historical backfill
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 90
     env:
       API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
       BACKUP_TOKEN: ${{ secrets.BACKUP_TOKEN }}
