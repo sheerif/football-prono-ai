@@ -228,8 +228,10 @@ class ApiFootballClientTests(unittest.TestCase):
         second_client = ApiFootballClient(api_key="test-key", session=second_session)
 
         self.assertEqual(first_client.get_leagues(), {"response": []})
+        # The shared cache may serve this response after quota exhaustion;
+        # an uncached request from another client must still be blocked.
         with self.assertRaisesRegex(RuntimeError, "bloqué localement"):
-            second_client.get_leagues()
+            second_client.get_teams(61, 2026)
         second_session.get.assert_not_called()
 
     def test_valid_cache_is_served_during_daily_circuit_breaker(self):
