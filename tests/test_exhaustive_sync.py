@@ -183,6 +183,7 @@ class ExhaustiveSyncTests(unittest.TestCase):
         self.assertTrue(result["quota_reached"])
         self.assertEqual(result["checkpoint"], "fixture-statistics:101")
         api_client.get_fixture_statistics.assert_called_once_with(101)
+
     def test_old_unavailable_fixture_resource_is_not_requested_again(self):
         with patch.object(
             full_sync_service.sync_registry,
