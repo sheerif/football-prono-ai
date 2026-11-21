@@ -362,7 +362,7 @@ def backup_to_github(*, database_engine=engine, force: bool = False) -> dict:
                     else:
                         _request(
                             "POST", f"{root}/git/refs", token,
-                            {"ref": f"refs/heads/{branch}", "sha": commit["sha"},
+                            {"ref": f"refs/heads/{branch}", "sha": commit["sha"]},
                         )
                 except RuntimeError as exc:
                     if (
