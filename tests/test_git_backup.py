@@ -225,6 +225,105 @@ class GitBackupTests(unittest.TestCase):
         self.assertTrue(started)
         backup.assert_called_once_with()
 
+    def test_retries_backup_branch_update_after_non_fast_forward(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database_engine = create_engine(
+                f"sqlite:///{Path(directory) / 'source.db'}"
+            )
+            with database_engine.begin() as connection:
+                connection.exec_driver_sql("CREATE TABLE sample (value TEXT)")
+                connection.exec_driver_sql("INSERT INTO sample VALUES ('race')")
+
+            uploaded = {}
+            request_calls = []
+            tree_payloads = []
+            commit_payloads = []
+            current_head = {
+                "commit_sha": "old-commit",
+                "tree_sha": "old-tree",
+                "blob_sha": "old-blob",
+                "committed_at": "2026-11-20T10:00:00Z",
+                "archive_paths": ["football.db.gz"],
+            }
+            competing_head = {
+                "commit_sha": "competing-commit",
+                "tree_sha": "competing-tree",
+                "blob_sha": "competing-blob",
+                "committed_at": datetime.now(timezone.utc).strftime(
+                    "%Y-%m-%dT%H:%M:%SZ"
+                ),
+                "archive_paths": ["football.db.gz"],
+            }
+
+            def request(method, endpoint, token, payload=None):
+                request_calls.append((method, endpoint, payload))
+                if endpoint.endswith("/git/blobs"):
+                    data = base64.b64decode(payload["content"])
+                    uploaded["blob_sha"] = git_backup._git_blob_sha(data)
+                    return {"sha": uploaded["blob_sha"]}
+                if endpoint.endswith("/git/trees"):
+                    tree_payloads.append(payload)
+                    return {"sha": f"tree-{len(tree_payloads)}"}
+                if endpoint.endswith("/git/commits"):
+                    commit_payloads.append(payload)
+                    return {"sha": f"commit-{len(commit_payloads)}"}
+                if (
+                    method == "PATCH"
+                    and endpoint.endswith("/git/refs/heads/database-backup")
+                ):
+                    if len([call for call in request_calls if call[0] == "PATCH"]) == 1:
+                        current_head.clear()
+                        current_head.update(competing_head)
+                        raise RuntimeError(
+                            'GitHub API (422) : {"message":"Update is not a fast forward"}'
+                        )
+                    current_head.clear()
+                    current_head.update({
+                        "commit_sha": "commit-2",
+                        "tree_sha": "tree-2",
+                        "blob_sha": uploaded["blob_sha"],
+                        "committed_at": datetime.now(timezone.utc).strftime(
+                            "%Y-%m-%dT%H:%M:%SZ"
+                        ),
+                        "archive_paths": ["football.db.gz"],
+                    })
+                    return {"ref": "updated"}
+                raise AssertionError(
+                    f"Unexpected GitHub API call: {method} {endpoint}"
+                )
+
+            def backup_head(*_args):
+                return dict(current_head)
+
+            with (
+                patch.object(
+                    git_backup,
+                    "_setting",
+                    side_effect=lambda name, default="": {
+                        "GITHUB_BACKUP_TOKEN": "test-token",
+                        "GITHUB_BACKUP_REPOSITORY": "owner/repository",
+                        "GITHUB_BACKUP_BRANCH": "database-backup",
+                    }.get(name, default),
+                ),
+                patch.object(git_backup, "_request", side_effect=request),
+                patch.object(git_backup, "_backup_head", side_effect=backup_head),
+            ):
+                result = git_backup.backup_to_github(database_engine=database_engine)
+
+            database_engine.dispose()
+
+        self.assertEqual(result["status"], "uploaded")
+        self.assertEqual(result["concurrent_retries"], 1)
+        self.assertTrue(result["remote_verified"])
+        self.assertEqual(len(tree_payloads), 2)
+        self.assertEqual(tree_payloads[1]["base_tree"], "competing-tree")
+        self.assertEqual(commit_payloads[1]["parents"], ["competing-commit"])
+        ref_payloads = [
+            payload for method, endpoint, payload in request_calls if method == "PATCH"
+        ]
+        self.assertEqual(len(ref_payloads), 2)
+        self.assertFalse(ref_payloads[1]["force"])
+
     def test_latest_backup_info_exposes_github_commit_timestamp(self):
         expected = {
             "status": "available",
