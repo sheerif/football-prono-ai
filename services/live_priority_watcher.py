@@ -136,13 +136,37 @@ def poll_once(client=None, *, now: datetime.datetime | None = None, persist: boo
         raise RuntimeError(f"API live fixtures returned errors: {live_errors}")
     live_items = live_payload.get("response") or []
 
-    from_date = now.date().isoformat()
-    to_date = (now + datetime.timedelta(hours=24)).date().isoformat()
-    imminent_payload = client._get("/fixtures", {"from": from_date, "to": to_date})
-    imminent_errors = imminent_payload.get("errors") if isinstance(imminent_payload, dict) else None
-    if imminent_errors:
-        raise RuntimeError(f"API imminent fixtures returned errors: {imminent_errors}")
-    imminent_items = _filter_imminent(imminent_payload.get("response") or [], now=now)
+    # API-Football rejects a global /fixtures range using only from/to
+    # ("The From/To field need another parameter"). Query each calendar date
+    # with the supported date filter instead. UTC makes the 24h window stable.
+    horizon = now + datetime.timedelta(hours=24)
+    query_dates = sorted({now.date(), horizon.date()})
+    queried_items = []
+    for query_date in query_dates:
+        imminent_payload = client._get(
+            "/fixtures", {"date": query_date.isoformat(), "timezone": "UTC"}
+        )
+        imminent_errors = (
+            imminent_payload.get("errors")
+            if isinstance(imminent_payload, dict)
+            else None
+        )
+        if imminent_errors:
+            raise RuntimeError(
+                f"API imminent fixtures returned errors for {query_date}: "
+                f"{imminent_errors}"
+            )
+        queried_items.extend(imminent_payload.get("response") or [])
+
+    # Some providers may repeat a fixture in adjacent-date responses. Keep one
+    # record per fixture before filtering/persisting to avoid duplicate writes.
+    unique_items = {}
+    for item in queried_items:
+        fixture = item.get("fixture") or {}
+        fixture_id = fixture.get("id") or item.get("id")
+        key = int(fixture_id) if fixture_id else _fixture_signature([item])
+        unique_items.setdefault(key, item)
+    imminent_items = _filter_imminent(list(unique_items.values()), now=now)
     live_ids = {int((item.get("fixture") or {}).get("id") or item.get("id") or 0) for item in live_items}
     imminent_items = [
         item for item in imminent_items
