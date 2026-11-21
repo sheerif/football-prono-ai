@@ -215,12 +215,17 @@ def main() -> int:
             "prévision(s) · "
             f"sauvegarde : {backup.get('status', 'unknown')}"
         )
+        if result.get("status") != "complete":
+            print(
+                "Synchronisation non exhaustive "
+                f"(status={result.get('status')}) : le run échoue volontairement.",
+                file=sys.stderr,
+            )
+            return 1
         if backup.get("status") not in {
             "uploaded",
             "unchanged",
             "skipped_daily_limit",
-            "not_configured",
-            "skipped_active_sync",
         }:
             return 1
         return 0
