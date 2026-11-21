@@ -183,6 +183,36 @@ def _should_reset_backup_history(head: dict | None, now: datetime) -> bool:
     return (previous.year, previous.month) != (current.year, current.month)
 
 
+def _archive_matches_head(
+    head: dict | None,
+    *,
+    use_chunks: bool,
+    manifest_sha: str | None,
+    expected_part_shas: dict[str, str],
+    expected_blob_sha: str,
+) -> bool:
+    if not head:
+        return False
+    if use_chunks:
+        return (
+            head.get("manifest_sha") == manifest_sha
+            and head.get("part_shas") == expected_part_shas
+        )
+    return head.get("blob_sha") == expected_blob_sha
+
+
+def _is_ref_conflict(exc: RuntimeError) -> bool:
+    message = str(exc).lower()
+    return "(422)" in message and any(
+        marker in message
+        for marker in (
+            "update is not a fast forward",
+            "reference already exists",
+            "already exists",
+        )
+    )
+
+
 def backup_to_github(*, database_engine=engine, force: bool = False) -> dict:
     """Publish a daily snapshot and reset reachable history at each month boundary."""
     token = _backup_token()
@@ -267,12 +297,7 @@ def backup_to_github(*, database_engine=engine, force: bool = False) -> dict:
                     "path": "football.db.manifest.json", "mode": "100644",
                     "type": "blob", "sha": manifest_sha,
                 })
-                current_paths = {entry["path"] for entry in tree_entries}
-                if head:
-                    tree_entries.extend(
-                        {"path": path, "mode": "100644", "type": "blob", "sha": None}
-                        for path in head.get("archive_paths", []) if path not in current_paths
-                    )
+                archive_tree_entries = tree_entries
                 if head and head.get("manifest_sha") == manifest_sha:
                     return {
                         "status": "unchanged", "repository": repository, "branch": branch,
@@ -291,67 +316,122 @@ def backup_to_github(*, database_engine=engine, force: bool = False) -> dict:
                 tree_entries = [{
                     "path": "football.db.gz", "mode": "100644", "type": "blob", "sha": blob["sha"],
                 }]
-                if head:
-                    tree_entries.extend(
-                        {"path": path, "mode": "100644", "type": "blob", "sha": None}
-                        for path in head.get("archive_paths", []) if path != "football.db.gz"
-                    )
-            tree_payload = {"tree": tree_entries}
-            if head:
-                tree_payload["base_tree"] = head["tree_sha"]
-            tree = _request("POST", f"{root}/git/trees", token, tree_payload)
-            timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-            commit_payload = {
-                "message": f"Sauvegarde SQLite {timestamp}",
-                "tree": tree["sha"],
-            }
-            if head and not reset_history:
-                commit_payload["parents"] = [head["commit_sha"]]
-            commit = _request(
-                "POST", f"{root}/git/commits", token, commit_payload
-            )
-            if head:
-                _request(
-                    "PATCH", f"{root}/git/refs/heads/{branch}", token,
-                    {"sha": commit["sha"], "force": reset_history},
-                )
-            else:
-                _request(
-                    "POST", f"{root}/git/refs", token,
-                    {"ref": f"refs/heads/{branch}", "sha": commit["sha"]},
-                )
-            verified_head = _backup_head(root, branch, token)
+                archive_tree_entries = tree_entries
             expected_blob_sha = _git_blob_sha(archive_bytes)
-            remote_archive_matches = (
-                verified_head
-                and (
-                    verified_head.get("manifest_sha") == manifest_sha
-                    and verified_head.get("part_shas") == expected_part_shas
-                    if use_chunks
-                    else verified_head.get("blob_sha") == expected_blob_sha
+            max_ref_retries = 3
+            ref_retries = 0
+            while True:
+                current_tree_entries = [
+                    dict(entry) for entry in archive_tree_entries
+                ]
+                if head:
+                    current_paths = {
+                        entry["path"] for entry in current_tree_entries
+                    }
+                    current_tree_entries.extend(
+                        {
+                            "path": path,
+                            "mode": "100644",
+                            "type": "blob",
+                            "sha": None,
+                        }
+                        for path in head.get("archive_paths", [])
+                        if path not in current_paths
+                    )
+                tree_payload = {"tree": current_tree_entries}
+                if head:
+                    tree_payload["base_tree"] = head["tree_sha"]
+                tree = _request("POST", f"{root}/git/trees", token, tree_payload)
+                reset_history = _should_reset_backup_history(head, now_utc)
+                timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+                commit_payload = {
+                    "message": f"Sauvegarde SQLite {timestamp}",
+                    "tree": tree["sha"],
+                }
+                if head and not reset_history:
+                    commit_payload["parents"] = [head["commit_sha"]]
+                commit = _request(
+                    "POST", f"{root}/git/commits", token, commit_payload
                 )
-            )
-            if (
-                not verified_head
-                or verified_head.get("commit_sha") != commit["sha"]
-                or not remote_archive_matches
-            ):
+                try:
+                    if head:
+                        _request(
+                            "PATCH", f"{root}/git/refs/heads/{branch}", token,
+                            {"sha": commit["sha"], "force": reset_history},
+                        )
+                    else:
+                        _request(
+                            "POST", f"{root}/git/refs", token,
+                            {"ref": f"refs/heads/{branch}", "sha": commit["sha"},
+                        )
+                except RuntimeError as exc:
+                    if (
+                        not _is_ref_conflict(exc)
+                        or ref_retries >= max_ref_retries
+                    ):
+                        raise
+                    refreshed_head = _backup_head(root, branch, token)
+                    if _archive_matches_head(
+                        refreshed_head,
+                        use_chunks=use_chunks,
+                        manifest_sha=manifest_sha,
+                        expected_part_shas=expected_part_shas,
+                        expected_blob_sha=expected_blob_sha,
+                    ):
+                        return {
+                            "status": "unchanged",
+                            "repository": repository,
+                            "branch": branch,
+                            "integrity_verified": True,
+                            "gzip_verified": True,
+                            "remote_verified": True,
+                            "concurrent_update": True,
+                            "concurrent_retries": ref_retries,
+                        }
+                    head = refreshed_head
+                    ref_retries += 1
+                    continue
+
+                verified_head = _backup_head(root, branch, token)
+                if _archive_matches_head(
+                    verified_head,
+                    use_chunks=use_chunks,
+                    manifest_sha=manifest_sha,
+                    expected_part_shas=expected_part_shas,
+                    expected_blob_sha=expected_blob_sha,
+                ):
+                    if verified_head.get("commit_sha") == commit["sha"]:
+                        return {
+                            "status": "uploaded",
+                            "repository": repository,
+                            "branch": branch,
+                            "commit": commit["sha"],
+                            "size_bytes": len(archive_bytes),
+                            "differential": bool(head),
+                            "history_reset": reset_history,
+                            "integrity_verified": True,
+                            "gzip_verified": True,
+                            "remote_verified": True,
+                            "concurrent_retries": ref_retries,
+                        }
+                    return {
+                        "status": "unchanged",
+                        "repository": repository,
+                        "branch": branch,
+                        "integrity_verified": True,
+                        "gzip_verified": True,
+                        "remote_verified": True,
+                        "concurrent_update": True,
+                        "concurrent_retries": ref_retries,
+                    }
+                if verified_head and ref_retries < max_ref_retries:
+                    head = verified_head
+                    ref_retries += 1
+                    continue
                 raise RuntimeError(
                     "Sauvegarde envoyée mais vérification distante échouée : "
                     "le commit ou le fichier football.db.gz ne correspond pas."
                 )
-            return {
-                "status": "uploaded",
-                "repository": repository,
-                "branch": branch,
-                "commit": commit["sha"],
-                "size_bytes": len(archive_bytes),
-                "differential": bool(head),
-                "history_reset": reset_history,
-                "integrity_verified": True,
-                "gzip_verified": True,
-                "remote_verified": True,
-            }
 
 
 def start_daily_backup_check() -> bool:
