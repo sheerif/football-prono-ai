@@ -275,7 +275,8 @@ class GitBackupTests(unittest.TestCase):
                         current_head.clear()
                         current_head.update(competing_head)
                         raise RuntimeError(
-                            'GitHub API (422) : {"message":"Update is not a fast forward"}'
+                            'GitHub API (422) : {"message":"Update is not a fast '
+                            'forward"}'
                         )
                     current_head.clear()
                     current_head.update({
