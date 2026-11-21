@@ -41,7 +41,20 @@ def _api_error(response: dict) -> str | None:
 
 def _is_quota_error(error: Exception | str) -> bool:
     value = str(error).lower()
-    return any(token in value for token in ("quota", "rate limit", "request limit", "too many requests", "429"))
+    return any(
+        token in value
+        for token in (
+            "quota",
+            "rate limit",
+            "request limit",
+            "too many requests",
+            "429",
+            "emergency_reserve_protected",
+            "reserve protected",
+            "réserve protégée",
+            "appel api différé",
+        )
+    )
 
 
 def _daily_reserve() -> int:
