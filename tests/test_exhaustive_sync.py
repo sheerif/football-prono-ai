@@ -134,6 +134,56 @@ class ExhaustiveSyncTests(unittest.TestCase):
                 full_sync_service._daily_reserve_reached(api_client, 11)
             )
 
+    def test_xg_backfill_stops_on_emergency_reserve_protection(self):
+        api_client = Mock()
+        api_client.request_count = 0
+        api_client.last_rate_limit = {}
+        api_client.get_fixture_statistics.side_effect = RuntimeError(
+            "Appel API différé (xg_enrichment) : "
+            "emergency_reserve_protected; réserve protégée=1063."
+        )
+        rows = [
+            {
+                "fixture_id": 101,
+                "date": "2026-11-21",
+                "league_id": 61,
+                "season": 2026,
+            },
+            {
+                "fixture_id": 102,
+                "date": "2026-11-20",
+                "league_id": 61,
+                "season": 2026,
+            },
+        ]
+
+        with (
+            patch.object(full_sync_service, "client", api_client),
+            patch.object(
+                full_sync_service,
+                "_priority_preemption_requested",
+                return_value=False,
+            ),
+            patch.object(full_sync_service, "_daily_reserve_reached", return_value=False),
+            patch.object(full_sync_service, "_xg_should_download", return_value=True),
+            patch.object(
+                full_sync_service.xg_service,
+                "fixture_statistics_present",
+                return_value=False,
+            ),
+            patch.object(full_sync_service.xg_service, "record_ingestion"),
+            patch.object(full_sync_service.sync_registry, "get", return_value=None),
+            patch.object(full_sync_service.sync_registry, "mark"),
+            patch.object(full_sync_service.time, "sleep"),
+        ):
+            result = full_sync_service._sync_xg_rows(
+                rows, pause=0, retry_hours=24, sync_run_id="reserve-test"
+            )
+
+        self.assertTrue(result["quota_reached"])
+        self.assertEqual(result["checkpoint"], "fixture-statistics:101")
+        api_client.get_fixture_statistics.assert_called_once_with(101)
+
     def test_old_unavailable_fixture_resource_is_not_requested_again(self):
         with patch.object(
             full_sync_service.sync_registry,
