@@ -143,6 +143,72 @@ class ScheduledSyncTests(unittest.TestCase):
 
         self.assertEqual(result, 0)
 
+    def test_scheduled_entrypoint_fails_when_sync_is_waiting_for_quota(self):
+        with (
+            patch.object(
+                run_scheduled_sync,
+                "run",
+                return_value={"status": "waiting_quota", "api_calls": 0},
+            ),
+            patch.object(
+                run_scheduled_sync.git_backup,
+                "backup_to_github",
+                return_value={"status": "uploaded"},
+            ) as backup,
+            patch.object(run_scheduled_sync.engine, "dispose"),
+        ):
+            result = run_scheduled_sync.main()
+
+        self.assertEqual(result, 1)
+        backup.assert_called_once_with(force=False)
+
+    def test_scheduled_entrypoint_fails_when_sync_is_partial(self):
+        with (
+            patch.object(
+                run_scheduled_sync,
+                "run",
+                return_value={"status": "partial", "api_calls": 12},
+            ),
+            patch.object(
+                run_scheduled_sync.git_backup,
+                "backup_to_github",
+                return_value={"status": "uploaded"},
+            ),
+            patch.object(run_scheduled_sync.engine, "dispose"),
+        ):
+            result = run_scheduled_sync.main()
+
+        self.assertEqual(result, 1)
+
+    def test_scheduled_entrypoint_fails_when_sync_is_skipped(self):
+        with (
+            patch.object(
+                run_scheduled_sync,
+                "run",
+                return_value={"status": "skipped", "reason": "active sync"},
+            ),
+            patch.object(run_scheduled_sync.git_backup, "backup_to_github") as backup,
+            patch.object(run_scheduled_sync.engine, "dispose"),
+        ):
+            result = run_scheduled_sync.main()
+
+        self.assertEqual(result, 1)
+        backup.assert_not_called()
+
+    def test_scheduled_entrypoint_fails_when_backup_is_not_configured(self):
+        with (
+            patch.object(run_scheduled_sync, "run", return_value={"status": "complete"}),
+            patch.object(
+                run_scheduled_sync.git_backup,
+                "backup_to_github",
+                return_value={"status": "not_configured"},
+            ),
+            patch.object(run_scheduled_sync.engine, "dispose"),
+        ):
+            result = run_scheduled_sync.main()
+
+        self.assertEqual(result, 1)
+
     def test_scheduled_entrypoint_fails_when_database_backup_fails(self):
         with (
             patch.object(run_scheduled_sync, "run", return_value={"status": "complete"}),
