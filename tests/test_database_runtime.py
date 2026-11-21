@@ -200,6 +200,27 @@ class DatabaseRuntimeTests(unittest.TestCase):
 
         get_teams.assert_called_once()
 
+    def test_core_import_does_not_retry_reserve_protection(self):
+        session = Mock()
+        session.query.return_value.filter_by.return_value.count.return_value = 0
+        protected_error = RuntimeError(
+            "Appel API différé (current_fixtures) : "
+            "emergency_reserve_protected; réserve protégée=1077."
+        )
+        with (
+            patch.object(import_service, "SessionLocal", return_value=session),
+            patch.object(import_service, "register_league_seasons"),
+            patch.object(import_service, "_sync_league_metadata"),
+            patch.object(import_service.client, "get_teams", side_effect=protected_error) as get_teams,
+            patch.object(import_service.time, "sleep") as sleep,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "emergency_reserve_protected"):
+                import_service.import_leagues_cautious(
+                    [61], seasons=[2026], pause=0, max_retries=3
+                )
+        get_teams.assert_called_once()
+        sleep.assert_not_called()
+
     def test_update_log_deduplicates_same_event_within_one_minute(self):
         from sqlalchemy import create_engine, text
 

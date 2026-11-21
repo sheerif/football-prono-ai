@@ -44,7 +44,7 @@ def test_poll_once_uses_live_endpoint_and_persists_changes(monkeypatch):
             assert path == "/fixtures"
             if params == {"live": "all"}:
                 return {"response": [{"fixture": {"id": 123, "status": {"short": "1H"}}}]}
-            assert "from" in params and "to" in params
+            assert "date" in params and params["timezone"] == "UTC"
             return {"response": []}
 
     monkeypatch.setattr(live_priority_watcher, "_persist_live_fixtures", lambda items: 1)
@@ -77,7 +77,8 @@ def test_poll_once_calls_live_and_imminent_endpoints_and_persists(monkeypatch):
             if params == {"live": "all"}:
                 return {"response": [live]}
             assert path == "/fixtures"
-            assert params["from"] == now.date().isoformat()
+            assert params["date"] in {now.date().isoformat(), (now + datetime.timedelta(hours=24)).date().isoformat()}
+            assert params["timezone"] == "UTC"
             return {"response": [imminent]}
     monkeypatch.setattr(live_priority_watcher, "_persist_live_fixtures", lambda items: saved.extend(items) or 2)
     result = live_priority_watcher.poll_once(FakeClient(), now=now)

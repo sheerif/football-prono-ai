@@ -606,7 +606,7 @@ def _render_reliability_engine() -> None:
             "Diagnostic": item.get("message"),
         })
     if table_rows:
-        st.dataframe(pd.DataFrame(table_rows), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(table_rows), width="stretch", hide_index=True)
 
     archive = snapshot.get("api_archive") or {}
     archive_col, update_col = st.columns(2)
