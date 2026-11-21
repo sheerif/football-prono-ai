@@ -40,7 +40,10 @@ def _is_quota_error(error: Exception | str) -> bool:
     value = str(error).casefold()
     return any(
         token in value
-        for token in (\n            "quota", "rate limit", "request limit", "too many requests", "429",\n            "emergency_reserve_protected", "réserve protégée", "appel api différé",\n        )
+        for token in (
+            "quota", "rate limit", "request limit", "too many requests", "429",
+            "emergency_reserve_protected", "réserve protégée", "appel api différé",
+        )
     )
 
 # configure basic logging if not set
