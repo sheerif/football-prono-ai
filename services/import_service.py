@@ -1618,7 +1618,7 @@ def import_leagues_cautious(
     worker is skipped without issuing API calls; leases are renewed at phase/page
     checkpoints and always released by their owner.
     """
-    from services import sync_registry
+    from services import remote_sync_lease, sync_registry
 
     seasons = seasons or _configured_season_range()
     register_league_seasons(league_ids, seasons, source="import")
@@ -1661,11 +1661,59 @@ def import_leagues_cautious(
                     progress_callback(
                         min(total_steps, (scope_index + 1) * 3),
                         total_steps,
-                        f"Ligue {league_id} - {season}: lease persistante déjà détenue par un autre worker",
+                        f"Ligue {league_id} - {season}: lease locale persistante déjà détenue par un autre worker",
+                    )
+                continue
+
+            remote_claimed = False
+            try:
+                remote_claimed = remote_sync_lease.claim(
+                    key, owner, lease_seconds=lease_seconds
+                )
+            except Exception:
+                try:
+                    sync_registry.release_download_claim(key, owner)
+                except Exception:
+                    logger.warning(
+                        "Unable to release local core import lease after remote claim failure %s",
+                        key,
+                        exc_info=True,
+                    )
+                raise
+            if not remote_claimed:
+                try:
+                    sync_registry.release_download_claim(key, owner)
+                except Exception:
+                    logger.warning("Unable to release local core import lease %s", key, exc_info=True)
+                skipped_scopes.append(key)
+                if progress_callback:
+                    progress_callback(
+                        min(total_steps, (scope_index + 1) * 3),
+                        total_steps,
+                        f"Ligue {league_id} - {season}: lease distante persistante détenue par un autre worker",
                     )
                 continue
 
             lease_lost = False
+            last_remote_renewed = time.monotonic()
+            remote_renew_interval = 60
+
+            def _renew_remote(*, force=False):
+                nonlocal lease_lost, last_remote_renewed
+                now = time.monotonic()
+                if not force and now - last_remote_renewed < remote_renew_interval:
+                    return True
+                try:
+                    renewed = remote_sync_lease.renew(
+                        key, owner, lease_seconds=lease_seconds
+                    )
+                except Exception:
+                    renewed = False
+                if not renewed:
+                    lease_lost = True
+                    return False
+                last_remote_renewed = now
+                return True
 
             def _renew_and_check_priority():
                 nonlocal lease_lost
@@ -1677,6 +1725,8 @@ def import_leagues_cautious(
                     renewed = False
                 if not renewed:
                     lease_lost = True
+                    return True
+                if not _renew_remote():
                     return True
                 return bool(
                     priority_preemption_check
@@ -1691,7 +1741,7 @@ def import_leagues_cautious(
                     )
                 except Exception:
                     renewed = False
-                if not renewed:
+                if not renewed or not _renew_remote():
                     lease_lost = True
                     raise _CoreImportLeaseLost(key)
                 if progress_callback:
@@ -1704,7 +1754,7 @@ def import_leagues_cautious(
             try:
                 sync_registry.mark(
                     key, "core_season", "running",
-                    message="Lease persistante acquise",
+                    message="Leases persistantes locale et distante acquises",
                 )
                 result = _import_leagues_cautious_unleased(
                     [league_id],
@@ -1759,9 +1809,13 @@ def import_leagues_cautious(
                 raise
             finally:
                 try:
+                    remote_sync_lease.release(key, owner)
+                except Exception:
+                    logger.warning("Unable to release remote core import lease %s", key, exc_info=True)
+                try:
                     sync_registry.release_download_claim(key, owner)
                 except Exception:
-                    logger.warning("Unable to release core import lease %s", key, exc_info=True)
+                    logger.warning("Unable to release local core import lease %s", key, exc_info=True)
 
     if skipped_scopes:
         return {

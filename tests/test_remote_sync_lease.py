@@ -14,9 +14,10 @@ class FakeGitHubContents:
         self.conflict_next_write = False
         self.branch_exists = True
         self.branch_initialized = False
+        self.tree_payload = None
 
     def assert_root_commit(self, payload):
-        if payload.get("parents") != [] or payload.get("tree") != "empty-tree-sha":
+        if payload.get("parents") != [] or payload.get("tree") != "coordination-tree-sha":
             raise AssertionError(f"Coordination branch should be orphaned: {payload}")
 
     def request(self, method, endpoint, token, payload=None):
@@ -24,8 +25,22 @@ class FakeGitHubContents:
             if not self.branch_exists:
                 raise RuntimeError("GitHub API (404) : branch not found")
             return {"ref": "refs/heads/sync-coordination"}
+        if endpoint.endswith("/git/blobs") and method == "POST":
+            marker = base64.b64decode(payload["content"])
+            if marker != b"Remote synchronization lease coordination branch.\\n":
+                raise AssertionError(f"Unexpected coordination marker: {marker!r}")
+            return {"sha": "coordination-marker-blob-sha"}
         if endpoint.endswith("/git/trees") and method == "POST":
-            return {"sha": "empty-tree-sha"}
+            self.tree_payload = payload
+            entries = payload.get("tree") or []
+            if entries != [{
+                "path": ".coordination-root",
+                "mode": "100644",
+                "type": "blob",
+                "sha": "coordination-marker-blob-sha",
+            }]:
+                raise AssertionError(f"Unexpected coordination tree: {payload}")
+            return {"sha": "coordination-tree-sha"}
         if endpoint.endswith("/git/commits") and method == "POST":
             self.assert_root_commit(payload)
             return {"sha": "root-commit-sha"}
@@ -95,6 +110,8 @@ class RemoteSyncLeaseTests(unittest.TestCase):
         self.github.branch_exists = False
         self.assertTrue(remote_sync_lease.claim("full-sync:exhaustive", "worker-1"))
         self.assertTrue(self.github.branch_initialized)
+        self.assertEqual(self.github.tree_payload["tree"][0]["path"], ".coordination-root")
+        self.assertEqual(self.github.tree_payload["tree"][0]["mode"], "100644")
 
     def test_claim_contention_renewal_and_owner_only_release(self):
         self.assertTrue(remote_sync_lease.claim("full-sync:exhaustive", "worker-1"))

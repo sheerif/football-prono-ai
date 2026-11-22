@@ -12,6 +12,16 @@ from services import background_jobs, import_service
 
 
 class DatabaseRuntimeTests(unittest.TestCase):
+    def setUp(self):
+        for target, value in (
+            ("services.remote_sync_lease.claim", True),
+            ("services.remote_sync_lease.renew", True),
+            ("services.remote_sync_lease.release", True),
+        ):
+            mocked = patch(target, return_value=value)
+            mocked.start()
+            self.addCleanup(mocked.stop)
+
     def test_repeated_team_in_same_batch_is_inserted_once(self):
         test_engine = create_engine("sqlite://")
         models.Base.metadata.create_all(test_engine)

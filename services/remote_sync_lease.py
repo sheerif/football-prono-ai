@@ -71,10 +71,33 @@ def _ensure_branch(repository: str, branch: str, token: str) -> None:
             if not _is_http_error(exc, 404):
                 raise
 
-        # Create an orphan coordination branch so it does not inherit the
-        # application's large database seed or backup history.
-        empty_tree = git_backup._request(
-            "POST", f"{root}/git/trees", token, {"tree": []}
+        # GitHub rejects an empty tree ("Invalid tree info"). Create a
+        # minimal marker blob/tree, then an orphan commit with no parents so
+        # this branch still does not inherit the application's backup history.
+        marker = b"Remote synchronization lease coordination branch.\\n"
+        marker_blob = git_backup._request(
+            "POST",
+            f"{root}/git/blobs",
+            token,
+            {
+                "content": base64.b64encode(marker).decode("ascii"),
+                "encoding": "base64",
+            },
+        )
+        coordination_tree = git_backup._request(
+            "POST",
+            f"{root}/git/trees",
+            token,
+            {
+                "tree": [
+                    {
+                        "path": ".coordination-root",
+                        "mode": "100644",
+                        "type": "blob",
+                        "sha": marker_blob["sha"],
+                    }
+                ]
+            },
         )
         empty_commit = git_backup._request(
             "POST",
@@ -82,7 +105,7 @@ def _ensure_branch(repository: str, branch: str, token: str) -> None:
             token,
             {
                 "message": "Initialize remote sync coordination branch",
-                "tree": empty_tree["sha"],
+                "tree": coordination_tree["sha"],
                 "parents": [],
             },
         )
