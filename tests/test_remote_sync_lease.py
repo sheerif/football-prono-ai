@@ -12,10 +12,27 @@ class FakeGitHubContents:
         self.records = {}
         self.next_sha = 0
         self.conflict_next_write = False
+        self.branch_exists = True
+        self.branch_initialized = False
+
+    def assert_root_commit(self, payload):
+        if payload.get("parents") != [] or payload.get("tree") != "empty-tree-sha":
+            raise AssertionError(f"Coordination branch should be orphaned: {payload}")
 
     def request(self, method, endpoint, token, payload=None):
         if endpoint.endswith("/git/ref/heads/sync-coordination"):
+            if not self.branch_exists:
+                raise RuntimeError("GitHub API (404) : branch not found")
             return {"ref": "refs/heads/sync-coordination"}
+        if endpoint.endswith("/git/trees") and method == "POST":
+            return {"sha": "empty-tree-sha"}
+        if endpoint.endswith("/git/commits") and method == "POST":
+            self.assert_root_commit(payload)
+            return {"sha": "root-commit-sha"}
+        if endpoint.endswith("/git/refs") and method == "POST":
+            self.branch_exists = True
+            self.branch_initialized = True
+            return {"ref": payload["ref"]}
         if "/contents/sync-locks/" not in endpoint:
             raise AssertionError(f"Unexpected endpoint: {endpoint}")
         path = endpoint.split("/contents/", 1)[1].split("?", 1)[0]
@@ -68,6 +85,11 @@ class RemoteSyncLeaseTests(unittest.TestCase):
         self.repo_token.stop()
         self.request.stop()
         remote_sync_lease._branch_ready.clear()
+
+    def test_claim_initializes_an_orphan_coordination_branch(self):
+        self.github.branch_exists = False
+        self.assertTrue(remote_sync_lease.claim("full-sync:exhaustive", "worker-1"))
+        self.assertTrue(self.github.branch_initialized)
 
     def test_claim_contention_renewal_and_owner_only_release(self):
         self.assertTrue(remote_sync_lease.claim("full-sync:exhaustive", "worker-1"))
