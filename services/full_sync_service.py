@@ -10,6 +10,7 @@ from database.database import engine
 from services import import_service, lineup_service, player_service, sync_registry, xg_service
 from services.download_intelligence import (
     annotate_resource_rows,
+    order_dispatch_phases,
     order_download_tasks,
     order_season_player_scopes,
 )
@@ -1273,114 +1274,165 @@ def run_full_sync(progress_callback=None) -> dict:
             label,
         )
 
-    # Upcoming predictions are the most time-sensitive API resource.
-    for match in upcoming:
-        fixture_id = int(match["fixture_id"])
-        key = f"fixture-prediction:{fixture_id}"
-        if _priority_preemption_requested():
-            return stop_for_priority(key)
-        if _prediction_present(fixture_id):
-            sync_registry.mark(key, "fixture_prediction", "complete", item_count=1, message="Déjà en base")
-            result = "skipped"
-        else:
-            if _daily_reserve_reached(client, initial_request_counts["matchs/prédictions/xG"]):
-                return stop_for_quota(key, RuntimeError(_reserve_message()))
-            try:
-                result = _fetch_one(
-                    key,
-                    "fixture_prediction",
-                    lambda fid=fixture_id: client.get_predictions(fid),
-                    lambda item, fid=fixture_id: _save_prediction(fid, item),
-                )
-            except Exception as exc:
-                if _is_quota_error(exc):
-                    return stop_for_quota(key, exc)
-                summary["errors"].append(f"{key}: {exc}")
-                result = "error"
-            if result != "skipped":
-                time.sleep(pause)
-        add_result(result)
-        advance_priority(f"Priorité match à venir {fixture_id} : prédiction")
+    # The SQL inventory plan now drives the real priority-fixture dispatcher.
+    # Keep the established fallback order when a resource is absent from the
+    # plan (for example, because it is already complete in SQL).
+    fallback_priority_phases = [
+        "fixture-prediction",
+        "fixture-detail",
+        "fixture-lineup",
+    ]
+    priority_dispatch_order = order_dispatch_phases(
+        summary.get("plan_before"),
+        fallback_priority_phases,
+        fallback_order=fallback_priority_phases,
+    )
+    summary["priority_dispatch_order"] = priority_dispatch_order
 
-    # Refresh details and lineups for live and upcoming matches before backfills.
-    for match in priority_matches:
-        fixture_id = int(match["fixture_id"])
-        detail_key = f"fixture-detail:{fixture_id}"
-        if _priority_preemption_requested():
-            return stop_for_priority(detail_key)
-        if _fixture_details_present(fixture_id):
-            sync_registry.mark(detail_key, "fixture_detail", "complete", item_count=1, message="Déjà en base")
-            result = "skipped"
-        elif not _resource_should_download(
-            match,
-            sync_registry.get(detail_key),
-            detail_key,
-            12,
-            terminal_unavailable_after_hours=72,
-            repair_missing_complete=True,
-        ):
-            result = "skipped"
-        else:
-            if _daily_reserve_reached(client, initial_request_counts["matchs/prédictions/xG"]):
-                return stop_for_quota(detail_key, RuntimeError(_reserve_message()))
-            try:
-                result = _fetch_one(
-                    detail_key,
-                    "fixture_detail",
-                    lambda fid=fixture_id: client.get_fixture(fid),
-                    lambda item, fid=fixture_id: _save_fixture_details(fid, item),
+    def dispatch_upcoming_predictions() -> None:
+        for match in upcoming:
+            fixture_id = int(match["fixture_id"])
+            key = f"fixture-prediction:{fixture_id}"
+            if _priority_preemption_requested():
+                return stop_for_priority(key)
+            if _prediction_present(fixture_id):
+                sync_registry.mark(
+                    key, "fixture_prediction", "complete",
+                    item_count=1, message="Déjà en base",
                 )
-            except Exception as exc:
-                if _is_quota_error(exc):
-                    return stop_for_quota(detail_key, exc)
-                summary["errors"].append(f"{detail_key}: {exc}")
-                result = "error"
-            if result != "skipped":
-                time.sleep(pause)
-        add_result(result)
-        advance_priority(f"Priorité match {fixture_id} : détails")
-
-        lineup_key = f"fixture-lineup:{fixture_id}"
-        if _lineup_present(fixture_id):
-            sync_registry.mark(lineup_key, "fixture_lineup", "complete", item_count=2, message="Déjà en base")
-            result = "skipped"
-        elif not _resource_should_download(
-            match,
-            sync_registry.get(lineup_key),
-            lineup_key,
-            12,
-            terminal_unavailable_after_hours=72,
-            repair_missing_complete=True,
-        ):
-            result = "skipped"
-        else:
-            if _daily_reserve_reached(
-                tracked_clients["compositions/statistiques joueurs"],
-                initial_request_counts["compositions/statistiques joueurs"],
-            ):
-                return stop_for_quota(lineup_key, RuntimeError(_reserve_message()))
-            try:
-                lineup_result = lineup_service.sync_lineups(fixture_id)
-                if lineup_result.get("skipped"):
-                    sync_registry.mark(
-                        lineup_key, "fixture_lineup", "running",
-                        message="Lease persistante détenue par un autre worker",
+                result = "skipped"
+            else:
+                if _daily_reserve_reached(
+                    client, initial_request_counts["matchs/prédictions/xG"]
+                ):
+                    return stop_for_quota(key, RuntimeError(_reserve_message()))
+                try:
+                    result = _fetch_one(
+                        key,
+                        "fixture_prediction",
+                        lambda fid=fixture_id: client.get_predictions(fid),
+                        lambda item, fid=fixture_id: _save_prediction(fid, item),
                     )
-                    result = "skipped"
-                else:
-                    count = int(lineup_result.get("teams") or 0)
-                    status = "complete" if count >= 2 else ("partial" if count else "unavailable")
-                    sync_registry.mark(lineup_key, "fixture_lineup", status, item_count=count)
-                    result = "downloaded" if count >= 2 else ("partial" if count else "unavailable")
-            except Exception as exc:
-                sync_registry.mark(lineup_key, "fixture_lineup", "error", message=str(exc))
-                if _is_quota_error(exc):
-                    return stop_for_quota(lineup_key, exc)
-                summary["errors"].append(f"{lineup_key}: {exc}")
-                result = "error"
-            time.sleep(pause)
-        add_result(result)
-        advance_priority(f"Priorité match {fixture_id} : composition")
+                except Exception as exc:
+                    if _is_quota_error(exc):
+                        return stop_for_quota(key, exc)
+                    summary["errors"].append(f"{key}: {exc}")
+                    result = "error"
+                if result != "skipped":
+                    time.sleep(pause)
+            add_result(result)
+            advance_priority(f"Priorité match à venir {fixture_id} : prédiction")
+
+    def dispatch_priority_details() -> None:
+        for match in priority_matches:
+            fixture_id = int(match["fixture_id"])
+            key = f"fixture-detail:{fixture_id}"
+            if _priority_preemption_requested():
+                return stop_for_priority(key)
+            if _fixture_details_present(fixture_id):
+                sync_registry.mark(
+                    key, "fixture_detail", "complete",
+                    item_count=1, message="Déjà en base",
+                )
+                result = "skipped"
+            elif not _resource_should_download(
+                match,
+                sync_registry.get(key),
+                key,
+                12,
+                terminal_unavailable_after_hours=72,
+                repair_missing_complete=True,
+            ):
+                result = "skipped"
+            else:
+                if _daily_reserve_reached(
+                    client, initial_request_counts["matchs/prédictions/xG"]
+                ):
+                    return stop_for_quota(key, RuntimeError(_reserve_message()))
+                try:
+                    result = _fetch_one(
+                        key,
+                        "fixture_detail",
+                        lambda fid=fixture_id: client.get_fixture(fid),
+                        lambda item, fid=fixture_id: _save_fixture_details(fid, item),
+                    )
+                except Exception as exc:
+                    if _is_quota_error(exc):
+                        return stop_for_quota(key, exc)
+                    summary["errors"].append(f"{key}: {exc}")
+                    result = "error"
+                if result != "skipped":
+                    time.sleep(pause)
+            add_result(result)
+            advance_priority(f"Priorité match {fixture_id} : détails")
+
+    def dispatch_priority_lineups() -> None:
+        for match in priority_matches:
+            fixture_id = int(match["fixture_id"])
+            key = f"fixture-lineup:{fixture_id}"
+            if _priority_preemption_requested():
+                return stop_for_priority(key)
+            if _lineup_present(fixture_id):
+                sync_registry.mark(
+                    key, "fixture_lineup", "complete",
+                    item_count=2, message="Déjà en base",
+                )
+                result = "skipped"
+            elif not _resource_should_download(
+                match,
+                sync_registry.get(key),
+                key,
+                12,
+                terminal_unavailable_after_hours=72,
+                repair_missing_complete=True,
+            ):
+                result = "skipped"
+            else:
+                if _daily_reserve_reached(
+                    tracked_clients["compositions/statistiques joueurs"],
+                    initial_request_counts["compositions/statistiques joueurs"],
+                ):
+                    return stop_for_quota(key, RuntimeError(_reserve_message()))
+                try:
+                    lineup_result = lineup_service.sync_lineups(fixture_id)
+                    if lineup_result.get("skipped"):
+                        sync_registry.mark(
+                            key, "fixture_lineup", "running",
+                            message="Lease persistante détenue par un autre worker",
+                        )
+                        result = "skipped"
+                    else:
+                        count = int(lineup_result.get("teams") or 0)
+                        status = (
+                            "complete" if count >= 2
+                            else ("partial" if count else "unavailable")
+                        )
+                        sync_registry.mark(
+                            key, "fixture_lineup", status, item_count=count
+                        )
+                        result = (
+                            "downloaded" if count >= 2
+                            else ("partial" if count else "unavailable")
+                        )
+                except Exception as exc:
+                    sync_registry.mark(key, "fixture_lineup", "error", message=str(exc))
+                    if _is_quota_error(exc):
+                        return stop_for_quota(key, exc)
+                    summary["errors"].append(f"{key}: {exc}")
+                    result = "error"
+                time.sleep(pause)
+            add_result(result)
+            advance_priority(f"Priorité match {fixture_id} : composition")
+
+    priority_handlers = {
+        "fixture-prediction": dispatch_upcoming_predictions,
+        "fixture-detail": dispatch_priority_details,
+        "fixture-lineup": dispatch_priority_lineups,
+    }
+    for phase_key in priority_dispatch_order:
+        phase_result = priority_handlers[phase_key]()
+        if isinstance(phase_result, dict):
+            return phase_result
 
     progress(25, 100, "Priorité matchs en cours/à venir terminée ; démarrage du rattrapage historique.")
 
