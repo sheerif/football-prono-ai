@@ -751,6 +751,34 @@ def start_manual_import(
                 priority_preemption_check=priority_preemption_requested,
                 resume_checkpoint=resume_checkpoint,
             )
+            if import_result and import_result.get("skipped"):
+                message = (
+                    "Import partiel : certains périmètres sont détenus par un autre worker "
+                    "et seront repris automatiquement."
+                )
+                _set_job(
+                    job_id,
+                    status="partial",
+                    message=message,
+                    finished_at=_now(),
+                    details=import_result,
+                )
+                import_service.record_update_log(
+                    event_type="import_manuel",
+                    status="partielle_lease",
+                    started_at=started_at,
+                    reason=message,
+                    leagues=league_ids,
+                    seasons=seasons,
+                    details={
+                        "selected_presets": selected_presets or [],
+                        "pause": float(pause),
+                        "max_retries": int(max_retries),
+                        "background": True,
+                        **import_result,
+                    },
+                )
+                return
             if import_result and import_result.get("preempted"):
                 message = "Import secondaire arrêté au checkpoint pour les pronostics prioritaires."
                 _set_job(

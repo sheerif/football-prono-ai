@@ -1325,7 +1325,7 @@ def _manual_import_resume_plan(league_ids, seasons, checkpoint):
     }
 
 
-def import_leagues_cautious(
+def _import_leagues_cautious_unleased(
     league_ids: List[int],
     seasons: List[int] | None = None,
     pause: float = 1.5,
@@ -1599,6 +1599,178 @@ def import_leagues_cautious(
         _progress("Import terminé")
     finally:
         session.close()
+
+
+
+def import_leagues_cautious(
+    league_ids: List[int],
+    seasons: List[int] | None = None,
+    pause: float = 1.5,
+    max_retries: int = 5,
+    force_refresh_seasons: List[int] | None = None,
+    progress_callback=None,
+    priority_preemption_check=None,
+    resume_checkpoint=None,
+):
+    """Import league-season scopes under cross-process persistent leases.
+
+    Each scope uses the same resource key as the full-sync registry. A contending
+    worker is skipped without issuing API calls; leases are renewed at phase/page
+    checkpoints and always released by their owner.
+    """
+    from services import sync_registry
+
+    seasons = seasons or _configured_season_range()
+    register_league_seasons(league_ids, seasons, source="import")
+    resume_plan = _manual_import_resume_plan(league_ids, seasons, resume_checkpoint)
+    force_refresh_seasons = set(force_refresh_seasons or [])
+    total_steps = max(1, len(league_ids) * len(seasons) * 3)
+    skipped_scopes = []
+    completed_scopes = []
+    lease_seconds = 1800
+
+    class _CoreImportLeaseLost(Exception):
+        pass
+
+    for league_index, league_id in enumerate(league_ids):
+        if resume_plan and league_index < resume_plan["league_index"]:
+            continue
+        for season_index, season in enumerate(seasons):
+            if resume_plan and (
+                league_index < resume_plan["league_index"]
+                or (
+                    league_index == resume_plan["league_index"]
+                    and season_index < resume_plan["season_index"]
+                )
+            ):
+                continue
+
+            scope_index = league_index * len(seasons) + season_index
+            key = f"core:{int(league_id)}:{int(season)}"
+            resume_scope = bool(
+                resume_plan
+                and league_index == resume_plan["league_index"]
+                and season_index == resume_plan["season_index"]
+            )
+            owner = f"core-import:{os.getpid()}:{time.time_ns()}"
+            if not sync_registry.claim_download(
+                key, owner, lease_seconds=lease_seconds
+            ):
+                skipped_scopes.append(key)
+                if progress_callback:
+                    progress_callback(
+                        min(total_steps, (scope_index + 1) * 3),
+                        total_steps,
+                        f"Ligue {league_id} - {season}: lease persistante déjà détenue par un autre worker",
+                    )
+                continue
+
+            lease_lost = False
+
+            def _renew_and_check_priority():
+                nonlocal lease_lost
+                try:
+                    renewed = sync_registry.renew_download_claim(
+                        key, owner, lease_seconds=lease_seconds
+                    )
+                except Exception:
+                    renewed = False
+                if not renewed:
+                    lease_lost = True
+                    return True
+                return bool(
+                    priority_preemption_check
+                    and priority_preemption_check()
+                )
+
+            def _scoped_progress(current, _scope_total, label):
+                nonlocal lease_lost
+                try:
+                    renewed = sync_registry.renew_download_claim(
+                        key, owner, lease_seconds=lease_seconds
+                    )
+                except Exception:
+                    renewed = False
+                if not renewed:
+                    lease_lost = True
+                    raise _CoreImportLeaseLost(key)
+                if progress_callback:
+                    progress_callback(
+                        min(total_steps, scope_index * 3 + int(current or 0)),
+                        total_steps,
+                        label,
+                    )
+
+            try:
+                sync_registry.mark(
+                    key, "core_season", "running",
+                    message="Lease persistante acquise",
+                )
+                result = _import_leagues_cautious_unleased(
+                    [league_id],
+                    seasons=[season],
+                    pause=pause,
+                    max_retries=max_retries,
+                    force_refresh_seasons=(
+                        [season] if season in force_refresh_seasons else None
+                    ),
+                    progress_callback=_scoped_progress,
+                    priority_preemption_check=_renew_and_check_priority,
+                    resume_checkpoint=resume_checkpoint if resume_scope else None,
+                )
+                if lease_lost:
+                    skipped_scopes.append(key)
+                    if progress_callback:
+                        progress_callback(
+                            min(total_steps, (scope_index + 1) * 3),
+                            total_steps,
+                            f"Ligue {league_id} - {season}: lease perdue, reprise nécessaire",
+                        )
+                    return {
+                        "skipped": True,
+                        "skipped_scopes": skipped_scopes,
+                        "completed_scopes": completed_scopes,
+                        "checkpoint": (result or {}).get("checkpoint") or key,
+                        "lease_lost": True,
+                    }
+                if result and result.get("preempted"):
+                    sync_registry.mark(
+                        key, "core_season", "partial",
+                        message="Checkpoint de préemption",
+                        metadata=result,
+                    )
+                    return result
+                sync_registry.mark(key, "core_season", "complete", item_count=1)
+                completed_scopes.append(key)
+            except _CoreImportLeaseLost:
+                skipped_scopes.append(key)
+                return {
+                    "skipped": True,
+                    "skipped_scopes": skipped_scopes,
+                    "completed_scopes": completed_scopes,
+                    "checkpoint": key,
+                    "lease_lost": True,
+                }
+            except Exception as exc:
+                if not lease_lost:
+                    sync_registry.mark(
+                        key, "core_season", "error", message=str(exc)
+                    )
+                raise
+            finally:
+                try:
+                    sync_registry.release_download_claim(key, owner)
+                except Exception:
+                    logger.warning("Unable to release core import lease %s", key, exc_info=True)
+
+    if skipped_scopes:
+        return {
+            "skipped": True,
+            "skipped_scopes": skipped_scopes,
+            "completed_scopes": completed_scopes,
+        }
+    return None
+
 
 
 def auto_refresh_if_due(

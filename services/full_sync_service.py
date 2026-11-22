@@ -1113,6 +1113,8 @@ def run_full_sync(progress_callback=None) -> dict:
         "daily_reserve": _daily_reserve(),
         "budget_reserved": False,
     }
+    core_scope_completed = 0
+    core_lease_skipped = 0
     try:
         summary["plan_before"] = download_plan()
     except Exception as exc:
@@ -1213,7 +1215,6 @@ def run_full_sync(progress_callback=None) -> dict:
             initial_request_counts["données principales"],
         ):
             return stop_for_quota(key, RuntimeError(_reserve_message()))
-        sync_registry.mark(key, "core_season", "running")
         try:
             import_result = import_service.import_leagues_cautious(
                 [league_id],
@@ -1224,11 +1225,18 @@ def run_full_sync(progress_callback=None) -> dict:
                 priority_preemption_check=_priority_preemption_requested,
                 progress_callback=progress_callback,
             )
-            if import_result and import_result.get("preempted"):
+            if import_result and import_result.get("skipped"):
+                core_lease_skipped += max(
+                    1, len(import_result.get("skipped_scopes") or [key])
+                )
+                summary["skipped"] += 1
+            elif import_result and import_result.get("preempted"):
                 sync_registry.mark(key, "core_season", "partial", message="Checkpoint de préemption", metadata=import_result)
                 return stop_for_priority(import_result.get("checkpoint") or key)
-            sync_registry.mark(key, "core_season", "complete", item_count=1)
-            summary["downloaded"] += 1
+            else:
+                sync_registry.mark(key, "core_season", "complete", item_count=1)
+                summary["downloaded"] += 1
+                core_scope_completed += 1
         except Exception as exc:
             sync_registry.mark(key, "core_season", "error", message=str(exc))
             if _is_quota_error(exc):
@@ -1438,7 +1446,6 @@ def run_full_sync(progress_callback=None) -> dict:
             initial_request_counts["données principales"],
         ):
             return stop_for_quota(key, RuntimeError(_reserve_message()))
-        sync_registry.mark(key, "core_season", "running")
         try:
             import_result = import_service.import_leagues_cautious(
                 [league_id],
@@ -1449,11 +1456,18 @@ def run_full_sync(progress_callback=None) -> dict:
                 priority_preemption_check=_priority_preemption_requested,
                 progress_callback=progress_callback,
             )
-            if import_result and import_result.get("preempted"):
+            if import_result and import_result.get("skipped"):
+                core_lease_skipped += max(
+                    1, len(import_result.get("skipped_scopes") or [key])
+                )
+                summary["skipped"] += 1
+            elif import_result and import_result.get("preempted"):
                 sync_registry.mark(key, "core_season", "partial", message="Checkpoint de préemption", metadata=import_result)
                 return stop_for_priority(import_result.get("checkpoint") or key)
-            sync_registry.mark(key, "core_season", "complete", item_count=1)
-            summary["downloaded"] += 1
+            else:
+                sync_registry.mark(key, "core_season", "complete", item_count=1)
+                summary["downloaded"] += 1
+                core_scope_completed += 1
         except Exception as exc:
             sync_registry.mark(key, "core_season", "error", message=str(exc))
             if _is_quota_error(exc):
@@ -1466,17 +1480,22 @@ def run_full_sync(progress_callback=None) -> dict:
             f"{summary['downloaded']} téléchargé(s)",
         )
     remaining_core = _missing_core_scopes(config["league_ids"], seasons)
-    summary["core"] = "complete" if not remaining_core else "partial"
-    summary["core_downloaded"] = len(priority_core_scopes) + len(core_scopes)
+    summary["core"] = (
+        "partial" if remaining_core or core_lease_skipped else "complete"
+    )
+    summary["core_downloaded"] = core_scope_completed
+    summary["core_lease_skipped"] = core_lease_skipped
     summary["core_skipped"] = max(
         0,
-        len(config["league_ids"]) * len(seasons)
-        - len(priority_core_scopes)
-        - len(core_scopes),
+        len(config["league_ids"]) * len(seasons) - core_scope_completed,
     )
     if remaining_core:
         summary["errors"].append(
             f"{len(remaining_core)} périmètre(s) principal(aux) restent indisponibles."
+        )
+    elif core_lease_skipped:
+        summary["errors"].append(
+            f"{core_lease_skipped} périmètre(s) core ignoré(s) par contention de lease persistante."
         )
 
     matches = _all_matches()
