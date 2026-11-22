@@ -1658,10 +1658,13 @@ def import_leagues_cautious(
                     progress_callback(
                         min(total_steps, (scope_index + 1) * 3),
                         total_steps,
-                        f"Ligue {league_id} - {season}: scope déjà détenu par un autre worker",
+                        f"Ligue {league_id} - {season:}: scope déjà détenu par un autre worker",
                     )
                 continue
 
+            sync_registry.mark(
+                key, "core_season", "running", message="Lease persistante acquise"
+            )
             lease_lost = False
 
             def _renew_and_check_priority():
@@ -1727,8 +1730,20 @@ def import_leagues_cautious(
                         "lease_lost": True,
                     }
                 if result and result.get("preempted"):
+                    sync_registry.mark(
+                        key, "core_season", "partial",
+                        message="Checkpoint de préemption",
+                        metadata=result,
+                    )
                     return result
+                sync_registry.mark(key, "core_season", "complete", item_count=1)
                 completed_scopes.append(key)
+            except Exception as exc:
+                if not lease_lost:
+                    sync_registry.mark(
+                        key, "core_season", "error", message=str(exc)
+                    )
+                raise
             finally:
                 try:
                     sync_registry.release_download_claim(key, owner)
