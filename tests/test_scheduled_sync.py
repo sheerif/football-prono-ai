@@ -30,7 +30,9 @@ class ScheduledSyncTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "complete")
         sync.assert_called_once()
-        release.assert_called_once_with(run_scheduled_sync.CONTROL_KEY, release.call_args.args[1])
+        release.assert_called_once()
+        self.assertEqual(release.call_args.args[0], run_scheduled_sync.CONTROL_KEY)
+        self.assertTrue(release.call_args.args[1].startswith("scheduled-sync:"))
 
     def test_scheduler_skips_without_api_calls_when_global_lease_is_contended(self):
         with (
@@ -53,6 +55,39 @@ class ScheduledSyncTests(unittest.TestCase):
         mark.assert_not_called()
         sync.assert_not_called()
         release.assert_not_called()
+
+    def test_scheduler_stops_without_overwriting_state_after_lease_loss(self):
+        renew = []
+        marks = []
+
+        def fake_sync(progress_callback):
+            progress_callback(1, 1, "phase")
+            return {"quota_reached": False, "api_calls": 1, "errors": []}
+
+        with (
+            patch.object(run_scheduled_sync.import_service, "init_db"),
+            patch.object(run_scheduled_sync.import_service, "record_update_log") as record_log,
+            patch.object(run_scheduled_sync.sync_registry, "ensure_table"),
+            patch.object(run_scheduled_sync.sync_registry, "get", return_value=None),
+            patch.object(run_scheduled_sync.sync_registry, "claim_download", return_value=True),
+            patch.object(
+                run_scheduled_sync.sync_registry,
+                "renew_download_claim",
+                side_effect=lambda *args, **kwargs: (renew.append(args) or len(renew) < 4),
+            ),
+            patch.object(run_scheduled_sync.sync_registry, "release_download_claim") as release,
+            patch.object(run_scheduled_sync.time, "monotonic", side_effect=[0, 0, 0, 0, 61]),
+            patch.object(run_scheduled_sync.prediction_archive_service, "archive_upcoming_predictions", return_value={"archived": 0}),
+            patch.object(run_scheduled_sync.background_jobs, "api_quota_status", return_value={"verified": True, "remaining": 50}),
+            patch.object(run_scheduled_sync.sync_registry, "mark", side_effect=lambda *args, **kwargs: marks.append(args)),
+            patch.object(run_scheduled_sync.full_sync_service, "run_full_sync", side_effect=fake_sync),
+        ):
+            with self.assertRaises(run_scheduled_sync.FullSyncLeaseLost):
+                run_scheduled_sync.run()
+
+        self.assertEqual([mark[2] for mark in marks], ["running"])
+        record_log.assert_not_called()
+        release.assert_called_once()
 
     def test_scheduler_persists_successful_completion(self):
         marks = []
@@ -217,19 +252,19 @@ class ScheduledSyncTests(unittest.TestCase):
         self.assertEqual(result, 1)
         backup.assert_called_once_with(force=True)
 
-    def test_scheduled_entrypoint_fails_when_sync_is_skipped(self):
+    def test_scheduled_entrypoint_accepts_safe_lease_contention_skip(self):
         with (
             patch.object(
                 run_scheduled_sync,
                 "run",
-                return_value={"status": "skipped", "reason": "active sync"},
+                return_value={"status": "skipped", "reason": "active lease"},
             ),
             patch.object(run_scheduled_sync.git_backup, "backup_to_github") as backup,
             patch.object(run_scheduled_sync.engine, "dispose"),
         ):
             result = run_scheduled_sync.main()
 
-        self.assertEqual(result, 1)
+        self.assertEqual(result, 0)
         backup.assert_not_called()
 
     def test_scheduled_entrypoint_fails_when_backup_is_not_configured(self):
