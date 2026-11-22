@@ -352,6 +352,54 @@ class XgServiceTests(unittest.TestCase):
         self.assertEqual(result["downloaded"], 1)
         self.assertTrue(result["quota_reached"])
 
+    def test_remote_xg_batch_lease_contention_stops_before_download(self):
+        rows = [{"fixture_id": 1}, {"fixture_id": 2}]
+        with (
+            patch.object(full_sync_service.remote_sync_lease, "claim", return_value=False),
+            patch.object(full_sync_service, "_sync_xg_rows") as sync_rows,
+        ):
+            result = full_sync_service._sync_xg_rows_with_remote_lease(
+                rows, pause=0, retry_hours=24, sync_run_id="batch-test"
+            )
+        sync_rows.assert_not_called()
+        self.assertTrue(result["preempted"])
+        self.assertTrue(result["remote_lease_contended"])
+        self.assertEqual(result["checkpoint"], "historical-xg:batch")
+        self.assertEqual(result["api_calls"], 0)
+
+    def test_remote_xg_lease_loss_checkpoints_after_current_fixture(self):
+        client = Mock()
+        client.get_fixture_statistics.return_value = {
+            "response": [
+                {"team": {"id": 10}, "statistics": [{"type": "expected_goals", "value": "1.2"}]},
+                {"team": {"id": 20}, "statistics": [{"type": "expected_goals", "value": "0.8"}]},
+            ]
+        }
+        rows = [{"fixture_id": 1}, {"fixture_id": 2}]
+        with (
+            patch.object(full_sync_service, "client", client),
+            patch.object(xg_service, "fixture_statistics_present", side_effect=[False, True]),
+            patch.object(xg_service, "save_fixture_statistics", return_value=2),
+            patch.object(full_sync_service.sync_registry, "get", return_value=None),
+            patch.object(full_sync_service.sync_registry, "claim_download", return_value=True),
+            patch.object(full_sync_service.sync_registry, "mark"),
+            patch.object(full_sync_service.sync_registry, "release_download_claim"),
+            patch.object(full_sync_service.time, "sleep"),
+            patch.object(full_sync_service.remote_sync_lease, "claim", return_value=True),
+            patch.object(full_sync_service.remote_sync_lease, "renew", return_value=False) as renew,
+            patch.object(full_sync_service.remote_sync_lease, "release", return_value=True),
+            patch.object(full_sync_service.time, "monotonic", side_effect=[0, 61]),
+        ):
+            result = full_sync_service._sync_xg_rows_with_remote_lease(
+                rows, pause=0, retry_hours=24, sync_run_id="batch-test"
+            )
+        self.assertEqual(client.get_fixture_statistics.call_count, 1)
+        self.assertEqual(result["downloaded"], 1)
+        self.assertTrue(result["preempted"])
+        self.assertTrue(result["remote_lease_lost"])
+        self.assertEqual(result["checkpoint"], "fixture-statistics:2")
+        renew.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()
