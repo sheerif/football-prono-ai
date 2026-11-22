@@ -71,15 +71,27 @@ def _ensure_branch(repository: str, branch: str, token: str) -> None:
             if not _is_http_error(exc, 404):
                 raise
 
-        main_ref = git_backup._request(
-            "GET", f"{root}/git/ref/heads/main", token
+        # Create an orphan coordination branch so it does not inherit the
+        # application's large database seed or backup history.
+        empty_tree = git_backup._request(
+            "POST", f"{root}/git/trees", token, {"tree": []}
+        )
+        empty_commit = git_backup._request(
+            "POST",
+            f"{root}/git/commits",
+            token,
+            {
+                "message": "Initialize remote sync coordination branch",
+                "tree": empty_tree["sha"],
+                "parents": [],
+            },
         )
         try:
             git_backup._request(
                 "POST",
                 f"{root}/git/refs",
                 token,
-                {"ref": f"refs/heads/{branch}", "sha": main_ref["object"]["sha"]},
+                {"ref": f"refs/heads/{branch}", "sha": empty_commit["sha"]},
             )
         except RuntimeError as exc:
             # A competing initializer may have created the branch after GET.
