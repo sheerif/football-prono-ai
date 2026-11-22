@@ -1726,7 +1726,7 @@ def import_leagues_cautious(
                 if not renewed:
                     lease_lost = True
                     return True
-                if not _renew_remote(force=True):
+                if not _renew_remote():
                     return True
                 return bool(
                     priority_preemption_check
