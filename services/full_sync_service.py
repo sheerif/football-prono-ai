@@ -1548,7 +1548,14 @@ def run_full_sync(progress_callback=None) -> dict:
                     max_retries=config["max_retries"],
                     force_refresh_seasons=[season] if season in recent_seasons else None,
                     priority_preemption_check=_priority_preemption_requested,
-                    progress_callback=progress_callback,
+                    progress_callback=lambda current, total, label: progress(
+                        phase_start + int(
+                            (current / max(1, total))
+                            * historical_phase_weights["core"]
+                        ),
+                        100,
+                        label,
+                    ),
                 )
                 if import_result and import_result.get("skipped"):
                     core_lease_skipped += max(
