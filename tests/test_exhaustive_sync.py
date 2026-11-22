@@ -1,4 +1,5 @@
 import datetime
+from contextlib import ExitStack
 from pathlib import Path
 import unittest
 from unittest.mock import Mock, patch
@@ -756,90 +757,103 @@ class ExhaustiveSyncTests(unittest.TestCase):
             "pause": 0,
             "max_retries": 1,
         }
-        with (
-            patch.object(full_sync_service.import_service, "init_db"),
-            patch.object(full_sync_service.sync_registry, "ensure_table"),
-            patch.object(
-                full_sync_service.sync_registry,
-                "mark",
-                side_effect=lambda key, *_args, **_kwargs: (
-                    events.append(key) if key.endswith(":2") else None
-                ),
-            ) as mark,
-            patch.object(full_sync_service.sync_registry, "should_download", return_value=False),
-            patch.object(
-                full_sync_service.sync_registry,
-                "get",
-                return_value={"status": "unavailable"},
-            ),
-            patch.object(full_sync_service.import_service, "get_auto_refresh_config", return_value=config),
-            patch.object(
-                full_sync_service,
-                "download_plan",
-                return_value={
-                    "priority_order": [
-                        {"key": "fixture-lineup", "priority": 5},
-                        {"key": "fixture-detail", "priority": 15},
-                        {"key": "fixture-prediction", "priority": 25},
-                        {"key": "core", "priority": 50},
-                        {"key": "fixture-statistics", "priority": 80},
-                    ]
-                },
-            ),
-            patch.object(
-                full_sync_service.import_service,
-                "import_leagues_cautious",
-                side_effect=lambda _ids, seasons=None, progress_callback=None, **_kwargs: (
-                    progress_callback(1, 2, "historical-core-test-1")
-                    if int(seasons[0]) == 2024 and progress_callback
-                    else None
-                ) or (
-                    progress_callback(2, 2, "historical-core-test-2")
-                    if int(seasons[0]) == 2024 and progress_callback
-                    else None
-                ) or (
-                    events.append(
-                        "recent_core" if int(seasons[0]) == 2025 else f"core_{seasons[0]}"
-                    ) or {}
-                ),
-            ),
-            patch.object(
-                full_sync_service,
-                "_missing_core_scopes",
-                side_effect=[[], [(61, 2024)], []],
-            ),
-            patch.object(full_sync_service, "_all_matches", return_value=[past, future]),
-            patch.object(full_sync_service, "_in_progress_matches", return_value=[]),
-            patch.object(full_sync_service, "_upcoming_matches", return_value=[future]),
-            patch.object(full_sync_service, "_recent_fixture_ids", return_value=[1]),
-            patch.object(full_sync_service, "_player_scopes", return_value=[]),
-            patch.object(full_sync_service, "_fixture_details_present", return_value=True),
-            patch.object(full_sync_service, "_lineup_present", return_value=True),
-            patch.object(
-                full_sync_service,
-                "_prediction_present",
-                side_effect=lambda _fixture_id: (events.append("upcoming_prediction_check") or True),
-            ),
-            patch.object(full_sync_service, "_fixture_players_present", return_value=False),
-            patch.object(
-                full_sync_service.lineup_service,
-                "sync_fixture_players",
-                return_value={"players": 0},
-            ),
-            patch.object(
-                full_sync_service,
-                "sync_historical_xg",
-                side_effect=lambda **_kwargs: (events.append("historical_xg") or {
-                    "downloaded": 0,
-                    "skipped": 1,
-                    "unavailable": 0,
-                    "errors": [],
-                    "quota_reached": False,
-                }),
-            ) as sync_xg,
-            patch.object(full_sync_service, "prediction_coverage", return_value={}),
-            patch.object(full_sync_service.xg_service, "coverage", return_value={}),
-        ):
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(full_sync_service.import_service, "init_db"))
+            stack.enter_context(patch.object(full_sync_service.sync_registry, "ensure_table"))
+            mark = stack.enter_context(
+                patch.object(
+                    full_sync_service.sync_registry,
+                    "mark",
+                    side_effect=lambda key, *_args, **_kwargs: (
+                        events.append(key) if key.endswith(":2") else None
+                    ),
+                )
+            )
+            stack.enter_context(patch.object(full_sync_service.sync_registry, "should_download", return_value=False))
+            stack.enter_context(
+                patch.object(full_sync_service.sync_registry, "get", return_value={"status": "unavailable"})
+            )
+            stack.enter_context(
+                patch.object(full_sync_service.import_service, "get_auto_refresh_config", return_value=config)
+            )
+            stack.enter_context(
+                patch.object(
+                    full_sync_service,
+                    "download_plan",
+                    return_value={
+                        "priority_order": [
+                            {"key": "fixture-lineup", "priority": 5},
+                            {"key": "fixture-detail", "priority": 15},
+                            {"key": "fixture-prediction", "priority": 25},
+                            {"key": "core", "priority": 50},
+                            {"key": "fixture-statistics", "priority": 80},
+                        ]
+                    },
+                )
+            )
+            stack.enter_context(
+                patch.object(
+                    full_sync_service.import_service,
+                    "import_leagues_cautious",
+                    side_effect=lambda _ids, seasons=None, progress_callback=None, **_kwargs: (
+                        progress_callback(1, 2, "historical-core-test-1")
+                        if int(seasons[0]) == 2024 and progress_callback
+                        else None
+                    ) or (
+                        progress_callback(2, 2, "historical-core-test-2")
+                        if int(seasons[0]) == 2024 and progress_callback
+                        else None
+                    ) or (
+                        events.append(
+                            "recent_core" if int(seasons[0]) == 2025 else f"core_{seasons[0]}"
+                        ) or {}
+                    ),
+                )
+            )
+            stack.enter_context(
+                patch.object(
+                    full_sync_service,
+                    "_missing_core_scopes",
+                    side_effect=[[], [(61, 2024)], []],
+                )
+            )
+            stack.enter_context(patch.object(full_sync_service, "_all_matches", return_value=[past, future]))
+            stack.enter_context(patch.object(full_sync_service, "_in_progress_matches", return_value=[]))
+            stack.enter_context(patch.object(full_sync_service, "_upcoming_matches", return_value=[future]))
+            stack.enter_context(patch.object(full_sync_service, "_recent_fixture_ids", return_value=[1]))
+            stack.enter_context(patch.object(full_sync_service, "_player_scopes", return_value=[]))
+            stack.enter_context(patch.object(full_sync_service, "_fixture_details_present", return_value=True))
+            stack.enter_context(patch.object(full_sync_service, "_lineup_present", return_value=True))
+            stack.enter_context(
+                patch.object(
+                    full_sync_service,
+                    "_prediction_present",
+                    side_effect=lambda _fixture_id: (events.append("upcoming_prediction_check") or True),
+                )
+            )
+            stack.enter_context(patch.object(full_sync_service, "_fixture_players_present", return_value=False))
+            stack.enter_context(
+                patch.object(
+                    full_sync_service.lineup_service,
+                    "sync_fixture_players",
+                    return_value={"players": 0},
+                )
+            )
+            sync_xg = stack.enter_context(
+                patch.object(
+                    full_sync_service,
+                    "sync_historical_xg",
+                    side_effect=lambda **_kwargs: (events.append("historical_xg") or {
+                        "downloaded": 0,
+                        "skipped": 1,
+                        "unavailable": 0,
+                        "errors": [],
+                        "quota_reached": False,
+                    }),
+                )
+            )
+            stack.enter_context(patch.object(full_sync_service, "prediction_coverage", return_value={}))
+            stack.enter_context(patch.object(full_sync_service.xg_service, "coverage", return_value={}))
             result = full_sync_service.run_full_sync(
                 progress_callback=lambda current, total, label: progress_updates.append(
                     (current, label)
