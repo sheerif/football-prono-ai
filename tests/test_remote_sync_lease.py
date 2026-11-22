@@ -73,16 +73,21 @@ class RemoteSyncLeaseTests(unittest.TestCase):
             remote_sync_lease.git_backup, "_request", side_effect=self.github.request
         )
         self.request.start()
-        self.repo_token = patch.object(
-            remote_sync_lease, "_repo_token", return_value=("owner/repo", "token")
+        self.backup_token = patch.object(
+            remote_sync_lease.git_backup, "_backup_token", return_value="token"
         )
-        self.repo_token.start()
+        self.backup_token.start()
+        self.repository_setting = patch.object(
+            remote_sync_lease.git_backup, "_setting", side_effect=lambda name, default="": default
+        )
+        self.repository_setting.start()
         self.branch = patch.object(remote_sync_lease, "_branch", return_value="sync-coordination")
         self.branch.start()
 
     def tearDown(self):
         self.branch.stop()
-        self.repo_token.stop()
+        self.repository_setting.stop()
+        self.backup_token.stop()
         self.request.stop()
         remote_sync_lease._branch_ready.clear()
 
@@ -119,11 +124,7 @@ class RemoteSyncLeaseTests(unittest.TestCase):
         self.assertFalse(remote_sync_lease.claim("full-sync:exhaustive", "worker-1"))
 
     def test_missing_token_fails_closed(self):
-        original_repo_token = remote_sync_lease._repo_token
-        with (
-            patch.object(remote_sync_lease, "_repo_token", side_effect=original_repo_token),
-            patch.object(remote_sync_lease.git_backup, "_backup_token", return_value=""),
-        ):
+        with patch.object(remote_sync_lease.git_backup, "_backup_token", return_value=""):
             with self.assertRaises(remote_sync_lease.RemoteLeaseUnavailable):
                 remote_sync_lease.claim("full-sync:exhaustive", "worker-1")
 
