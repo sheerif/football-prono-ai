@@ -7,7 +7,7 @@ import time
 import traceback
 import uuid
 
-from services import import_service, sync_registry
+from services import import_service, remote_sync_lease, sync_registry
 
 
 _lock = threading.RLock()
@@ -1043,7 +1043,7 @@ def start_full_sync(*, resumed: bool = False) -> str:
         started_at = _now()
         lease_owner = f"streamlit-full-sync:{job_id}"
         try:
-            claimed = sync_registry.claim_download(
+            remote_claimed = remote_sync_lease.claim(
                 FULL_SYNC_CONTROL_KEY,
                 lease_owner,
                 lease_seconds=FULL_SYNC_LEASE_SECONDS,
@@ -1053,15 +1053,47 @@ def start_full_sync(*, resumed: bool = False) -> str:
                 job_id,
                 status="error",
                 error=str(exc),
+                message="Impossible d'acquérir le verrou distant de synchronisation",
+                finished_at=_now(),
+            )
+            return
+        if not remote_claimed:
+            _set_job(
+                job_id,
+                status="skipped",
+                message="Une autre instance possède le verrou distant de synchronisation.",
+                finished_at=_now(),
+                details={"remote_lease_contended": True},
+            )
+            return
+        try:
+            claimed = sync_registry.claim_download(
+                FULL_SYNC_CONTROL_KEY,
+                lease_owner,
+                lease_seconds=FULL_SYNC_LEASE_SECONDS,
+            )
+        except Exception as exc:
+            try:
+                remote_sync_lease.release(FULL_SYNC_CONTROL_KEY, lease_owner)
+            except Exception:
+                logging.warning("Unable to release remote lease after local claim error", exc_info=True)
+            _set_job(
+                job_id,
+                status="error",
+                error=str(exc),
                 message="Impossible d'acquérir le verrou global de synchronisation",
                 finished_at=_now(),
             )
             return
         if not claimed:
+            try:
+                remote_sync_lease.release(FULL_SYNC_CONTROL_KEY, lease_owner)
+            except Exception:
+                logging.warning("Unable to release remote lease after local contention", exc_info=True)
             _set_job(
                 job_id,
                 status="skipped",
-                message="Une autre instance possède le verrou global de synchronisation.",
+                message="Une autre instance possède le verrou local de synchronisation.",
                 finished_at=_now(),
                 details={"lease_contended": True},
             )
@@ -1078,13 +1110,20 @@ def start_full_sync(*, resumed: bool = False) -> str:
                 and now - last_renewal < FULL_SYNC_LEASE_RENEW_INTERVAL_SECONDS
             ):
                 return
+            if not remote_sync_lease.renew(
+                FULL_SYNC_CONTROL_KEY,
+                lease_owner,
+                lease_seconds=FULL_SYNC_LEASE_SECONDS,
+            ):
+                lease_lost = True
+                raise RuntimeError("Lease distante globale de synchronisation perdue.")
             if not sync_registry.renew_download_claim(
                 FULL_SYNC_CONTROL_KEY,
                 lease_owner,
                 lease_seconds=FULL_SYNC_LEASE_SECONDS,
             ):
                 lease_lost = True
-                raise RuntimeError("Lease globale de synchronisation perdue.")
+                raise RuntimeError("Lease locale globale de synchronisation perdue.")
             last_renewal = now
 
         def progress_callback(current: int, total: int, label: str) -> None:
@@ -1335,7 +1374,14 @@ def start_full_sync(*, resumed: bool = False) -> str:
                 )
             except Exception:
                 logging.warning(
-                    "Unable to release Streamlit full-sync lease",
+                    "Unable to release Streamlit local full-sync lease",
+                    exc_info=True,
+                )
+            try:
+                remote_sync_lease.release(FULL_SYNC_CONTROL_KEY, lease_owner)
+            except Exception:
+                logging.warning(
+                    "Unable to release Streamlit remote full-sync lease",
                     exc_info=True,
                 )
 
