@@ -704,8 +704,8 @@ def _fetch_one(resource_key: str, resource_type: str, fetch, save, retry_hours: 
     owner = f"fetch-one:{os.getpid()}:{time.time_ns()}"
     if not sync_registry.claim_download(resource_key, owner):
         return "skipped"
-    sync_registry.mark(resource_key, resource_type, "running")
     try:
+        sync_registry.mark(resource_key, resource_type, "running")
         response = fetch()
         error = _api_error(response)
         if error:
