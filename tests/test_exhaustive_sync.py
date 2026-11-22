@@ -413,6 +413,7 @@ class ExhaustiveSyncTests(unittest.TestCase):
             patch.object(background_jobs.threading, "Thread", _ImmediateThread),
             patch.object(background_jobs, "full_sync_state", return_value=None),
             patch.object(background_jobs.remote_sync_lease, "claim", return_value=True),
+            patch.object(background_jobs.remote_sync_lease, "claim", return_value=True),
             patch.object(
                 background_jobs.sync_registry,
                 "claim_download",
@@ -433,6 +434,7 @@ class ExhaustiveSyncTests(unittest.TestCase):
         claim.assert_called_once()
         renew.assert_not_called()
         release.assert_not_called()
+        remote_release.assert_called_once()
         archive.assert_not_called()
         quota.assert_not_called()
         run_full_sync.assert_not_called()
