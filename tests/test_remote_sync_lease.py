@@ -97,7 +97,11 @@ class RemoteSyncLeaseTests(unittest.TestCase):
         self.assertFalse(remote_sync_lease.claim("full-sync:exhaustive", "worker-1"))
 
     def test_missing_token_fails_closed(self):
-        with patch.object(remote_sync_lease.git_backup, "_backup_token", return_value=""):
+        original_repo_token = remote_sync_lease._repo_token
+        with (
+            patch.object(remote_sync_lease, "_repo_token", side_effect=original_repo_token),
+            patch.object(remote_sync_lease.git_backup, "_backup_token", return_value=""),
+        ):
             with self.assertRaises(remote_sync_lease.RemoteLeaseUnavailable):
                 remote_sync_lease.claim("full-sync:exhaustive", "worker-1")
 
