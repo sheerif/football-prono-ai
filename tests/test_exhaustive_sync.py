@@ -749,7 +749,7 @@ class ExhaustiveSyncTests(unittest.TestCase):
         }
         config = {
             "league_ids": [61],
-            "start_season": 2025,
+            "start_season": 2024,
             "end_season": 2025,
             "recent_seasons": 1,
             "pause": 0,
@@ -780,15 +780,25 @@ class ExhaustiveSyncTests(unittest.TestCase):
                         {"key": "fixture-lineup", "priority": 5},
                         {"key": "fixture-detail", "priority": 15},
                         {"key": "fixture-prediction", "priority": 25},
+                        {"key": "core", "priority": 50},
+                        {"key": "fixture-statistics", "priority": 80},
                     ]
                 },
             ),
             patch.object(
                 full_sync_service.import_service,
                 "import_leagues_cautious",
-                side_effect=lambda *_args, **_kwargs: events.append("recent_core"),
+                side_effect=lambda _ids, seasons=None, **_kwargs: (
+                    events.append(
+                        "recent_core" if int(seasons[0]) == 2025 else f"core_{seasons[0]}"
+                    ) or {}
+                ),
             ),
-            patch.object(full_sync_service, "_missing_core_scopes", return_value=[]),
+            patch.object(
+                full_sync_service,
+                "_missing_core_scopes",
+                side_effect=[[], [(61, 2024)], []],
+            ),
             patch.object(full_sync_service, "_all_matches", return_value=[past, future]),
             patch.object(full_sync_service, "_in_progress_matches", return_value=[]),
             patch.object(full_sync_service, "_upcoming_matches", return_value=[future]),
@@ -802,6 +812,11 @@ class ExhaustiveSyncTests(unittest.TestCase):
                 side_effect=lambda _fixture_id: (events.append("upcoming_prediction_check") or True),
             ),
             patch.object(full_sync_service, "_fixture_players_present", return_value=False),
+            patch.object(
+                full_sync_service.lineup_service,
+                "sync_fixture_players",
+                return_value={"players": 0},
+            ),
             patch.object(
                 full_sync_service,
                 "sync_historical_xg",
@@ -835,7 +850,12 @@ class ExhaustiveSyncTests(unittest.TestCase):
             result["priority_dispatch_order"],
             ["fixture-lineup", "fixture-detail", "fixture-prediction"],
         )
+        self.assertEqual(
+            result["historical_dispatch_order"],
+            ["core", "fixture-statistics"],
+        )
         self.assertLess(events.index("recent_core"), events.index("upcoming_prediction_check"))
+        self.assertLess(events.index("core_2024"), events.index("historical_xg"))
         self.assertLess(events.index("fixture-lineup:2"), events.index("fixture-detail:2"))
         self.assertLess(events.index("fixture-detail:2"), events.index("fixture-prediction:2"))
         self.assertLess(events.index("upcoming_prediction_check"), events.index("historical_xg"))
