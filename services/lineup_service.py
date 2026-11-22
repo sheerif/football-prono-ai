@@ -10,6 +10,7 @@ from database import models
 from database.database import SessionLocal, engine
 from services.api_football import ApiFootballClient
 from services.api_response_store import archive_response
+from services import sync_registry
 
 
 client = ApiFootballClient(response_archiver=archive_response)
@@ -243,14 +244,22 @@ def _save_lineups(session, fixture_id: int, items: list[dict]) -> int:
 
 def sync_lineups(fixture_id: int) -> dict:
     _ensure_schema()
-    response = client.get_fixture_lineups(int(fixture_id))
-    error = _api_error(response)
-    if error:
-        raise RuntimeError(error)
-    items = response.get("response") or []
-    with SessionLocal() as session:
-        count = _save_lineups(session, int(fixture_id), items)
-    return {"teams": count, "available": count > 0}
+    fixture_id = int(fixture_id)
+    key = f"fixture-lineup:{fixture_id}"
+    owner = f"lineups:{fixture_id}:{time.time_ns()}"
+    if not sync_registry.claim_download(key, owner):
+        return {"teams": 0, "available": False, "skipped": True, "reason": "claimed"}
+    try:
+        response = client.get_fixture_lineups(fixture_id)
+        error = _api_error(response)
+        if error:
+            raise RuntimeError(error)
+        items = response.get("response") or []
+        with SessionLocal() as session:
+            count = _save_lineups(session, fixture_id, items)
+        return {"teams": count, "available": count > 0}
+    finally:
+        sync_registry.release_download_claim(key, owner)
 
 
 def _save_fixture_players(session, fixture_id: int, items: list[dict]) -> int:
@@ -339,40 +348,48 @@ def _save_fixture_players(session, fixture_id: int, items: list[dict]) -> int:
 
 def sync_fixture_players(fixture_id: int, force: bool = False) -> dict:
     _ensure_schema()
+    fixture_id = int(fixture_id)
     with SessionLocal() as session:
-        cached = session.get(models.FixturePlayerSync, int(fixture_id))
+        cached = session.get(models.FixturePlayerSync, fixture_id)
         if cached is not None and cached.status == "available" and not force:
             return {"players": cached.player_count, "cached": True, "available": True}
 
+    key = f"fixture-players:{fixture_id}"
+    owner = f"fixture-players:{fixture_id}:{time.time_ns()}"
+    if not sync_registry.claim_download(key, owner):
+        return {"players": 0, "cached": False, "available": False, "skipped": True, "reason": "claimed"}
     try:
-        response = client.get_fixture_players(int(fixture_id))
-        error = _api_error(response)
-        if error:
-            raise RuntimeError(error)
-        items = response.get("response") or []
-        with SessionLocal() as session:
-            count = _save_fixture_players(session, int(fixture_id), items)
-            sync = session.get(models.FixturePlayerSync, int(fixture_id))
-            if sync is None:
-                sync = models.FixturePlayerSync(fixture_id=int(fixture_id), status="unavailable")
-            sync.status = "available" if count else "unavailable"
-            sync.player_count = count
-            sync.error = None
-            sync.updated_at = _now()
-            session.add(sync)
-            session.commit()
-        return {"players": count, "cached": False, "available": count > 0}
-    except Exception as exc:
-        with SessionLocal() as session:
-            sync = session.get(models.FixturePlayerSync, int(fixture_id))
-            if sync is None:
-                sync = models.FixturePlayerSync(fixture_id=int(fixture_id), status="error")
-            sync.status = "error"
-            sync.error = str(exc)
-            sync.updated_at = _now()
-            session.add(sync)
-            session.commit()
-        raise
+        try:
+            response = client.get_fixture_players(fixture_id)
+            error = _api_error(response)
+            if error:
+                raise RuntimeError(error)
+            items = response.get("response") or []
+            with SessionLocal() as session:
+                count = _save_fixture_players(session, fixture_id, items)
+                sync = session.get(models.FixturePlayerSync, fixture_id)
+                if sync is None:
+                    sync = models.FixturePlayerSync(fixture_id=fixture_id, status="unavailable")
+                sync.status = "available" if count else "unavailable"
+                sync.player_count = count
+                sync.error = None
+                sync.updated_at = _now()
+                session.add(sync)
+                session.commit()
+            return {"players": count, "cached": False, "available": count > 0}
+        except Exception as exc:
+            with SessionLocal() as session:
+                sync = session.get(models.FixturePlayerSync, fixture_id)
+                if sync is None:
+                    sync = models.FixturePlayerSync(fixture_id=fixture_id, status="error")
+                sync.status = "error"
+                sync.error = str(exc)
+                sync.updated_at = _now()
+                session.add(sync)
+                session.commit()
+            raise
+    finally:
+        sync_registry.release_download_claim(key, owner)
 
 
 def _recent_fixture_ids(team_id: int, before_date, limit: int = 5) -> list[int]:
