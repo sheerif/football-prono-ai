@@ -1436,123 +1436,189 @@ def run_full_sync(progress_callback=None) -> dict:
 
     progress(25, 100, "Priorité matchs en cours/à venir terminée ; démarrage du rattrapage historique.")
 
-    # The long historical xG backfill runs only after current fixtures have
-    # received their priority refresh.
-    if _priority_preemption_requested():
-        return stop_for_priority("historical-xg")
+    # Historical dispatch also follows the SQL-aware resource plan. The
+    # configured priorities put core season gaps ahead of historical xG; when
+    # the plan is unavailable/non-actionable, preserve the previous xG-first
+    # fallback to avoid changing behavior blindly.
+    historical_fallback_order = ["fixture-statistics", "core"]
+    historical_dispatch_order = order_dispatch_phases(
+        summary.get("plan_before"),
+        historical_fallback_order,
+        fallback_order=historical_fallback_order,
+    )
+    summary["historical_dispatch_order"] = historical_dispatch_order
+    historical_phase_weights = {"fixture-statistics": 30, "core": 8}
+    historical_phase_starts = {}
+    historical_progress_cursor = 25
+    for phase_key in historical_dispatch_order:
+        historical_phase_starts[phase_key] = historical_progress_cursor
+        historical_progress_cursor += historical_phase_weights[phase_key]
 
-    progress(25, 100, "Rattrapage historique xG : recherche des statistiques manquantes...")
-
-    xg_result = sync_historical_xg(
-        league_ids=config["league_ids"],
-        seasons=seasons,
-        max_matches=None,
-        pause=pause,
-        retry_hours=24,
-        progress_callback=lambda current, total, label: progress(
-            25 + int((current / max(1, total)) * 30),
+    def dispatch_historical_xg():
+        phase_start = historical_phase_starts["fixture-statistics"]
+        if _priority_preemption_requested():
+            return stop_for_priority("historical-xg")
+        progress(
+            phase_start,
             100,
-            label,
-        ),
-    )
-    summary["xg"] = xg_result
-    summary["xg_api_calls"] = int(xg_result.get("api_calls") or 0)
-    if xg_result.get("preempted"):
-        summary["preempted"] = True
-        summary["checkpoint"] = xg_result.get("checkpoint") or "historical-xg"
-        summary["message"] = "Rattrapage xG interrompu au checkpoint pour les pronostics prioritaires."
-        return finalize()
-    summary["xg_duplicates_avoided"] = int(
-        xg_result.get("duplicates_avoided") or 0
-    )
-    summary["xg_unavailable_deferred"] = int(
-        xg_result.get("unavailable_deferred") or 0
-    )
-    for result_key in ("downloaded", "skipped", "unavailable"):
-        summary[result_key] += int(xg_result.get(result_key) or 0)
-    summary["errors"].extend(xg_result.get("errors") or [])
-    if xg_result.get("quota_reached"):
-        summary["xg_coverage"] = xg_service.coverage(
-            config["league_ids"], seasons
+            "Rattrapage historique xG : recherche des statistiques manquantes...",
         )
-        if xg_result.get("budget_reserved"):
-            summary["xg_budget_reserved"] = True
-            summary["xg_resume_checkpoint"] = (
-                xg_result.get("checkpoint") or "fixture-statistics"
-            )
-        else:
-            summary["quota_reached"] = True
-            summary["checkpoint"] = (
-                xg_result.get("checkpoint") or "fixture-statistics"
+        xg_result = sync_historical_xg(
+            league_ids=config["league_ids"],
+            seasons=seasons,
+            max_matches=None,
+            pause=pause,
+            retry_hours=24,
+            progress_callback=lambda current, total, label: progress(
+                phase_start + int(
+                    (current / max(1, total))
+                    * historical_phase_weights["fixture-statistics"]
+                ),
+                100,
+                label,
+            ),
+        )
+        summary["xg"] = xg_result
+        summary["xg_api_calls"] = int(xg_result.get("api_calls") or 0)
+        if xg_result.get("preempted"):
+            summary["preempted"] = True
+            summary["checkpoint"] = xg_result.get("checkpoint") or "historical-xg"
+            summary["message"] = (
+                "Rattrapage xG interrompu au checkpoint pour les pronostics prioritaires."
             )
             return finalize()
-
-    progress(55, 100, "Rattrapage historique des championnats, équipes et classements...")
-    missing_core = set(_missing_core_scopes(config["league_ids"], seasons))
-    core_scopes = sorted(
-        (missing_core | recent_due) - priority_core_keys,
-        key=lambda scope: (-scope[1], scope[0]),
-    )
-    for index, (league_id, season) in enumerate(core_scopes, start=1):
-        key = f"core:{league_id}:{season}"
-        if _priority_preemption_requested():
-            return stop_for_priority(key)
-        if _daily_reserve_reached(
-            tracked_clients["données principales"],
-            initial_request_counts["données principales"],
-        ):
-            return stop_for_quota(key, RuntimeError(_reserve_message()))
-        try:
-            import_result = import_service.import_leagues_cautious(
-                [league_id],
-                seasons=[season],
-                pause=pause,
-                max_retries=config["max_retries"],
-                force_refresh_seasons=[season] if season in recent_seasons else None,
-                priority_preemption_check=_priority_preemption_requested,
-                progress_callback=progress_callback,
+        summary["xg_duplicates_avoided"] = int(
+            xg_result.get("duplicates_avoided") or 0
+        )
+        summary["xg_unavailable_deferred"] = int(
+            xg_result.get("unavailable_deferred") or 0
+        )
+        for result_key in ("downloaded", "skipped", "unavailable"):
+            summary[result_key] += int(xg_result.get(result_key) or 0)
+        summary["errors"].extend(xg_result.get("errors") or [])
+        if xg_result.get("quota_reached"):
+            summary["xg_coverage"] = xg_service.coverage(
+                config["league_ids"], seasons
             )
-            if import_result and import_result.get("skipped"):
-                core_lease_skipped += max(
-                    1, len(import_result.get("skipped_scopes") or [key])
+            if xg_result.get("budget_reserved"):
+                summary["xg_budget_reserved"] = True
+                summary["xg_resume_checkpoint"] = (
+                    xg_result.get("checkpoint") or "fixture-statistics"
                 )
-                summary["skipped"] += 1
-            elif import_result and import_result.get("preempted"):
-                sync_registry.mark(key, "core_season", "partial", message="Checkpoint de préemption", metadata=import_result)
-                return stop_for_priority(import_result.get("checkpoint") or key)
             else:
-                sync_registry.mark(key, "core_season", "complete", item_count=1)
-                summary["downloaded"] += 1
-                core_scope_completed += 1
-        except Exception as exc:
-            sync_registry.mark(key, "core_season", "error", message=str(exc))
-            if _is_quota_error(exc):
-                return stop_for_quota(key, exc)
-            summary["errors"].append(f"{key}: {exc}")
+                summary["quota_reached"] = True
+                summary["checkpoint"] = (
+                    xg_result.get("checkpoint") or "fixture-statistics"
+                )
+                return finalize()
         progress(
-            55 + int((index / max(1, len(core_scopes))) * 8),
+            phase_start + historical_phase_weights["fixture-statistics"],
             100,
-            f"Données principales : ligue {league_id}, saison {season} · "
-            f"{summary['downloaded']} téléchargé(s)",
+            "Rattrapage historique xG terminé.",
         )
-    remaining_core = _missing_core_scopes(config["league_ids"], seasons)
-    summary["core"] = (
-        "partial" if remaining_core or core_lease_skipped else "complete"
-    )
-    summary["core_downloaded"] = core_scope_completed
-    summary["core_lease_skipped"] = core_lease_skipped
-    summary["core_skipped"] = max(
-        0,
-        len(config["league_ids"]) * len(seasons) - core_scope_completed,
-    )
-    if remaining_core:
-        summary["errors"].append(
-            f"{len(remaining_core)} périmètre(s) principal(aux) restent indisponibles."
+        return None
+
+    def dispatch_historical_core():
+        nonlocal core_scope_completed, core_lease_skipped
+        phase_start = historical_phase_starts["core"]
+        progress(
+            phase_start,
+            100,
+            "Rattrapage historique des championnats, équipes et classements...",
         )
-    elif core_lease_skipped:
-        summary["errors"].append(
-            f"{core_lease_skipped} périmètre(s) core ignoré(s) par contention de lease persistante."
+        missing_core = set(_missing_core_scopes(config["league_ids"], seasons))
+        core_scopes = sorted(
+            (missing_core | recent_due) - priority_core_keys,
+            key=lambda scope: (-scope[1], scope[0]),
         )
+        for index, (league_id, season) in enumerate(core_scopes, start=1):
+            key = f"core:{league_id}:{season}"
+            if _priority_preemption_requested():
+                return stop_for_priority(key)
+            if _daily_reserve_reached(
+                tracked_clients["données principales"],
+                initial_request_counts["données principales"],
+            ):
+                return stop_for_quota(key, RuntimeError(_reserve_message()))
+            try:
+                import_result = import_service.import_leagues_cautious(
+                    [league_id],
+                    seasons=[season],
+                    pause=pause,
+                    max_retries=config["max_retries"],
+                    force_refresh_seasons=[season] if season in recent_seasons else None,
+                    priority_preemption_check=_priority_preemption_requested,
+                    progress_callback=lambda current, total, label: progress(
+                        phase_start + int(
+                            (current / max(1, total))
+                            * historical_phase_weights["core"]
+                        ),
+                        100,
+                        label,
+                    ),
+                )
+                if import_result and import_result.get("skipped"):
+                    core_lease_skipped += max(
+                        1, len(import_result.get("skipped_scopes") or [key])
+                    )
+                    summary["skipped"] += 1
+                elif import_result and import_result.get("preempted"):
+                    sync_registry.mark(
+                        key, "core_season", "partial",
+                        message="Checkpoint de préemption", metadata=import_result,
+                    )
+                    return stop_for_priority(import_result.get("checkpoint") or key)
+                else:
+                    sync_registry.mark(key, "core_season", "complete", item_count=1)
+                    summary["downloaded"] += 1
+                    core_scope_completed += 1
+            except Exception as exc:
+                sync_registry.mark(key, "core_season", "error", message=str(exc))
+                if _is_quota_error(exc):
+                    return stop_for_quota(key, exc)
+                summary["errors"].append(f"{key}: {exc}")
+            progress(
+                phase_start + int(
+                    (index / max(1, len(core_scopes)))
+                    * historical_phase_weights["core"]
+                ),
+                100,
+                f"Données principales : ligue {league_id}, saison {season} · "
+                f"{summary['downloaded']} téléchargé(s)",
+            )
+        remaining_core = _missing_core_scopes(config["league_ids"], seasons)
+        summary["core"] = (
+            "partial" if remaining_core or core_lease_skipped else "complete"
+        )
+        summary["core_downloaded"] = core_scope_completed
+        summary["core_lease_skipped"] = core_lease_skipped
+        summary["core_skipped"] = max(
+            0,
+            len(config["league_ids"]) * len(seasons) - core_scope_completed,
+        )
+        if remaining_core:
+            summary["errors"].append(
+                f"{len(remaining_core)} périmètre(s) principal(aux) restent indisponibles."
+            )
+        elif core_lease_skipped:
+            summary["errors"].append(
+                f"{core_lease_skipped} périmètre(s) core ignoré(s) par contention de lease persistante."
+            )
+        progress(
+            phase_start + historical_phase_weights["core"],
+            100,
+            "Rattrapage historique core terminé.",
+        )
+        return None
+
+    historical_handlers = {
+        "fixture-statistics": dispatch_historical_xg,
+        "core": dispatch_historical_core,
+    }
+    for phase_key in historical_dispatch_order:
+        phase_result = historical_handlers[phase_key]()
+        if isinstance(phase_result, dict):
+            return phase_result
 
     matches = _all_matches()
     upcoming = _upcoming_matches()
