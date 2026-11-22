@@ -2,6 +2,7 @@ import unittest
 
 from services.download_intelligence import (
     annotate_resource_rows,
+    order_dispatch_phases,
     order_download_tasks,
     order_season_player_scopes,
     task_from_resource_row,
@@ -58,6 +59,35 @@ class DownloadIntelligenceTests(unittest.TestCase):
         self.assertEqual(xg["actionable_missing"], 0)
         self.assertIsNone(core["plan_rank"])
 
+
+    def test_sql_plan_controls_real_dispatch_phase_order_with_fallback(self):
+        plan = {
+            "priority_order": [
+                {"key": "fixture-lineup", "priority": 5},
+                {"key": "fixture-detail", "priority": 15},
+                {"key": "fixture-prediction", "priority": 25},
+            ]
+        }
+        phases = ["fixture-prediction", "fixture-detail", "fixture-lineup"]
+        self.assertEqual(
+            order_dispatch_phases(
+                plan,
+                phases,
+                fallback_order=phases,
+            ),
+            ["fixture-lineup", "fixture-detail", "fixture-prediction"],
+        )
+
+    def test_missing_plan_entries_use_stable_fallback_after_ranked_phases(self):
+        fallback = ["fixture-prediction", "fixture-detail", "fixture-lineup"]
+        self.assertEqual(
+            order_dispatch_phases(
+                {"priority_order": [{"key": "fixture-detail", "priority": 20}]},
+                fallback,
+                fallback_order=fallback,
+            ),
+            ["fixture-detail", "fixture-prediction", "fixture-lineup"],
+        )
 
     def test_season_player_scopes_prioritize_recent_empty_and_larger_scopes(self):
         scopes = [
