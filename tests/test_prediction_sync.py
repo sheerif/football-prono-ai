@@ -7,6 +7,60 @@ from services import background_jobs, full_sync_service, prediction_archive_serv
 
 
 class PredictionSyncTests(unittest.TestCase):
+    def test_upcoming_page_skips_prediction_when_lease_is_contended(self):
+        cached = {"api_advice": "cached"}
+        with (
+            patch.object(matchs_a_venir, "_load_cached_prediction", return_value=cached),
+            patch.object(matchs_a_venir.sync_registry, "claim_download", return_value=False),
+            patch.object(matchs_a_venir.sync_registry, "mark") as mark,
+            patch.object(matchs_a_venir.sync_registry, "release_download_claim") as release,
+            patch.object(matchs_a_venir.api_client, "get_predictions") as request,
+        ):
+            result = matchs_a_venir._api_prediction(123, force_refresh=True)
+
+        self.assertEqual(result, cached)
+        request.assert_not_called()
+        mark.assert_not_called()
+        release.assert_not_called()
+
+    def test_upcoming_page_prediction_releases_lease_after_fetch(self):
+        cached = {"api_advice": "old"}
+        updated = {"api_advice": "new"}
+        claim = Mock(return_value=True)
+        release = Mock(return_value=True)
+        with (
+            patch.object(matchs_a_venir, "_load_cached_prediction", side_effect=[cached, updated]),
+            patch.object(matchs_a_venir, "_save_prediction") as save,
+            patch.object(matchs_a_venir.sync_registry, "claim_download", claim),
+            patch.object(matchs_a_venir.sync_registry, "release_download_claim", release),
+            patch.object(matchs_a_venir.sync_registry, "mark"),
+            patch.object(matchs_a_venir.api_client, "get_predictions", return_value={"response": [{"winner": "home"}]}),
+        ):
+            result = matchs_a_venir._api_prediction(123, force_refresh=True)
+
+        self.assertEqual(result, updated)
+        save.assert_called_once_with(123, {"winner": "home"})
+        claim.assert_called_once()
+        release.assert_called_once_with(
+            "fixture-prediction:123", claim.call_args.args[1]
+        )
+
+    def test_upcoming_page_prediction_releases_lease_on_api_error(self):
+        cached = {"api_advice": "cached"}
+        release = Mock(return_value=True)
+        with (
+            patch.object(matchs_a_venir, "_load_cached_prediction", return_value=cached),
+            patch.object(matchs_a_venir.sync_registry, "claim_download", return_value=True),
+            patch.object(matchs_a_venir.sync_registry, "release_download_claim", release),
+            patch.object(matchs_a_venir.sync_registry, "mark") as mark,
+            patch.object(matchs_a_venir.api_client, "get_predictions", side_effect=RuntimeError("API unavailable")),
+        ):
+            result = matchs_a_venir._api_prediction(123, force_refresh=True)
+
+        self.assertEqual(result, cached)
+        self.assertEqual(mark.call_args_list[-1].args[2], "error")
+        release.assert_called_once()
+
     def test_upcoming_page_defers_recently_unavailable_prediction(self):
         with (
             patch.object(matchs_a_venir, "_load_cached_prediction", return_value={}),
