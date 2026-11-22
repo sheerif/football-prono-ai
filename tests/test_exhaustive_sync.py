@@ -656,7 +656,13 @@ class ExhaustiveSyncTests(unittest.TestCase):
         with (
             patch.object(full_sync_service.import_service, "init_db"),
             patch.object(full_sync_service.sync_registry, "ensure_table"),
-            patch.object(full_sync_service.sync_registry, "mark") as mark,
+            patch.object(
+                full_sync_service.sync_registry,
+                "mark",
+                side_effect=lambda key, *_args, **_kwargs: (
+                    events.append(key) if key.endswith(":2") else None
+                ),
+            ) as mark,
             patch.object(full_sync_service.sync_registry, "should_download", return_value=False),
             patch.object(
                 full_sync_service.sync_registry,
@@ -664,6 +670,17 @@ class ExhaustiveSyncTests(unittest.TestCase):
                 return_value={"status": "unavailable"},
             ),
             patch.object(full_sync_service.import_service, "get_auto_refresh_config", return_value=config),
+            patch.object(
+                full_sync_service,
+                "download_plan",
+                return_value={
+                    "priority_order": [
+                        {"key": "fixture-lineup", "priority": 5},
+                        {"key": "fixture-detail", "priority": 15},
+                        {"key": "fixture-prediction", "priority": 25},
+                    ]
+                },
+            ),
             patch.object(
                 full_sync_service.import_service,
                 "import_leagues_cautious",
@@ -712,7 +729,13 @@ class ExhaustiveSyncTests(unittest.TestCase):
         self.assertEqual(result["mode"], "exhaustive")
         self.assertIn("api_calls_by_family", result)
         self.assertIn("requests_avoided_at_least", result)
+        self.assertEqual(
+            result["priority_dispatch_order"],
+            ["fixture-lineup", "fixture-detail", "fixture-prediction"],
+        )
         self.assertLess(events.index("recent_core"), events.index("upcoming_prediction_check"))
+        self.assertLess(events.index("fixture-lineup:2"), events.index("fixture-detail:2"))
+        self.assertLess(events.index("fixture-detail:2"), events.index("fixture-prediction:2"))
         self.assertLess(events.index("upcoming_prediction_check"), events.index("historical_xg"))
 
     def test_xg_quota_stops_before_less_important_match_endpoints(self):
