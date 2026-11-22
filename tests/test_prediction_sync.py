@@ -61,6 +61,45 @@ class PredictionSyncTests(unittest.TestCase):
         self.assertEqual(result, "skipped")
         mark.assert_not_called()
 
+    def test_fetch_one_skips_when_another_worker_holds_persistent_claim(self):
+        fetch = Mock()
+        with (
+            patch.object(full_sync_service.sync_registry, "get", return_value=None),
+            patch.object(full_sync_service.sync_registry, "claim_download", return_value=False),
+            patch.object(full_sync_service.sync_registry, "mark") as mark,
+        ):
+            result = full_sync_service._fetch_one(
+                "fixture-prediction:lock-test",
+                "fixture_prediction",
+                fetch,
+                Mock(),
+            )
+        self.assertEqual(result, "skipped")
+        fetch.assert_not_called()
+        mark.assert_not_called()
+
+    def test_fetch_one_releases_claim_after_download(self):
+        owner_claim = Mock(return_value=True)
+        release = Mock(return_value=True)
+        with (
+            patch.object(full_sync_service.sync_registry, "get", return_value=None),
+            patch.object(full_sync_service.sync_registry, "claim_download", owner_claim),
+            patch.object(full_sync_service.sync_registry, "release_download_claim", release),
+            patch.object(full_sync_service.sync_registry, "mark"),
+        ):
+            result = full_sync_service._fetch_one(
+                "fixture-prediction:lease-test",
+                "fixture_prediction",
+                lambda: {"response": [{"id": 1}]},
+                Mock(),
+            )
+        self.assertEqual(result, "downloaded")
+        owner_claim.assert_called_once()
+        release.assert_called_once_with(
+            "fixture-prediction:lease-test",
+            owner_claim.call_args.args[1],
+        )
+
     def test_unavailable_response_is_persisted(self):
         with (
             patch.object(full_sync_service.sync_registry, "get", return_value=None),
