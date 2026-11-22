@@ -1110,18 +1110,32 @@ def start_full_sync(*, resumed: bool = False) -> str:
                 and now - last_renewal < FULL_SYNC_LEASE_RENEW_INTERVAL_SECONDS
             ):
                 return
-            if not remote_sync_lease.renew(
-                FULL_SYNC_CONTROL_KEY,
-                lease_owner,
-                lease_seconds=FULL_SYNC_LEASE_SECONDS,
-            ):
+            try:
+                remote_renewed = remote_sync_lease.renew(
+                    FULL_SYNC_CONTROL_KEY,
+                    lease_owner,
+                    lease_seconds=FULL_SYNC_LEASE_SECONDS,
+                )
+            except Exception as exc:
+                lease_lost = True
+                raise RuntimeError(
+                    "Impossible de vérifier la lease distante globale de synchronisation."
+                ) from exc
+            if not remote_renewed:
                 lease_lost = True
                 raise RuntimeError("Lease distante globale de synchronisation perdue.")
-            if not sync_registry.renew_download_claim(
-                FULL_SYNC_CONTROL_KEY,
-                lease_owner,
-                lease_seconds=FULL_SYNC_LEASE_SECONDS,
-            ):
+            try:
+                local_renewed = sync_registry.renew_download_claim(
+                    FULL_SYNC_CONTROL_KEY,
+                    lease_owner,
+                    lease_seconds=FULL_SYNC_LEASE_SECONDS,
+                )
+            except Exception as exc:
+                lease_lost = True
+                raise RuntimeError(
+                    "Impossible de vérifier la lease locale globale de synchronisation."
+                ) from exc
+            if not local_renewed:
                 lease_lost = True
                 raise RuntimeError("Lease locale globale de synchronisation perdue.")
             last_renewal = now
