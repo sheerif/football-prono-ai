@@ -1215,7 +1215,6 @@ def run_full_sync(progress_callback=None) -> dict:
             initial_request_counts["données principales"],
         ):
             return stop_for_quota(key, RuntimeError(_reserve_message()))
-        sync_registry.mark(key, "core_season", "running")
         try:
             import_result = import_service.import_leagues_cautious(
                 [league_id],
@@ -1227,11 +1226,6 @@ def run_full_sync(progress_callback=None) -> dict:
                 progress_callback=progress_callback,
             )
             if import_result and import_result.get("skipped"):
-                sync_registry.mark(
-                    key, "core_season", "running",
-                    message="Lease persistante détenue par un autre worker",
-                    metadata=import_result,
-                )
                 core_lease_skipped += max(
                     1, len(import_result.get("skipped_scopes") or [key])
                 )
@@ -1452,7 +1446,6 @@ def run_full_sync(progress_callback=None) -> dict:
             initial_request_counts["données principales"],
         ):
             return stop_for_quota(key, RuntimeError(_reserve_message()))
-        sync_registry.mark(key, "core_season", "running")
         try:
             import_result = import_service.import_leagues_cautious(
                 [league_id],
@@ -1464,11 +1457,6 @@ def run_full_sync(progress_callback=None) -> dict:
                 progress_callback=progress_callback,
             )
             if import_result and import_result.get("skipped"):
-                sync_registry.mark(
-                    key, "core_season", "running",
-                    message="Lease persistante détenue par un autre worker",
-                    metadata=import_result,
-                )
                 core_lease_skipped += max(
                     1, len(import_result.get("skipped_scopes") or [key])
                 )
