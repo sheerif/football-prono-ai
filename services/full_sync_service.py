@@ -1340,12 +1340,18 @@ def run_full_sync(progress_callback=None) -> dict:
             ):
                 return stop_for_quota(lineup_key, RuntimeError(_reserve_message()))
             try:
-                sync_registry.mark(lineup_key, "fixture_lineup", "running")
                 lineup_result = lineup_service.sync_lineups(fixture_id)
-                count = int(lineup_result.get("teams") or 0)
-                status = "complete" if count >= 2 else ("partial" if count else "unavailable")
-                sync_registry.mark(lineup_key, "fixture_lineup", status, item_count=count)
-                result = "downloaded" if count >= 2 else ("partial" if count else "unavailable")
+                if lineup_result.get("skipped"):
+                    sync_registry.mark(
+                        lineup_key, "fixture_lineup", "running",
+                        message="Lease persistante détenue par un autre worker",
+                    )
+                    result = "skipped"
+                else:
+                    count = int(lineup_result.get("teams") or 0)
+                    status = "complete" if count >= 2 else ("partial" if count else "unavailable")
+                    sync_registry.mark(lineup_key, "fixture_lineup", status, item_count=count)
+                    result = "downloaded" if count >= 2 else ("partial" if count else "unavailable")
             except Exception as exc:
                 sync_registry.mark(lineup_key, "fixture_lineup", "error", message=str(exc))
                 if _is_quota_error(exc):
