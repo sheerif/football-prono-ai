@@ -183,6 +183,28 @@ def poll_once(client=None, *, now: datetime.datetime | None = None, persist: boo
     }
 
 
+def _is_daily_quota_exhausted(error: Exception | str) -> bool:
+    message = str(error).casefold()
+    return any(token in message for token in (
+        "quota api journalier déjà atteint",
+        "quota api journalier épuisé",
+        "request limit for the day",
+        "request limit for day",
+        "daily quota",
+        "daily request limit",
+    ))
+
+
+def _seconds_until_utc_reset(*, now: datetime.datetime | None = None) -> int:
+    now = now or datetime.datetime.now(datetime.UTC)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=datetime.UTC)
+    next_reset = (now.astimezone(datetime.UTC) + datetime.timedelta(days=1)).replace(
+        hour=0, minute=0, second=5, microsecond=0
+    )
+    return max(1, int((next_reset - now.astimezone(datetime.UTC)).total_seconds()))
+
+
 def _failure_delay(error_count: int, quota: dict | None = None) -> int:
     delay = min(300 * (2 ** max(0, int(error_count) - 1)), 1800)
     retry_after = (quota or {}).get("retry_after")
@@ -225,10 +247,22 @@ def _worker():
                 has_imminent=bool(result["imminent_count"]),
                 quota=result["quota"],
             )
-        except Exception:
-            failures += 1
-            logger.exception("Live/imminent priority polling failed")
-            delay = _failure_delay(failures, getattr(client, "last_rate_limit", {}))
+        except Exception as exc:
+            if _is_daily_quota_exhausted(exc):
+                # The API client has already activated the process-wide daily
+                # circuit breaker. Do not spin, retry, or emit a traceback for
+                # every poll: park this worker until the UTC quota reset.
+                failures = 0
+                delay = _seconds_until_utc_reset()
+                logger.warning(
+                    "Live priority watcher suspended: daily API quota exhausted; "
+                    "automatic resume in %s seconds (UTC reset).",
+                    delay,
+                )
+            else:
+                failures += 1
+                logger.exception("Live/imminent priority polling failed")
+                delay = _failure_delay(failures, getattr(client, "last_rate_limit", {}))
         _stop.wait(delay)
 
 
