@@ -738,6 +738,7 @@ class ExhaustiveSyncTests(unittest.TestCase):
             patch.object(full_sync_service.import_service, "init_db"),
             patch.object(full_sync_service.sync_registry, "ensure_table"),
             patch.object(full_sync_service.sync_registry, "mark"),
+            patch.object(full_sync_service, "_registry_refresh_due", return_value=True),
             patch.object(full_sync_service.import_service, "get_auto_refresh_config", return_value=config),
             patch.object(
                 full_sync_service.import_service, "import_leagues_cautious", return_value={}
