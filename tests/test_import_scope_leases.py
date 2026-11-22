@@ -31,6 +31,8 @@ def test_core_import_skips_without_api_when_scope_lease_is_contended(monkeypatch
 
 def test_core_import_renews_and_releases_lease(monkeypatch):
     calls = []
+    ticks = iter([0, 61, 62])
+    monkeypatch.setattr(import_service.time, "monotonic", lambda: next(ticks))
     monkeypatch.setattr(sync_registry, "mark", lambda *args, **kwargs: None)
     monkeypatch.setattr(
         import_service, "register_league_seasons", lambda *args, **kwargs: None
@@ -132,6 +134,8 @@ def test_core_import_stops_when_lease_is_lost(monkeypatch):
 
 def test_core_import_aborts_before_api_when_progress_renewal_fails(monkeypatch):
     calls = []
+    ticks = iter([0, 61])
+    monkeypatch.setattr(import_service.time, "monotonic", lambda: next(ticks))
     monkeypatch.setattr(sync_registry, "mark", lambda *args, **kwargs: None)
     monkeypatch.setattr(
         import_service, "register_league_seasons", lambda *args, **kwargs: None
@@ -151,10 +155,9 @@ def test_core_import_aborts_before_api_when_progress_renewal_fails(monkeypatch):
         lambda *args, **kwargs: calls.append("release") or True,
     )
 
-    def fake_import(*args, progress_callback, priority_preemption_check, **kwargs):
+    def fake_import(*args, progress_callback, **kwargs):
         progress_callback(1, 3, "teams")
-        assert priority_preemption_check() is True
-        return {"preempted": True, "checkpoint": "teams:61:2026"}
+        raise AssertionError("API work must stop when remote renewal fails")
 
     monkeypatch.setattr(
         import_service, "_import_leagues_cautious_unleased", fake_import
@@ -165,7 +168,7 @@ def test_core_import_aborts_before_api_when_progress_renewal_fails(monkeypatch):
     assert result["skipped"] is True
     assert result["lease_lost"] is True
     assert result["checkpoint"] == "core:61:2026"
-    assert calls == ["local_renew", "local_renew", "local_release"]
+    assert calls == ["local_renew", "local_release"]
 
 
 
