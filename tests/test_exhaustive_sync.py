@@ -437,6 +437,38 @@ class ExhaustiveSyncTests(unittest.TestCase):
         quota.assert_not_called()
         run_full_sync.assert_not_called()
 
+    def test_full_sync_stops_when_remote_lease_renewal_fails(self):
+        with (
+            patch.object(background_jobs, "_jobs", {}),
+            patch.object(background_jobs.threading, "Thread", _ImmediateThread),
+            patch.object(background_jobs, "full_sync_state", return_value=None),
+            patch.object(background_jobs.remote_sync_lease, "claim", return_value=True),
+            patch.object(background_jobs.sync_registry, "claim_download", return_value=True),
+            patch.object(background_jobs.remote_sync_lease, "renew", return_value=False) as remote_renew,
+            patch.object(background_jobs.sync_registry, "renew_download_claim") as local_renew,
+            patch.object(background_jobs.sync_registry, "release_download_claim") as local_release,
+            patch.object(background_jobs.remote_sync_lease, "release") as remote_release,
+            patch.object(background_jobs, "_archive_pre_match_predictions") as archive,
+            patch.object(background_jobs, "api_quota_status") as quota,
+            patch.object(background_jobs.sync_registry, "mark") as mark,
+            patch.object(background_jobs.import_service, "record_update_log") as record_log,
+            patch.object(full_sync_service, "run_full_sync") as run_full_sync,
+        ):
+            job_id = background_jobs.start_full_sync()
+            job = next(job for job in background_jobs.list_jobs() if job["id"] == job_id)
+
+        self.assertEqual(job["status"], "error")
+        self.assertIn("Lease distante", job["error"])
+        remote_renew.assert_called_once()
+        local_renew.assert_not_called()
+        local_release.assert_called_once()
+        remote_release.assert_called_once()
+        archive.assert_not_called()
+        quota.assert_not_called()
+        mark.assert_not_called()
+        record_log.assert_not_called()
+        run_full_sync.assert_not_called()
+
     def test_quota_releases_the_job_and_persists_the_resume_point(self):
         result = {
             "quota_reached": True,
