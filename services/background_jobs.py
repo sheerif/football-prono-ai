@@ -1,4 +1,5 @@
 import datetime
+import logging
 import math
 import os
 import threading
@@ -21,6 +22,8 @@ _full_progress_cache: tuple[datetime.datetime, dict] | None = None
 _quota_status_cache: tuple[datetime.datetime, dict] | None = None
 _full_state_read_cache: tuple[float, dict | None] | None = None
 FULL_SYNC_CONTROL_KEY = "full-sync:exhaustive"
+FULL_SYNC_LEASE_SECONDS = 900
+FULL_SYNC_LEASE_RENEW_INTERVAL_SECONDS = 60
 ACTIVE_JOB_STATUSES = {"running", "waiting_quota"}
 DATA_JOB_KINDS = {
     "manual_import",
@@ -1038,9 +1041,60 @@ def start_full_sync(*, resumed: bool = False) -> str:
         from services import full_sync_service
 
         started_at = _now()
+        lease_owner = f"streamlit-full-sync:{job_id}"
+        try:
+            claimed = sync_registry.claim_download(
+                FULL_SYNC_CONTROL_KEY,
+                lease_owner,
+                lease_seconds=FULL_SYNC_LEASE_SECONDS,
+            )
+        except Exception as exc:
+            _set_job(
+                job_id,
+                status="error",
+                error=str(exc),
+                message="Impossible d'acquérir le verrou global de synchronisation",
+                finished_at=_now(),
+            )
+            return
+        if not claimed:
+            _set_job(
+                job_id,
+                status="skipped",
+                message="Une autre instance possède le verrou global de synchronisation.",
+                finished_at=_now(),
+                details={"lease_contended": True},
+            )
+            return
+
+        lease_lost = False
+        last_renewal = time.monotonic()
+
+        def renew_lease(*, force: bool = False) -> None:
+            nonlocal last_renewal, lease_lost
+            now = time.monotonic()
+            if (
+                not force
+                and now - last_renewal < FULL_SYNC_LEASE_RENEW_INTERVAL_SECONDS
+            ):
+                return
+            if not sync_registry.renew_download_claim(
+                FULL_SYNC_CONTROL_KEY,
+                lease_owner,
+                lease_seconds=FULL_SYNC_LEASE_SECONDS,
+            ):
+                lease_lost = True
+                raise RuntimeError("Lease globale de synchronisation perdue.")
+            last_renewal = now
+
+        def progress_callback(current: int, total: int, label: str) -> None:
+            renew_lease()
+            _progress(job_id, current, total, label)
+
         previous_state = full_sync_state() or {}
         attempt = int((previous_state.get("metadata") or {}).get("attempt") or 0) + 1
         try:
+            renew_lease(force=True)
             _set_job(
                 job_id,
                 status="running",
@@ -1048,7 +1102,9 @@ def start_full_sync(*, resumed: bool = False) -> str:
                 error=None,
             )
             archive_result = _archive_pre_match_predictions(job_id)
+            renew_lease(force=True)
             quota_status = api_quota_status(force=True)
+            renew_lease(force=True)
             _set_job(job_id, quota_preflight=quota_status)
             if _quota_is_exhausted(quota_status):
                 now = datetime.datetime.now(datetime.UTC)
@@ -1128,10 +1184,9 @@ def start_full_sync(*, resumed: bool = False) -> str:
                 },
             )
             result = full_sync_service.run_full_sync(
-                progress_callback=lambda current, total, label: _progress(
-                    job_id, current, total, label
-                )
+                progress_callback=progress_callback
             )
+            renew_lease(force=True)
             quota_reached = bool(result.get("quota_reached"))
             if quota_reached:
                 now = datetime.datetime.now(datetime.UTC)
@@ -1250,27 +1305,39 @@ def start_full_sync(*, resumed: bool = False) -> str:
                 finished_at=_now(),
                 traceback=traceback.format_exc(),
             )
-            sync_registry.mark(
-                FULL_SYNC_CONTROL_KEY,
-                "full_sync_control",
-                "error",
-                message=str(exc),
-                metadata={
-                    "persistent": True,
-                    "attempt": attempt,
-                    "job_id": job_id,
-                    "started_at": started_at,
-                    "finished_at": _now(),
-                },
-            )
-            import_service.record_update_log(
-                event_type="synchronisation_globale",
-                status="erreur",
-                started_at=started_at,
-                reason="Erreur pendant la synchronisation globale.",
-                details={"background": True, "incremental": True},
-                error=str(exc),
-            )
+            if not lease_lost:
+                sync_registry.mark(
+                    FULL_SYNC_CONTROL_KEY,
+                    "full_sync_control",
+                    "error",
+                    message=str(exc),
+                    metadata={
+                        "persistent": True,
+                        "attempt": attempt,
+                        "job_id": job_id,
+                        "started_at": started_at,
+                        "finished_at": _now(),
+                        "lease_owner": lease_owner,
+                    },
+                )
+                import_service.record_update_log(
+                    event_type="synchronisation_globale",
+                    status="erreur",
+                    started_at=started_at,
+                    reason="Erreur pendant la synchronisation globale.",
+                    details={"background": True, "incremental": True},
+                    error=str(exc),
+                )
+        finally:
+            try:
+                sync_registry.release_download_claim(
+                    FULL_SYNC_CONTROL_KEY, lease_owner
+                )
+            except Exception:
+                logging.warning(
+                    "Unable to release Streamlit full-sync lease",
+                    exc_info=True,
+                )
 
     threading.Thread(
         target=run,

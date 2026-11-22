@@ -381,6 +381,34 @@ class ExhaustiveSyncTests(unittest.TestCase):
         self.assertEqual(state["metadata"]["checkpoint"], "fixture-detail:42")
         self.assertEqual(state["metadata"]["attempt"], 3)
 
+    def test_full_sync_skips_when_global_lease_is_owned_by_another_worker(self):
+        with (
+            patch.object(background_jobs, "_jobs", {}),
+            patch.object(background_jobs.threading, "Thread", _ImmediateThread),
+            patch.object(background_jobs, "full_sync_state", return_value=None),
+            patch.object(
+                background_jobs.sync_registry,
+                "claim_download",
+                return_value=False,
+            ) as claim,
+            patch.object(background_jobs.sync_registry, "renew_download_claim") as renew,
+            patch.object(background_jobs.sync_registry, "release_download_claim") as release,
+            patch.object(background_jobs, "_archive_pre_match_predictions") as archive,
+            patch.object(background_jobs, "api_quota_status") as quota,
+            patch.object(full_sync_service, "run_full_sync") as run_full_sync,
+        ):
+            job_id = background_jobs.start_full_sync()
+            job = next(job for job in background_jobs.list_jobs() if job["id"] == job_id)
+
+        self.assertEqual(job["status"], "skipped")
+        self.assertTrue(job["details"]["lease_contended"])
+        claim.assert_called_once()
+        renew.assert_not_called()
+        release.assert_not_called()
+        archive.assert_not_called()
+        quota.assert_not_called()
+        run_full_sync.assert_not_called()
+
     def test_quota_releases_the_job_and_persists_the_resume_point(self):
         result = {
             "quota_reached": True,
@@ -392,6 +420,9 @@ class ExhaustiveSyncTests(unittest.TestCase):
             patch.object(background_jobs, "_jobs", {}),
             patch.object(background_jobs.threading, "Thread", _ImmediateThread),
             patch.object(background_jobs, "full_sync_state", return_value=None),
+            patch.object(background_jobs.sync_registry, "claim_download", return_value=True),
+            patch.object(background_jobs.sync_registry, "renew_download_claim", return_value=True),
+            patch.object(background_jobs.sync_registry, "release_download_claim") as release,
             patch.object(
                 background_jobs,
                 "api_quota_status",
@@ -418,12 +449,16 @@ class ExhaustiveSyncTests(unittest.TestCase):
             mark.call_args.kwargs["metadata"]["checkpoint"],
             "fixture-statistics:9",
         )
+        release.assert_called_once()
 
     def test_exhausted_quota_preflight_defers_full_sync_without_data_calls(self):
         with (
             patch.object(background_jobs, "_jobs", {}),
             patch.object(background_jobs.threading, "Thread", _ImmediateThread),
             patch.object(background_jobs, "full_sync_state", return_value=None),
+            patch.object(background_jobs.sync_registry, "claim_download", return_value=True),
+            patch.object(background_jobs.sync_registry, "renew_download_claim", return_value=True),
+            patch.object(background_jobs.sync_registry, "release_download_claim"),
             patch.object(
                 background_jobs,
                 "api_quota_status",
