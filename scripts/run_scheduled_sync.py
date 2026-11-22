@@ -43,16 +43,6 @@ def _log_progress(current: int, total: int, label: str) -> None:
     logging.info("Scheduled sync progress %s/%s (%s%%): %s", current, total, percent, label)
 
 
-def _recent_running_job(state: dict | None, *, max_age_hours: int = 6) -> bool:
-    if not state or state.get("status") != "running":
-        return False
-    try:
-        updated_at = datetime.datetime.fromisoformat(str(state["updated_at"]))
-    except (KeyError, TypeError, ValueError):
-        return False
-    return (_now() - updated_at).total_seconds() < max_age_hours * 3600
-
-
 def run() -> dict:
     import_service.init_db()
     sync_registry.ensure_table()
@@ -62,9 +52,10 @@ def run() -> dict:
     ):
         return {"status": "skipped", "reason": "lease de synchronisation détenue"}
 
-    previous = sync_registry.get(CONTROL_KEY)
     lease_lost = False
     last_renewed = time.monotonic()
+    started_at = _now().isoformat()
+    attempt = 1
 
     def renew_lease(*, force: bool = False) -> None:
         nonlocal last_renewed, lease_lost
@@ -82,9 +73,9 @@ def run() -> dict:
         renew_lease()
         _log_progress(current, total, label)
 
-    started_at = _now().isoformat()
-    attempt = int((previous or {}).get("attempts") or 0) + 1
     try:
+        previous = sync_registry.get(CONTROL_KEY)
+        attempt = int((previous or {}).get("attempts") or 0) + 1
         renew_lease(force=True)
         try:
             pre_match_archive = prediction_archive_service.archive_upcoming_predictions()
