@@ -3,6 +3,7 @@ import unittest
 from services.download_intelligence import (
     annotate_resource_rows,
     order_download_tasks,
+    order_season_player_scopes,
     task_from_resource_row,
 )
 
@@ -56,6 +57,22 @@ class DownloadIntelligenceTests(unittest.TestCase):
         self.assertFalse(xg["recommended"])
         self.assertEqual(xg["actionable_missing"], 0)
         self.assertIsNone(core["plan_rank"])
+
+
+    def test_season_player_scopes_prioritize_recent_empty_and_larger_scopes(self):
+        scopes = [
+            {"league_id": 2, "season": 2024, "match_count": 10, "player_count": 3},
+            {"league_id": 1, "season": 2025, "match_count": 4, "player_count": 0},
+            {"league_id": 3, "season": 2025, "match_count": 8, "player_count": 0},
+            {"league_id": 4, "season": 2023, "match_count": 100, "player_count": 0},
+            {"league_id": 5, "season": 2025, "match_count": 9, "player_count": 2},
+        ]
+        ordered = order_season_player_scopes(scopes, recent_seasons={2025})
+        self.assertEqual(
+            [(item["league_id"], item["season"]) for item in ordered],
+            [(3, 2025), (1, 2025), (5, 2025), (4, 2023), (2, 2024)],
+        )
+        self.assertEqual(scopes[0]["league_id"], 2)  # input is not mutated
 
 
 if __name__ == "__main__":
