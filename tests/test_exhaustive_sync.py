@@ -413,7 +413,6 @@ class ExhaustiveSyncTests(unittest.TestCase):
             patch.object(background_jobs.threading, "Thread", _ImmediateThread),
             patch.object(background_jobs, "full_sync_state", return_value=None),
             patch.object(background_jobs.remote_sync_lease, "claim", return_value=True),
-            patch.object(background_jobs.remote_sync_lease, "claim", return_value=True),
             patch.object(
                 background_jobs.sync_registry,
                 "claim_download",
