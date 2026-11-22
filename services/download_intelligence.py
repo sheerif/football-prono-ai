@@ -126,3 +126,36 @@ def annotate_resource_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         )
         annotated.append(row)
     return annotated
+
+def order_dispatch_phases(
+    plan: dict[str, Any] | None,
+    phase_keys: Iterable[str],
+    *,
+    fallback_order: Iterable[str],
+) -> list[str]:
+    """Order real dispatcher phases by the SQL-aware plan, with stable fallback.
+
+    The plan may omit non-actionable resources; those phases remain available
+    for final SQL/cache checks but are placed after ranked actionable phases.
+    """
+    available = list(dict.fromkeys(str(key) for key in phase_keys))
+    fallback = list(dict.fromkeys(str(key) for key in fallback_order))
+    fallback_rank = {key: index for index, key in enumerate(fallback)}
+    plan_rank: dict[str, int] = {}
+    for index, item in enumerate((plan or {}).get("priority_order") or []):
+        if not isinstance(item, dict) or not item.get("key"):
+            continue
+        key = str(item["key"])
+        try:
+            rank = int(item.get("priority"))
+        except (TypeError, ValueError):
+            rank = index
+        plan_rank[key] = rank
+
+    return sorted(
+        available,
+        key=lambda key: (
+            plan_rank.get(key, 10**6 + fallback_rank.get(key, len(fallback))),
+            fallback_rank.get(key, len(fallback)),
+        ),
+    )
