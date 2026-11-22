@@ -18,9 +18,12 @@ class ScheduledSyncTests(unittest.TestCase):
             patch.object(run_scheduled_sync.import_service, "record_update_log"),
             patch.object(run_scheduled_sync.sync_registry, "ensure_table"),
             patch.object(run_scheduled_sync.sync_registry, "get", return_value=state),
+            patch.object(run_scheduled_sync.remote_sync_lease, "claim", return_value=True),
             patch.object(run_scheduled_sync.sync_registry, "claim_download", return_value=True),
+            patch.object(run_scheduled_sync.remote_sync_lease, "renew", return_value=True),
             patch.object(run_scheduled_sync.sync_registry, "renew_download_claim", return_value=True),
             patch.object(run_scheduled_sync.sync_registry, "release_download_claim") as release,
+            patch.object(run_scheduled_sync.remote_sync_lease, "release") as remote_release,
             patch.object(run_scheduled_sync.prediction_archive_service, "archive_upcoming_predictions", return_value={"archived": 0}),
             patch.object(run_scheduled_sync.background_jobs, "api_quota_status", return_value={"verified": True, "remaining": 50}),
             patch.object(run_scheduled_sync.sync_registry, "mark"),
@@ -45,6 +48,7 @@ class ScheduledSyncTests(unittest.TestCase):
             patch.object(run_scheduled_sync.sync_registry, "mark") as mark,
             patch.object(run_scheduled_sync.full_sync_service, "run_full_sync") as sync,
             patch.object(run_scheduled_sync.sync_registry, "release_download_claim") as release,
+            patch.object(run_scheduled_sync.remote_sync_lease, "release") as remote_release,
         ):
             result = run_scheduled_sync.run()
 
@@ -55,6 +59,31 @@ class ScheduledSyncTests(unittest.TestCase):
         mark.assert_not_called()
         sync.assert_not_called()
         release.assert_not_called()
+
+    def test_scheduler_skips_without_api_calls_when_remote_lease_is_contended(self):
+        with (
+            patch.object(run_scheduled_sync.import_service, "init_db"),
+            patch.object(run_scheduled_sync.sync_registry, "ensure_table"),
+            patch.object(run_scheduled_sync.remote_sync_lease, "claim", return_value=False) as claim,
+            patch.object(run_scheduled_sync.sync_registry, "claim_download") as local_claim,
+            patch.object(run_scheduled_sync.remote_sync_lease, "renew") as renew,
+            patch.object(run_scheduled_sync.remote_sync_lease, "release") as release,
+            patch.object(run_scheduled_sync.prediction_archive_service, "archive_upcoming_predictions") as archive,
+            patch.object(run_scheduled_sync.background_jobs, "api_quota_status") as quota,
+            patch.object(run_scheduled_sync.sync_registry, "mark") as mark,
+            patch.object(run_scheduled_sync.full_sync_service, "run_full_sync") as sync,
+        ):
+            result = run_scheduled_sync.run()
+
+        self.assertEqual(result["status"], "skipped")
+        claim.assert_called_once()
+        local_claim.assert_not_called()
+        renew.assert_not_called()
+        release.assert_not_called()
+        archive.assert_not_called()
+        quota.assert_not_called()
+        mark.assert_not_called()
+        sync.assert_not_called()
 
     def test_scheduler_stops_without_overwriting_state_after_lease_loss(self):
         renew = []
@@ -69,6 +98,7 @@ class ScheduledSyncTests(unittest.TestCase):
             patch.object(run_scheduled_sync.import_service, "record_update_log") as record_log,
             patch.object(run_scheduled_sync.sync_registry, "ensure_table"),
             patch.object(run_scheduled_sync.sync_registry, "get", return_value=None),
+            patch.object(run_scheduled_sync.remote_sync_lease, "claim", return_value=True),
             patch.object(run_scheduled_sync.sync_registry, "claim_download", return_value=True),
             patch.object(
                 run_scheduled_sync.sync_registry,
@@ -76,6 +106,7 @@ class ScheduledSyncTests(unittest.TestCase):
                 side_effect=lambda *args, **kwargs: (renew.append(args) or len(renew) < 4),
             ),
             patch.object(run_scheduled_sync.sync_registry, "release_download_claim") as release,
+            patch.object(run_scheduled_sync.remote_sync_lease, "release") as remote_release,
             patch.object(run_scheduled_sync.time, "monotonic", side_effect=[0, 0, 0, 0, 61]),
             patch.object(run_scheduled_sync.prediction_archive_service, "archive_upcoming_predictions", return_value={"archived": 0}),
             patch.object(run_scheduled_sync.background_jobs, "api_quota_status", return_value={"verified": True, "remaining": 50}),
@@ -109,9 +140,12 @@ class ScheduledSyncTests(unittest.TestCase):
             patch.object(run_scheduled_sync.import_service, "record_update_log"),
             patch.object(run_scheduled_sync.sync_registry, "ensure_table"),
             patch.object(run_scheduled_sync.sync_registry, "get", return_value=None),
+            patch.object(run_scheduled_sync.remote_sync_lease, "claim", return_value=True),
             patch.object(run_scheduled_sync.sync_registry, "claim_download", return_value=True),
+            patch.object(run_scheduled_sync.remote_sync_lease, "renew", return_value=True),
             patch.object(run_scheduled_sync.sync_registry, "renew_download_claim", return_value=True),
             patch.object(run_scheduled_sync.sync_registry, "release_download_claim"),
+            patch.object(run_scheduled_sync.remote_sync_lease, "release"),
             patch.object(
                 run_scheduled_sync.prediction_archive_service,
                 "archive_upcoming_predictions",
@@ -148,9 +182,12 @@ class ScheduledSyncTests(unittest.TestCase):
             patch.object(run_scheduled_sync.import_service, "record_update_log"),
             patch.object(run_scheduled_sync.sync_registry, "ensure_table"),
             patch.object(run_scheduled_sync.sync_registry, "get", return_value=None),
+            patch.object(run_scheduled_sync.remote_sync_lease, "claim", return_value=True),
             patch.object(run_scheduled_sync.sync_registry, "claim_download", return_value=True),
+            patch.object(run_scheduled_sync.remote_sync_lease, "renew", return_value=True),
             patch.object(run_scheduled_sync.sync_registry, "renew_download_claim", return_value=True),
             patch.object(run_scheduled_sync.sync_registry, "release_download_claim"),
+            patch.object(run_scheduled_sync.remote_sync_lease, "release"),
             patch.object(
                 run_scheduled_sync.prediction_archive_service,
                 "archive_upcoming_predictions",
@@ -306,9 +343,12 @@ class ScheduledSyncTests(unittest.TestCase):
             patch.object(run_scheduled_sync.import_service, "record_update_log"),
             patch.object(run_scheduled_sync.sync_registry, "ensure_table"),
             patch.object(run_scheduled_sync.sync_registry, "get", return_value=None),
+            patch.object(run_scheduled_sync.remote_sync_lease, "claim", return_value=True),
             patch.object(run_scheduled_sync.sync_registry, "claim_download", return_value=True),
+            patch.object(run_scheduled_sync.remote_sync_lease, "renew", return_value=True),
             patch.object(run_scheduled_sync.sync_registry, "renew_download_claim", return_value=True),
             patch.object(run_scheduled_sync.sync_registry, "release_download_claim"),
+            patch.object(run_scheduled_sync.remote_sync_lease, "release"),
             patch.object(
                 run_scheduled_sync.prediction_archive_service,
                 "archive_upcoming_predictions",
