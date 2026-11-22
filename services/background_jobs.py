@@ -1144,9 +1144,9 @@ def start_full_sync(*, resumed: bool = False) -> str:
             renew_lease()
             _progress(job_id, current, total, label)
 
-        previous_state = full_sync_state() or {}
-        attempt = int((previous_state.get("metadata") or {}).get("attempt") or 0) + 1
         try:
+            previous_state = full_sync_state() or {}
+            attempt = int((previous_state.get("metadata") or {}).get("attempt") or 0) + 1
             renew_lease(force=True)
             _set_job(
                 job_id,
