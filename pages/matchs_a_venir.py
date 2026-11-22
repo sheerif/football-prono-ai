@@ -3,8 +3,10 @@ import hashlib
 import html
 import inspect
 import json
+import logging
 import pandas as pd
 import re
+import uuid
 import streamlit as st
 from sqlalchemy import text
 
@@ -679,27 +681,42 @@ def _api_prediction(fixture_id: int, force_refresh: bool = False) -> dict:
     ):
         return cached
 
+    owner = f"upcoming-page-prediction:{int(fixture_id)}:{uuid.uuid4().hex}"
+    if not sync_registry.claim_download(key, owner):
+        # The exhaustive/background worker owns this fixture. Reuse any cached
+        # value and never issue a duplicate API request from the page.
+        return cached
+
     try:
         sync_registry.mark(key, "fixture_prediction", "running")
         response = api_client.get_predictions(int(fixture_id))
+        items = response.get("response") or []
+        if not items:
+            sync_registry.mark(
+                key,
+                "fixture_prediction",
+                "unavailable",
+                message="Conseil non publié par l’API",
+            )
+            return cached
+
+        _save_prediction(int(fixture_id), items[0])
+        sync_registry.mark(key, "fixture_prediction", "complete", item_count=1)
+        return _load_cached_prediction(fixture_id)
     except Exception as exc:
         sync_registry.mark(
             key, "fixture_prediction", "error", message=str(exc)
         )
         return cached
-    items = response.get("response") or []
-    if not items:
-        sync_registry.mark(
-            key,
-            "fixture_prediction",
-            "unavailable",
-            message="Conseil non publié par l’API",
-        )
-        return cached
-
-    _save_prediction(int(fixture_id), items[0])
-    sync_registry.mark(key, "fixture_prediction", "complete", item_count=1)
-    return _load_cached_prediction(fixture_id)
+    finally:
+        try:
+            sync_registry.release_download_claim(key, owner)
+        except Exception:
+            logging.getLogger(__name__).warning(
+                "Unable to release prediction page lease for %s",
+                key,
+                exc_info=True,
+            )
 
 
 def _enrich_with_api_details(upcoming: pd.DataFrame, force_refresh: bool = False, progress_callback=None) -> pd.DataFrame:
