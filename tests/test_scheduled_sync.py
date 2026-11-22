@@ -122,6 +122,40 @@ class ScheduledSyncTests(unittest.TestCase):
         record_log.assert_not_called()
         release.assert_called_once()
 
+    def test_scheduler_stops_without_overwriting_state_after_remote_lease_loss(self):
+        remote_renewals = []
+        marks = []
+
+        def fake_sync(progress_callback):
+            progress_callback(1, 1, "phase")
+            return {"quota_reached": False, "api_calls": 1, "errors": []}
+
+        with (
+            patch.object(run_scheduled_sync.import_service, "init_db"),
+            patch.object(run_scheduled_sync.import_service, "record_update_log") as record_log,
+            patch.object(run_scheduled_sync.sync_registry, "ensure_table"),
+            patch.object(run_scheduled_sync.sync_registry, "get", return_value=None),
+            patch.object(run_scheduled_sync.remote_sync_lease, "claim", return_value=True),
+            patch.object(run_scheduled_sync.sync_registry, "claim_download", return_value=True),
+            patch.object(run_scheduled_sync.remote_sync_lease, "renew", side_effect=lambda *args, **kwargs: (remote_renewals.append(args) or len(remote_renewals) < 4)),
+            patch.object(run_scheduled_sync.sync_registry, "renew_download_claim", return_value=True) as local_renew,
+            patch.object(run_scheduled_sync.sync_registry, "release_download_claim") as local_release,
+            patch.object(run_scheduled_sync.remote_sync_lease, "release") as remote_release,
+            patch.object(run_scheduled_sync.time, "monotonic", side_effect=[0, 0, 0, 0, 61]),
+            patch.object(run_scheduled_sync.prediction_archive_service, "archive_upcoming_predictions", return_value={"archived": 0}),
+            patch.object(run_scheduled_sync.background_jobs, "api_quota_status", return_value={"verified": True, "remaining": 50}),
+            patch.object(run_scheduled_sync.sync_registry, "mark", side_effect=lambda *args, **kwargs: marks.append(args)),
+            patch.object(run_scheduled_sync.full_sync_service, "run_full_sync", side_effect=fake_sync),
+        ):
+            with self.assertRaises(run_scheduled_sync.FullSyncLeaseLost):
+                run_scheduled_sync.run()
+
+        self.assertEqual([mark[2] for mark in marks], ["running"])
+        local_renew.assert_not_called()
+        record_log.assert_not_called()
+        local_release.assert_called_once()
+        remote_release.assert_called_once()
+
     def test_scheduler_persists_successful_completion(self):
         marks = []
 
