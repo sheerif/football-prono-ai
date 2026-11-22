@@ -30,7 +30,7 @@ def test_core_import_skips_without_api_when_scope_lease_is_contended(monkeypatch
 
 def test_core_import_renews_and_releases_lease(monkeypatch):
     calls = []
-    monkeypatch.setattr(sync_registry, "mark", lambda *args, **kwargs: None
+    monkeypatch.setattr(sync_registry, "mark", lambda *args, **kwargs: None)
     monkeypatch.setattr(
         import_service, "register_league_seasons", lambda *args, **kwargs: None
     )
@@ -71,7 +71,7 @@ def test_core_import_renews_and_releases_lease(monkeypatch):
 
 def test_core_import_stops_when_lease_is_lost(monkeypatch):
     calls = []
-    monkeypatch.setattr(sync_registry, "mark", lambda *args, **kwargs: None
+    monkeypatch.setattr(sync_registry, "mark", lambda *args, **kwargs: None)
     monkeypatch.setattr(
         import_service, "register_league_seasons", lambda *args, **kwargs: None
     )
@@ -110,7 +110,7 @@ def test_core_import_stops_when_lease_is_lost(monkeypatch):
 
 def test_core_import_aborts_before_api_when_progress_renewal_fails(monkeypatch):
     calls = []
-    monkeypatch.setattr(sync_registry, "mark", lambda *args, **kwargs: None
+    monkeypatch.setattr(sync_registry, "mark", lambda *args, **kwargs: None)
     monkeypatch.setattr(
         import_service, "register_league_seasons", lambda *args, **kwargs: None
     )
