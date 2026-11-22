@@ -160,7 +160,7 @@ class ScheduledSyncTests(unittest.TestCase):
             result = run_scheduled_sync.main()
 
         self.assertEqual(result, 1)
-        backup.assert_called_once_with(force=False)
+        backup.assert_called_once_with(force=True)
 
     def test_scheduled_entrypoint_fails_when_sync_is_partial(self):
         with (
@@ -173,12 +173,13 @@ class ScheduledSyncTests(unittest.TestCase):
                 run_scheduled_sync.git_backup,
                 "backup_to_github",
                 return_value={"status": "uploaded"},
-            ),
+            ) as backup,
             patch.object(run_scheduled_sync.engine, "dispose"),
         ):
             result = run_scheduled_sync.main()
 
         self.assertEqual(result, 1)
+        backup.assert_called_once_with(force=True)
 
     def test_scheduled_entrypoint_fails_when_sync_is_skipped(self):
         with (
