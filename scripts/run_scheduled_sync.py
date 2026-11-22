@@ -20,7 +20,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from database.database import engine
-from services import background_jobs, full_sync_service, git_backup, import_service, prediction_archive_service, sync_registry
+from services import background_jobs, full_sync_service, git_backup, import_service, prediction_archive_service, remote_sync_lease, sync_registry
 
 
 CONTROL_KEY = "full-sync:exhaustive"
@@ -47,10 +47,18 @@ def run() -> dict:
     import_service.init_db()
     sync_registry.ensure_table()
     owner = f"scheduled-sync:{uuid.uuid4().hex}"
-    if not sync_registry.claim_download(
-        CONTROL_KEY, owner, lease_seconds=LEASE_SECONDS
-    ):
-        return {"status": "skipped", "reason": "lease de synchronisation détenue"}
+    if not remote_sync_lease.claim(CONTROL_KEY, owner, lease_seconds=LEASE_SECONDS):
+        return {"status": "skipped", "reason": "lease distante de synchronisation détenue"}
+    try:
+        local_claimed = sync_registry.claim_download(
+            CONTROL_KEY, owner, lease_seconds=LEASE_SECONDS
+        )
+    except Exception:
+        remote_sync_lease.release(CONTROL_KEY, owner)
+        raise
+    if not local_claimed:
+        remote_sync_lease.release(CONTROL_KEY, owner)
+        return {"status": "skipped", "reason": "lease locale de synchronisation détenue"}
 
     lease_lost = False
     last_renewed = time.monotonic()
@@ -62,11 +70,30 @@ def run() -> dict:
         now = time.monotonic()
         if not force and now - last_renewed < LEASE_RENEW_INTERVAL_SECONDS:
             return
-        if not sync_registry.renew_download_claim(
-            CONTROL_KEY, owner, lease_seconds=LEASE_SECONDS
-        ):
+        try:
+            remote_renewed = remote_sync_lease.renew(
+                CONTROL_KEY, owner, lease_seconds=LEASE_SECONDS
+            )
+        except Exception as exc:
             lease_lost = True
-            raise FullSyncLeaseLost("Lease globale de synchronisation perdue.")
+            raise FullSyncLeaseLost(
+                "Impossible de vérifier la lease distante de synchronisation."
+            ) from exc
+        if not remote_renewed:
+            lease_lost = True
+            raise FullSyncLeaseLost("Lease distante globale de synchronisation perdue.")
+        try:
+            local_renewed = sync_registry.renew_download_claim(
+                CONTROL_KEY, owner, lease_seconds=LEASE_SECONDS
+            )
+        except Exception as exc:
+            lease_lost = True
+            raise FullSyncLeaseLost(
+                "Impossible de vérifier la lease locale de synchronisation."
+            ) from exc
+        if not local_renewed:
+            lease_lost = True
+            raise FullSyncLeaseLost("Lease locale globale de synchronisation perdue.")
         last_renewed = now
 
     def progress(current: int, total: int, label: str) -> None:
@@ -232,7 +259,11 @@ def run() -> dict:
         try:
             sync_registry.release_download_claim(CONTROL_KEY, owner)
         except Exception:
-            logging.warning("Unable to release scheduled full-sync lease", exc_info=True)
+            logging.warning("Unable to release scheduled local full-sync lease", exc_info=True)
+        try:
+            remote_sync_lease.release(CONTROL_KEY, owner)
+        except Exception:
+            logging.warning("Unable to release scheduled remote full-sync lease", exc_info=True)
 
 
 def main() -> int:
