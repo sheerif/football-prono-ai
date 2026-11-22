@@ -190,13 +190,19 @@ def sync_players(
             "skipped": True,
             "reason": "claimed",
         }
+    def renew_and_report(current, total, label):
+        if not sync_registry.renew_download_claim(key, owner):
+            raise RuntimeError(f"Lease persistante perdue pendant la synchronisation {key}")
+        if progress_callback:
+            progress_callback(current, total, label)
+
     try:
         return _sync_players_unleased(
             league_id,
             season,
             team_id=team_id,
             max_pages=max_pages,
-            progress_callback=progress_callback,
+            progress_callback=renew_and_report,
         )
     finally:
         sync_registry.release_download_claim(key, owner)
