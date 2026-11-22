@@ -1661,7 +1661,7 @@ def import_leagues_cautious(
                     progress_callback(
                         min(total_steps, (scope_index + 1) * 3),
                         total_steps,
-                        f"Ligue {league_id} - {season}: scope déjà détenu par un autre worker",
+                        f"Ligue {league_id} - {season}: lease persistante déjà détenue par un autre worker",
                     )
                 continue
 
