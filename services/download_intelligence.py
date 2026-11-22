@@ -84,6 +84,28 @@ def order_download_tasks(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]
     ]
 
 
+def order_season_player_scopes(
+    scopes: Iterable[dict[str, Any]], *, recent_seasons: Iterable[int] = ()
+) -> list[dict[str, Any]]:
+    """Order season-player backfill from SQL inventory, prioritizing recent gaps.
+
+    Empty scopes come first within the recent-season tier, then larger match
+    scopes (more coverage per dispatch decision), with stable season/league ties.
+    The function does not mutate its input or decide whether a scope is eligible.
+    """
+    recent = {int(season) for season in recent_seasons}
+    return sorted(
+        (dict(scope) for scope in scopes),
+        key=lambda scope: (
+            0 if int(scope.get("season") or 0) in recent else 1,
+            0 if int(scope.get("player_count") or 0) <= 0 else 1,
+            -max(0, int(scope.get("match_count") or 0)),
+            -int(scope.get("season") or 0),
+            int(scope.get("league_id") or 0),
+        ),
+    )
+
+
 def annotate_resource_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Add transparent priority/action fields without changing coverage counts."""
     order = order_download_tasks(rows)
