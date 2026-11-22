@@ -264,6 +264,12 @@ def main() -> int:
             "prévision(s) · "
             f"sauvegarde : {backup.get('status', 'unknown')}"
         )
+        if result.get("status") == "skipped":
+            print(
+                "Synchronisation ignorée : une autre instance possède la lease globale.",
+                file=sys.stderr,
+            )
+            return 0
         if result.get("status") != "complete":
             print(
                 "Synchronisation non exhaustive "
