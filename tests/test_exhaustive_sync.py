@@ -841,7 +841,7 @@ class ExhaustiveSyncTests(unittest.TestCase):
         self.assertIn("fixture-prediction:2", marked_keys)
         sync_xg.assert_called_once()
         self.assertEqual(sync_xg.call_args.kwargs["league_ids"], [61])
-        self.assertEqual(sync_xg.call_args.kwargs["seasons"], [2025])
+        self.assertEqual(sync_xg.call_args.kwargs["seasons"], [2024, 2025])
         self.assertIsNone(sync_xg.call_args.kwargs["max_matches"])
         self.assertEqual(result["mode"], "exhaustive")
         self.assertIn("api_calls_by_family", result)
