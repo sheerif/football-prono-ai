@@ -748,6 +748,10 @@ def show():
                     "present": "En base",
                     "to_download": "À télécharger",
                     "deferred": "Différées",
+                    "actionable_missing": "Actionnables",
+                    "priority": "Priorité",
+                    "plan_rank": "Ordre",
+                    "decision": "Décision",
                 }
             )
             st.dataframe(
@@ -759,6 +763,10 @@ def show():
                         "En base",
                         "À télécharger",
                         "Différées",
+                        "Actionnables",
+                        "Priorité",
+                        "Ordre",
+                        "Décision",
                     ]
                 ],
                 hide_index=True,
