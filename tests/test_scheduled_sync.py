@@ -60,6 +60,7 @@ class ScheduledSyncTests(unittest.TestCase):
         mark.assert_not_called()
         sync.assert_not_called()
         release.assert_not_called()
+        remote_release.assert_called_once()
 
     def test_scheduler_skips_without_api_calls_when_remote_lease_is_contended(self):
         with (
@@ -151,7 +152,7 @@ class ScheduledSyncTests(unittest.TestCase):
                 run_scheduled_sync.run()
 
         self.assertEqual([mark[2] for mark in marks], ["running"])
-        local_renew.assert_not_called()
+        self.assertEqual(local_renew.call_count, 3)
         record_log.assert_not_called()
         local_release.assert_called_once()
         remote_release.assert_called_once()
