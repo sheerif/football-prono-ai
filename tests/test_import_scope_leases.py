@@ -7,7 +7,7 @@ def test_core_import_skips_without_api_when_scope_lease_is_contended(monkeypatch
         import_service, "register_league_seasons", lambda *args, **kwargs: None
     )
     monkeypatch.setattr(sync_registry, "claim_download", lambda *args, **kwargs: False)
-    remote_claim = monkeypatch.setattr(remote_sync_lease, "claim", lambda *args, **kwargs: True)
+    monkeypatch.setattr(remote_sync_lease, "claim", lambda *args, **kwargs: True)
     monkeypatch.setattr(
         import_service,
         "_import_leagues_cautious_unleased",
@@ -126,7 +126,7 @@ def test_core_import_stops_when_lease_is_lost(monkeypatch):
     assert result["skipped"] is True
     assert result["lease_lost"] is True
     assert result["checkpoint"] == "teams:61:2026"
-    assert calls == ["renew", "release"]
+    assert calls == ["local_renew", "local_release"]
 
 
 
