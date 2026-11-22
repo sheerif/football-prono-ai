@@ -70,14 +70,28 @@ def run() -> dict:
         now = time.monotonic()
         if not force and now - last_renewed < LEASE_RENEW_INTERVAL_SECONDS:
             return
-        if not remote_sync_lease.renew(
-            CONTROL_KEY, owner, lease_seconds=LEASE_SECONDS
-        ):
+        try:
+            remote_renewed = remote_sync_lease.renew(
+                CONTROL_KEY, owner, lease_seconds=LEASE_SECONDS
+            )
+        except Exception as exc:
+            lease_lost = True
+            raise FullSyncLeaseLost(
+                "Impossible de vérifier la lease distante de synchronisation."
+            ) from exc
+        if not remote_renewed:
             lease_lost = True
             raise FullSyncLeaseLost("Lease distante globale de synchronisation perdue.")
-        if not sync_registry.renew_download_claim(
-            CONTROL_KEY, owner, lease_seconds=LEASE_SECONDS
-        ):
+        try:
+            local_renewed = sync_registry.renew_download_claim(
+                CONTROL_KEY, owner, lease_seconds=LEASE_SECONDS
+            )
+        except Exception as exc:
+            lease_lost = True
+            raise FullSyncLeaseLost(
+                "Impossible de vérifier la lease locale de synchronisation."
+            ) from exc
+        if not local_renewed:
             lease_lost = True
             raise FullSyncLeaseLost("Lease locale globale de synchronisation perdue.")
         last_renewed = now
