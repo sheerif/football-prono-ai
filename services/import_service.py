@@ -1629,6 +1629,9 @@ def import_leagues_cautious(
     completed_scopes = []
     lease_seconds = 1800
 
+    class _CoreImportLeaseLost(Exception):
+        pass
+
     for league_index, league_id in enumerate(league_ids):
         if resume_plan and league_index < resume_plan["league_index"]:
             continue
@@ -1693,7 +1696,7 @@ def import_leagues_cautious(
                     renewed = False
                 if not renewed:
                     lease_lost = True
-                    return
+                    raise _CoreImportLeaseLost(key)
                 if progress_callback:
                     progress_callback(
                         min(total_steps, scope_index * 3 + int(current or 0)),
@@ -1738,6 +1741,15 @@ def import_leagues_cautious(
                     return result
                 sync_registry.mark(key, "core_season", "complete", item_count=1)
                 completed_scopes.append(key)
+            except _CoreImportLeaseLost:
+                skipped_scopes.append(key)
+                return {
+                    "skipped": True,
+                    "skipped_scopes": skipped_scopes,
+                    "completed_scopes": completed_scopes,
+                    "checkpoint": key,
+                    "lease_lost": True,
+                }
             except Exception as exc:
                 if not lease_lost:
                     sync_registry.mark(
