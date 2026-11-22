@@ -1665,9 +1665,6 @@ def import_leagues_cautious(
                     )
                 continue
 
-            sync_registry.mark(
-                key, "core_season", "running", message="Lease persistante acquise"
-            )
             lease_lost = False
 
             def _renew_and_check_priority():
@@ -1705,6 +1702,10 @@ def import_leagues_cautious(
                     )
 
             try:
+                sync_registry.mark(
+                    key, "core_season", "running",
+                    message="Lease persistante acquise",
+                )
                 result = _import_leagues_cautious_unleased(
                     [league_id],
                     seasons=[season],
