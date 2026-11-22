@@ -41,6 +41,7 @@ class ScheduledSyncTests(unittest.TestCase):
         with (
             patch.object(run_scheduled_sync.import_service, "init_db"),
             patch.object(run_scheduled_sync.sync_registry, "ensure_table"),
+            patch.object(run_scheduled_sync.remote_sync_lease, "claim", return_value=True),
             patch.object(run_scheduled_sync.sync_registry, "claim_download", return_value=False),
             patch.object(run_scheduled_sync.sync_registry, "get") as get_state,
             patch.object(run_scheduled_sync.prediction_archive_service, "archive_upcoming_predictions") as archive,
@@ -100,6 +101,7 @@ class ScheduledSyncTests(unittest.TestCase):
             patch.object(run_scheduled_sync.sync_registry, "get", return_value=None),
             patch.object(run_scheduled_sync.remote_sync_lease, "claim", return_value=True),
             patch.object(run_scheduled_sync.sync_registry, "claim_download", return_value=True),
+            patch.object(run_scheduled_sync.remote_sync_lease, "renew", return_value=True),
             patch.object(
                 run_scheduled_sync.sync_registry,
                 "renew_download_claim",
