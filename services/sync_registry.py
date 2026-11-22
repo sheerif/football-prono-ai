@@ -31,6 +31,110 @@ def ensure_table() -> None:
         )
 
 
+def ensure_lease_table() -> None:
+    """Create a durable cross-process lease table for download claims."""
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS download_task_leases (
+                    resource_key TEXT PRIMARY KEY,
+                    owner TEXT NOT NULL,
+                    claimed_at TEXT NOT NULL,
+                    lease_until TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+        )
+
+
+def claim_download(
+    resource_key: str,
+    owner: str,
+    *,
+    lease_seconds: int = 900,
+) -> bool:
+    """Atomically claim a resource, preventing duplicate workers across processes.
+
+    An existing claim may be replaced only after expiry or renewed by its owner.
+    SQLite's conditional UPSERT is the atomic arbitration point.
+    """
+    key = str(resource_key)
+    claimant = str(owner)
+    now = _now()
+    lease_until = now + datetime.timedelta(seconds=max(1, int(lease_seconds)))
+    ensure_lease_table()
+    with engine.begin() as conn:
+        result = conn.execute(
+            text(
+                """
+                INSERT INTO download_task_leases (
+                    resource_key, owner, claimed_at, lease_until, updated_at
+                ) VALUES (:key, :owner, :now, :lease_until, :now)
+                ON CONFLICT(resource_key) DO UPDATE SET
+                    owner = excluded.owner,
+                    claimed_at = excluded.claimed_at,
+                    lease_until = excluded.lease_until,
+                    updated_at = excluded.updated_at
+                WHERE download_task_leases.lease_until <= :now
+                   OR download_task_leases.owner = :owner
+                """
+            ),
+            {
+                "key": key,
+                "owner": claimant,
+                "now": now.isoformat(),
+                "lease_until": lease_until.isoformat(),
+            },
+        )
+    return result.rowcount == 1
+
+
+def renew_download_claim(
+    resource_key: str,
+    owner: str,
+    *,
+    lease_seconds: int = 900,
+) -> bool:
+    """Extend a lease only when the caller still owns it."""
+    now = _now()
+    lease_until = now + datetime.timedelta(seconds=max(1, int(lease_seconds)))
+    ensure_lease_table()
+    with engine.begin() as conn:
+        result = conn.execute(
+            text(
+                """
+                UPDATE download_task_leases
+                SET lease_until = :lease_until, updated_at = :now
+                WHERE resource_key = :key AND owner = :owner
+                  AND lease_until > :now
+                """
+            ),
+            {
+                "key": str(resource_key),
+                "owner": str(owner),
+                "now": now.isoformat(),
+                "lease_until": lease_until.isoformat(),
+            },
+        )
+    return result.rowcount == 1
+
+
+def release_download_claim(resource_key: str, owner: str) -> bool:
+    """Release a claim only for its owner; a stale worker cannot unlock it."""
+    ensure_lease_table()
+    with engine.begin() as conn:
+        result = conn.execute(
+            text(
+                "DELETE FROM download_task_leases "
+                "WHERE resource_key = :key AND owner = :owner"
+            ),
+            {"key": str(resource_key), "owner": str(owner)},
+        )
+    return result.rowcount == 1
+
+
 def get(resource_key: str) -> dict | None:
     ensure_table()
     with engine.begin() as conn:
