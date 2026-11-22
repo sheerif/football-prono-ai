@@ -701,6 +701,9 @@ def _fetch_one(resource_key: str, resource_type: str, fetch, save, retry_hours: 
         resource_key, retry_hours
     ):
         return "skipped"
+    owner = f"fetch-one:{os.getpid()}:{time.time_ns()}"
+    if not sync_registry.claim_download(resource_key, owner):
+        return "skipped"
     sync_registry.mark(resource_key, resource_type, "running")
     try:
         response = fetch()
@@ -717,6 +720,8 @@ def _fetch_one(resource_key: str, resource_type: str, fetch, save, retry_hours: 
     except Exception as exc:
         sync_registry.mark(resource_key, resource_type, "error", message=str(exc))
         raise
+    finally:
+        sync_registry.release_download_claim(resource_key, owner)
 
 
 def prediction_coverage(days: int | None = None) -> dict:
