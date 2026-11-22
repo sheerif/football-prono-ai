@@ -103,12 +103,12 @@ def test_core_import_stops_when_lease_is_lost(monkeypatch):
     monkeypatch.setattr(
         sync_registry,
         "renew_download_claim",
-        lambda *args, **kwargs: calls.append("renew") or False,
+        lambda *args, **kwargs: calls.append("local_renew") or True,
     )
     monkeypatch.setattr(
         sync_registry,
         "release_download_claim",
-        lambda *args, **kwargs: calls.append("release") or True,
+        lambda *args, **kwargs: calls.append("local_release") or True,
     )
     monkeypatch.setattr(
         import_service,
@@ -165,7 +165,7 @@ def test_core_import_aborts_before_api_when_progress_renewal_fails(monkeypatch):
     assert result["skipped"] is True
     assert result["lease_lost"] is True
     assert result["checkpoint"] == "core:61:2026"
-    assert calls == ["renew", "release"]
+    assert calls == ["local_renew", "local_renew", "local_release"]
 
 
 
