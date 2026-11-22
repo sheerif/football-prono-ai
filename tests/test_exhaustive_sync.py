@@ -134,6 +134,94 @@ class ExhaustiveSyncTests(unittest.TestCase):
                 full_sync_service._daily_reserve_reached(api_client, 11)
             )
 
+    def test_xg_backfill_skips_when_persistent_lease_is_held(self):
+        api_client = Mock()
+        api_client.request_count = 0
+        rows = [
+            {"fixture_id": 101, "date": "2026-11-21", "league_id": 61, "season": 2026}
+        ]
+        with (
+            patch.object(full_sync_service, "client", api_client),
+            patch.object(full_sync_service, "_priority_preemption_requested", return_value=False),
+            patch.object(full_sync_service, "_daily_reserve_reached", return_value=False),
+            patch.object(full_sync_service, "_xg_should_download", return_value=True),
+            patch.object(full_sync_service.xg_service, "fixture_statistics_present", return_value=False),
+            patch.object(full_sync_service.sync_registry, "get", return_value=None),
+            patch.object(full_sync_service.sync_registry, "claim_download", return_value=False) as claim,
+            patch.object(full_sync_service.sync_registry, "release_download_claim") as release,
+            patch.object(full_sync_service.sync_registry, "mark") as mark,
+            patch.object(full_sync_service.time, "sleep"),
+        ):
+            result = full_sync_service._sync_xg_rows(
+                rows, pause=0, retry_hours=24, sync_run_id="lease-contention"
+            )
+
+        claim.assert_called_once()
+        release.assert_not_called()
+        mark.assert_not_called()
+        api_client.get_fixture_statistics.assert_not_called()
+        self.assertEqual(result["skipped"], 1)
+        self.assertEqual(result["lease_contention"], 1)
+        self.assertEqual(result["api_calls"], 0)
+
+    def test_xg_backfill_releases_lease_after_successful_fetch(self):
+        api_client = Mock()
+        api_client.request_count = 0
+        api_client.get_fixture_statistics.return_value = {"response": []}
+        rows = [
+            {"fixture_id": 101, "date": "2026-11-21", "league_id": 61, "season": 2026}
+        ]
+        with (
+            patch.object(full_sync_service, "client", api_client),
+            patch.object(full_sync_service, "_priority_preemption_requested", return_value=False),
+            patch.object(full_sync_service, "_daily_reserve_reached", return_value=False),
+            patch.object(full_sync_service, "_xg_should_download", return_value=True),
+            patch.object(full_sync_service.xg_service, "fixture_statistics_present", return_value=False),
+            patch.object(full_sync_service.xg_service, "record_ingestion"),
+            patch.object(full_sync_service.sync_registry, "get", return_value=None),
+            patch.object(full_sync_service.sync_registry, "claim_download", return_value=True) as claim,
+            patch.object(full_sync_service.sync_registry, "release_download_claim") as release,
+            patch.object(full_sync_service.sync_registry, "mark"),
+            patch.object(full_sync_service.time, "sleep"),
+        ):
+            result = full_sync_service._sync_xg_rows(
+                rows, pause=0, retry_hours=24, sync_run_id="lease-success"
+            )
+
+        claim.assert_called_once()
+        release.assert_called_once_with(claim.call_args.args[0], claim.call_args.args[1])
+        api_client.get_fixture_statistics.assert_called_once_with(101)
+        self.assertEqual(result["unavailable"], 1)
+        self.assertEqual(result["api_calls"], 1)
+
+    def test_xg_backfill_releases_lease_after_fetch_exception(self):
+        api_client = Mock()
+        api_client.request_count = 0
+        api_client.get_fixture_statistics.side_effect = RuntimeError("network failure")
+        rows = [
+            {"fixture_id": 101, "date": "2026-11-21", "league_id": 61, "season": 2026}
+        ]
+        with (
+            patch.object(full_sync_service, "client", api_client),
+            patch.object(full_sync_service, "_priority_preemption_requested", return_value=False),
+            patch.object(full_sync_service, "_daily_reserve_reached", return_value=False),
+            patch.object(full_sync_service, "_xg_should_download", return_value=True),
+            patch.object(full_sync_service.xg_service, "fixture_statistics_present", return_value=False),
+            patch.object(full_sync_service.xg_service, "record_ingestion"),
+            patch.object(full_sync_service.sync_registry, "get", return_value=None),
+            patch.object(full_sync_service.sync_registry, "claim_download", return_value=True) as claim,
+            patch.object(full_sync_service.sync_registry, "release_download_claim") as release,
+            patch.object(full_sync_service.sync_registry, "mark"),
+            patch.object(full_sync_service.time, "sleep"),
+        ):
+            result = full_sync_service._sync_xg_rows(
+                rows, pause=0, retry_hours=24, sync_run_id="lease-error"
+            )
+
+        release.assert_called_once_with(claim.call_args.args[0], claim.call_args.args[1])
+        self.assertEqual(result["errors"], ["fixture-statistics:101: network failure"])
+        self.assertEqual(result["api_calls"], 1)
+
     def test_xg_backfill_stops_on_emergency_reserve_protection(self):
         api_client = Mock()
         api_client.request_count = 0
@@ -174,6 +262,8 @@ class ExhaustiveSyncTests(unittest.TestCase):
             patch.object(full_sync_service.xg_service, "record_ingestion"),
             patch.object(full_sync_service.sync_registry, "get", return_value=None),
             patch.object(full_sync_service.sync_registry, "mark"),
+            patch.object(full_sync_service.sync_registry, "claim_download", return_value=True),
+            patch.object(full_sync_service.sync_registry, "release_download_claim") as release,
             patch.object(full_sync_service.time, "sleep"),
         ):
             result = full_sync_service._sync_xg_rows(
@@ -183,6 +273,7 @@ class ExhaustiveSyncTests(unittest.TestCase):
         self.assertTrue(result["quota_reached"])
         self.assertEqual(result["checkpoint"], "fixture-statistics:101")
         api_client.get_fixture_statistics.assert_called_once_with(101)
+        release.assert_called_once()
 
     def test_old_unavailable_fixture_resource_is_not_requested_again(self):
         with patch.object(

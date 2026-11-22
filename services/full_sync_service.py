@@ -899,6 +899,7 @@ def _sync_xg_rows(
         "unavailable_deferred": 0,
         "daily_reserve": xg_reserve,
         "budget_reserved": False,
+        "lease_contention": 0,
     }
     for index, row in enumerate(rows, start=1):
         fixture_id = int(row["fixture_id"])
@@ -935,73 +936,80 @@ def _sync_xg_rows(
                 summary["budget_reserved"] = True
                 summary["checkpoint"] = key
                 break
-            requested_at = _now_iso()
-            response = None
-            try:
-                sync_registry.mark(key, "fixture_statistics", "running")
-                summary["api_calls"] += 1
-                response = client.get_fixture_statistics(fixture_id)
-                error = _api_error(response)
-                if error:
-                    raise RuntimeError(error)
-                items = response.get("response") or []
-                if not items:
-                    xg_service.record_ingestion(
-                        fixture_id,
-                        sync_run_id=sync_run_id,
-                        status="unavailable",
-                        requested_at=requested_at,
-                        payload=response,
-                    )
-                    sync_registry.mark(
-                        key,
-                        "fixture_statistics",
-                        "unavailable",
-                        message="Statistiques non publiées par l’API",
-                    )
-                    result = "unavailable"
-                else:
-                    count = xg_service.save_fixture_statistics(
-                        fixture_id,
-                        items,
-                        sync_run_id=sync_run_id,
-                        requested_at=requested_at,
-                        audit_payload=response,
-                    )
-                    has_xg = xg_service.fixture_statistics_present(fixture_id)
-                    sync_registry.mark(
-                        key,
-                        "fixture_statistics",
-                        "complete" if has_xg else "unavailable",
-                        item_count=count,
-                        message=None if has_xg else "Statistiques publiées sans xG",
-                    )
-                    result = "downloaded" if has_xg else "unavailable"
-            except Exception as exc:
+            owner = f"historical-xg:{fixture_id}:{time.time_ns()}"
+            if not sync_registry.claim_download(key, owner):
+                result = "skipped"
+                summary["lease_contention"] += 1
+            else:
+                requested_at = _now_iso()
+                response = None
                 try:
-                    xg_service.record_ingestion(
-                        fixture_id,
-                        sync_run_id=sync_run_id,
-                        status="error",
-                        requested_at=requested_at,
-                        payload=response,
-                        error=str(exc),
+                    sync_registry.mark(key, "fixture_statistics", "running")
+                    summary["api_calls"] += 1
+                    response = client.get_fixture_statistics(fixture_id)
+                    error = _api_error(response)
+                    if error:
+                        raise RuntimeError(error)
+                    items = response.get("response") or []
+                    if not items:
+                        xg_service.record_ingestion(
+                            fixture_id,
+                            sync_run_id=sync_run_id,
+                            status="unavailable",
+                            requested_at=requested_at,
+                            payload=response,
+                        )
+                        sync_registry.mark(
+                            key,
+                            "fixture_statistics",
+                            "unavailable",
+                            message="Statistiques non publiées par l’API",
+                        )
+                        result = "unavailable"
+                    else:
+                        count = xg_service.save_fixture_statistics(
+                            fixture_id,
+                            items,
+                            sync_run_id=sync_run_id,
+                            requested_at=requested_at,
+                            audit_payload=response,
+                        )
+                        has_xg = xg_service.fixture_statistics_present(fixture_id)
+                        sync_registry.mark(
+                            key,
+                            "fixture_statistics",
+                            "complete" if has_xg else "unavailable",
+                            item_count=count,
+                            message=None if has_xg else "Statistiques publiées sans xG",
+                        )
+                        result = "downloaded" if has_xg else "unavailable"
+                except Exception as exc:
+                    try:
+                        xg_service.record_ingestion(
+                            fixture_id,
+                            sync_run_id=sync_run_id,
+                            status="error",
+                            requested_at=requested_at,
+                            payload=response,
+                            error=str(exc),
+                        )
+                    except Exception as audit_exc:
+                        summary["errors"].append(
+                            f"fixture-statistics-audit:{fixture_id}: {audit_exc}"
+                        )
+                    sync_registry.mark(
+                        key, "fixture_statistics", "error", message=str(exc)
                     )
-                except Exception as audit_exc:
-                    summary["errors"].append(
-                        f"fixture-statistics-audit:{fixture_id}: {audit_exc}"
-                    )
-                sync_registry.mark(
-                    key, "fixture_statistics", "error", message=str(exc)
-                )
-                summary["errors"].append(f"{key}: {exc}")
-                if _is_quota_error(exc):
-                    summary["quota_reached"] = True
-                    summary["checkpoint"] = key
-                    break
-                result = "error"
-            if result != "skipped":
-                time.sleep(pause)
+                    summary["errors"].append(f"{key}: {exc}")
+                    if _is_quota_error(exc):
+                        summary["quota_reached"] = True
+                        summary["checkpoint"] = key
+                        break
+                    result = "error"
+                finally:
+                    sync_registry.release_download_claim(key, owner)
+                if result != "skipped":
+                    time.sleep(pause)
         if result in summary:
             summary[result] += 1
         if progress_callback:
