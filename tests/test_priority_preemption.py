@@ -2,7 +2,10 @@ from services import import_service
 
 
 def test_manual_import_stops_at_safe_season_checkpoint(monkeypatch):
-    from services import sync_registry
+    from services import remote_sync_lease, sync_registry
+    monkeypatch.setattr(remote_sync_lease, "claim", lambda *args, **kwargs: True)
+    monkeypatch.setattr(remote_sync_lease, "renew", lambda *args, **kwargs: True)
+    monkeypatch.setattr(remote_sync_lease, "release", lambda *args, **kwargs: True)
     monkeypatch.setattr(sync_registry, "mark", lambda *args, **kwargs: None)
     monkeypatch.setattr(sync_registry, "claim_download", lambda *args, **kwargs: True)
     monkeypatch.setattr(sync_registry, "renew_download_claim", lambda *args, **kwargs: True)
@@ -275,7 +278,10 @@ def test_manual_import_resume_plan_rejects_unknown_scope():
 
 def test_manual_import_resumes_fixture_pagination_at_checkpoint_page(monkeypatch):
     from database import models
-    from services import sync_registry
+    from services import remote_sync_lease, sync_registry
+    monkeypatch.setattr(remote_sync_lease, "claim", lambda *args, **kwargs: True)
+    monkeypatch.setattr(remote_sync_lease, "renew", lambda *args, **kwargs: True)
+    monkeypatch.setattr(remote_sync_lease, "release", lambda *args, **kwargs: True)
     monkeypatch.setattr(sync_registry, "mark", lambda *args, **kwargs: None)
     monkeypatch.setattr(sync_registry, "claim_download", lambda *args, **kwargs: True)
     monkeypatch.setattr(sync_registry, "renew_download_claim", lambda *args, **kwargs: True)
