@@ -1528,13 +1528,19 @@ def run_full_sync(progress_callback=None) -> dict:
                     initial_request_counts["compositions/statistiques joueurs"],
                 ):
                     return stop_for_quota(key, RuntimeError(_reserve_message()))
-                sync_registry.mark(key, "fixture_players", "running")
                 data = lineup_service.sync_fixture_players(fixture_id)
-                count = int(data.get("players") or 0)
-                status = "complete" if count else "unavailable"
-                sync_registry.mark(key, "fixture_players", status, item_count=count)
-                result = "downloaded" if count else "unavailable"
-                time.sleep(pause)
+                if data.get("skipped"):
+                    sync_registry.mark(
+                        key, "fixture_players", "running",
+                        message="Lease persistante détenue par un autre worker",
+                    )
+                    result = "skipped"
+                else:
+                    count = int(data.get("players") or 0)
+                    status = "complete" if count else "unavailable"
+                    sync_registry.mark(key, "fixture_players", status, item_count=count)
+                    result = "downloaded" if count else "unavailable"
+                    time.sleep(pause)
         except Exception as exc:
             sync_registry.mark(key, "fixture_players", "error", message=str(exc))
             if _is_quota_error(exc):
@@ -1588,21 +1594,28 @@ def run_full_sync(progress_callback=None) -> dict:
                         page_label,
                     ),
                 )
-                count = int(data.get("statistics") or 0)
-                if data.get("truncated"):
-                    status = "partial"
+                if data.get("skipped"):
+                    sync_registry.mark(
+                        key, "season_players", "running",
+                        message="Lease persistante détenue par un autre worker",
+                    )
+                    result = "skipped"
                 else:
-                    status = "complete" if count else "unavailable"
-                sync_registry.mark(
-                    key,
-                    "season_players",
-                    status,
-                    item_count=count,
-                    page_count=int(data.get("pages") or 0),
-                    metadata=data,
-                )
-                result = "partial" if data.get("truncated") and count else ("downloaded" if count else "unavailable")
-                time.sleep(pause)
+                    count = int(data.get("statistics") or 0)
+                    if data.get("truncated"):
+                        status = "partial"
+                    else:
+                        status = "complete" if count else "unavailable"
+                    sync_registry.mark(
+                        key,
+                        "season_players",
+                        status,
+                        item_count=count,
+                        page_count=int(data.get("pages") or 0),
+                        metadata=data,
+                    )
+                    result = "partial" if data.get("truncated") and count else ("downloaded" if count else "unavailable")
+                    time.sleep(pause)
             except Exception as exc:
                 sync_registry.mark(key, "season_players", "error", message=str(exc))
                 if _is_quota_error(exc):
