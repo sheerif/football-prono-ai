@@ -8,6 +8,7 @@ from sqlalchemy import text
 
 from database.database import engine
 from services import import_service, lineup_service, player_service, sync_registry, xg_service
+from services.download_intelligence import annotate_resource_rows, order_download_tasks
 from services.api_football import ApiFootballClient
 from services.api_response_store import archive_response
 
@@ -554,14 +555,19 @@ def download_plan() -> dict:
         row("fixture-players", "Forme individuelle récente", "/fixtures/players", recent_player_ids, fixture_players_present),
         row("season-players", "Joueurs par saison", "/players", season_scope_keys, player_scopes_present),
     ]
+    rows = annotate_resource_rows(rows)
+    priority_order = order_download_tasks(rows)
     return {
         "generated_at": _now_iso(),
         "resources": rows,
+        "priority_order": priority_order,
+        "recommended_next": priority_order[0] if priority_order else None,
         "total": sum(item["total"] for item in rows),
         "present": sum(item["present"] for item in rows),
         "missing": sum(item["missing"] for item in rows),
         "deferred": sum(item["deferred"] for item in rows),
         "to_download": sum(item["to_download"] for item in rows),
+        "actionable_missing": sum(item["actionable_missing"] for item in rows),
     }
 
 

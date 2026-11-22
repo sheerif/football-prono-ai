@@ -726,6 +726,15 @@ def show():
             st.warning(f"Plan de téléchargement indisponible : {exc}")
         if download_plan:
             st.markdown("#### Plan calculé depuis la base")
+            recommendation = download_plan.get("recommended_next")
+            if recommendation:
+                st.info(
+                    "Prochaine ressource recommandée : "
+                    f"{recommendation['key']} · {recommendation['missing_actionable']} "
+                    f"élément(s) manquant(s) · priorité {recommendation['priority']}"
+                )
+            else:
+                st.success("Aucun téléchargement secondaire utile détecté dans l'inventaire SQL.")
             plan_columns = st.columns(4)
             plan_columns[0].metric("Ressources utiles", download_plan["total"])
             plan_columns[1].metric("Déjà en base", download_plan["present"])
@@ -739,6 +748,10 @@ def show():
                     "present": "En base",
                     "to_download": "À télécharger",
                     "deferred": "Différées",
+                    "actionable_missing": "Actionnables",
+                    "priority": "Priorité",
+                    "plan_rank": "Ordre",
+                    "decision": "Décision",
                 }
             )
             st.dataframe(
@@ -750,6 +763,10 @@ def show():
                         "En base",
                         "À télécharger",
                         "Différées",
+                        "Actionnables",
+                        "Priorité",
+                        "Ordre",
+                        "Décision",
                     ]
                 ],
                 hide_index=True,
