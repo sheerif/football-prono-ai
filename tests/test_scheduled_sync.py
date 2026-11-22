@@ -95,6 +95,15 @@ class ScheduledSyncTests(unittest.TestCase):
         def remember_mark(key, resource_type, status, **kwargs):
             marks.append((key, resource_type, status, kwargs))
 
+        def fake_sync(progress_callback):
+            progress_callback(1, 1, "phase")
+            return {
+                "quota_reached": False,
+                "api_calls": 42,
+                "xg_api_calls": 30,
+                "errors": [],
+            }
+
         with (
             patch.object(run_scheduled_sync.import_service, "init_db"),
             patch.object(run_scheduled_sync.import_service, "record_update_log"),
@@ -117,12 +126,7 @@ class ScheduledSyncTests(unittest.TestCase):
             patch.object(
                 run_scheduled_sync.full_sync_service,
                 "run_full_sync",
-                return_value={
-                    "quota_reached": False,
-                    "api_calls": 42,
-                    "xg_api_calls": 30,
-                    "errors": [],
-                },
+                side_effect=fake_sync,
             ) as sync,
         ):
             result = run_scheduled_sync.run()
