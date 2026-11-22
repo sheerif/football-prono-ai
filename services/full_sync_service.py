@@ -8,7 +8,11 @@ from sqlalchemy import text
 
 from database.database import engine
 from services import import_service, lineup_service, player_service, sync_registry, xg_service
-from services.download_intelligence import annotate_resource_rows, order_download_tasks
+from services.download_intelligence import (
+    annotate_resource_rows,
+    order_download_tasks,
+    order_season_player_scopes,
+)
 from services.api_football import ApiFootballClient
 from services.api_response_store import archive_response
 
@@ -1512,7 +1516,9 @@ def run_full_sync(progress_callback=None) -> dict:
         for fixture_id in sorted(recent_player_ids)
         if fixture_id in matches_by_id
     ]
-    scopes = _player_scopes()
+    scopes = order_season_player_scopes(
+        _player_scopes(), recent_seasons=recent_seasons
+    )
 
     total_items = max(
         1,
