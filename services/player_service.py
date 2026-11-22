@@ -10,6 +10,7 @@ from database import models
 from database.database import SessionLocal, engine
 from services.api_football import ApiFootballClient
 from services.api_response_store import archive_response
+from services import sync_registry
 
 
 client = ApiFootballClient(response_archiver=archive_response)
@@ -163,6 +164,51 @@ def _upsert_player(session, payload: dict, now: datetime.datetime):
 
 
 def sync_players(
+    league_id: int,
+    season: int,
+    team_id: int | None = None,
+    max_pages: int = 100,
+    progress_callback=None,
+) -> dict:
+    """Synchronise a league-season scope with a cross-process persistent lease."""
+    league_id = int(league_id)
+    season = int(season)
+    team_id = int(team_id) if team_id is not None else None
+    key = (
+        f"season-players:{league_id}:{season}"
+        if team_id is None
+        else f"season-players:{league_id}:{season}:team:{team_id}"
+    )
+    owner = f"season-players:{league_id}:{season}:{team_id}:{time.time_ns()}"
+    if not sync_registry.claim_download(key, owner):
+        return {
+            "profiles": 0,
+            "statistics": 0,
+            "pages": 0,
+            "total_pages": 0,
+            "truncated": False,
+            "skipped": True,
+            "reason": "claimed",
+        }
+    def renew_and_report(current, total, label):
+        if not sync_registry.renew_download_claim(key, owner):
+            raise RuntimeError(f"Lease persistante perdue pendant la synchronisation {key}")
+        if progress_callback:
+            progress_callback(current, total, label)
+
+    try:
+        return _sync_players_unleased(
+            league_id,
+            season,
+            team_id=team_id,
+            max_pages=max_pages,
+            progress_callback=renew_and_report,
+        )
+    finally:
+        sync_registry.release_download_claim(key, owner)
+
+
+def _sync_players_unleased(
     league_id: int,
     season: int,
     team_id: int | None = None,
