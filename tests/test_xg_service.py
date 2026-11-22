@@ -367,6 +367,22 @@ class XgServiceTests(unittest.TestCase):
         self.assertEqual(result["checkpoint"], "historical-xg:batch")
         self.assertEqual(result["api_calls"], 0)
 
+    def test_remote_xg_lease_unavailable_fails_closed(self):
+        rows = [{"fixture_id": 1}]
+        with (
+            patch.object(
+                full_sync_service.remote_sync_lease,
+                "claim",
+                side_effect=RuntimeError("remote unavailable"),
+            ),
+            patch.object(full_sync_service, "_sync_xg_rows") as sync_rows,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "Lease distante"):
+                full_sync_service._sync_xg_rows_with_remote_lease(
+                    rows, pause=0, retry_hours=24
+                )
+        sync_rows.assert_not_called()
+
     def test_remote_xg_lease_loss_checkpoints_after_current_fixture(self):
         client = Mock()
         client.get_fixture_statistics.return_value = {
@@ -378,6 +394,7 @@ class XgServiceTests(unittest.TestCase):
         rows = [{"fixture_id": 1}, {"fixture_id": 2}]
         with (
             patch.object(full_sync_service, "client", client),
+            patch.object(full_sync_service, "_priority_preemption_requested", return_value=False),
             patch.object(xg_service, "fixture_statistics_present", side_effect=[False, True]),
             patch.object(xg_service, "save_fixture_statistics", return_value=2),
             patch.object(full_sync_service.sync_registry, "get", return_value=None),
