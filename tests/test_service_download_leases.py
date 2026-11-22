@@ -83,7 +83,8 @@ class SeasonPlayerLeaseIntegrationTests(unittest.TestCase):
         self.assertEqual(result["statistics"], 4)
         claim.assert_called_once()
         release.assert_called_once_with(claim.call_args.args[0], claim.call_args.args[1])
-        sync.assert_called_once_with(39, 2026, team_id=None, max_pages=100, progress_callback=None)
+        sync.assert_called_once_with(39, 2026, team_id=None, max_pages=100, progress_callback=sync.call_args.kwargs["progress_callback"])
+        self.assertTrue(callable(sync.call_args.kwargs["progress_callback"]))
 
 
 if __name__ == "__main__":
