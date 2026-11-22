@@ -1,5 +1,6 @@
 import datetime
 import json
+import logging
 import math
 import os
 import time
@@ -7,7 +8,14 @@ import time
 from sqlalchemy import text
 
 from database.database import engine
-from services import import_service, lineup_service, player_service, sync_registry, xg_service
+from services import (
+    import_service,
+    lineup_service,
+    player_service,
+    remote_sync_lease,
+    sync_registry,
+    xg_service,
+)
 from services.download_intelligence import (
     annotate_resource_rows,
     order_dispatch_phases,
@@ -19,6 +27,9 @@ from services.api_response_store import archive_response
 
 
 client = ApiFootballClient(response_archiver=archive_response)
+REMOTE_XG_BATCH_KEY = "historical-xg:batch"
+REMOTE_XG_LEASE_SECONDS = 900
+REMOTE_XG_LEASE_RENEW_INTERVAL_SECONDS = 60
 
 
 def _nonnegative_float_env(name: str, default: float) -> float:
@@ -886,6 +897,7 @@ def _sync_xg_rows(
     retry_hours: int,
     progress_callback=None,
     sync_run_id: str | None = None,
+    remote_lease_lost_check=None,
 ) -> dict:
     """Synchronise une liste figée de matchs terminés, avec reprise sur quota."""
     sync_run_id = sync_run_id or xg_service.new_sync_run_id()
@@ -912,6 +924,11 @@ def _sync_xg_rows(
         if _priority_preemption_requested():
             summary["preempted"] = True
             summary["checkpoint"] = key
+            break
+        if remote_lease_lost_check and remote_lease_lost_check():
+            summary["preempted"] = True
+            summary["checkpoint"] = key
+            summary["message"] = "Lease distante xG perdue ; arrêt au checkpoint."
             break
         if xg_service.fixture_statistics_present(fixture_id):
             sync_registry.mark(
@@ -1029,6 +1046,101 @@ def _sync_xg_rows(
     return summary
 
 
+def _sync_xg_rows_with_remote_lease(
+    rows,
+    *,
+    pause: float,
+    retry_hours: int,
+    progress_callback=None,
+    sync_run_id: str | None = None,
+) -> dict:
+    """Arbitrate un lot xG entre Cloud et Actions avec une lease distante."""
+    if not rows:
+        return _sync_xg_rows(
+            rows,
+            pause=pause,
+            retry_hours=retry_hours,
+            progress_callback=progress_callback,
+            sync_run_id=sync_run_id,
+        )
+
+    owner = f"historical-xg-batch:{os.getpid()}:{time.time_ns()}"
+    try:
+        claimed = remote_sync_lease.claim(
+            REMOTE_XG_BATCH_KEY,
+            owner,
+            lease_seconds=REMOTE_XG_LEASE_SECONDS,
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            "Lease distante du rattrapage xG indisponible ; aucun téléchargement lancé."
+        ) from exc
+    if not claimed:
+        return {
+            "sync_run_id": sync_run_id or xg_service.new_sync_run_id(),
+            "total": len(rows),
+            "downloaded": 0,
+            "skipped": 0,
+            "unavailable": 0,
+            "errors": [],
+            "quota_reached": False,
+            "api_calls": 0,
+            "duplicates_avoided": 0,
+            "unavailable_deferred": 0,
+            "daily_reserve": _xg_daily_reserve(),
+            "budget_reserved": False,
+            "lease_contention": 0,
+            "preempted": True,
+            "checkpoint": REMOTE_XG_BATCH_KEY,
+            "remote_lease_contended": True,
+            "message": "Un autre environnement possède la lease distante xG.",
+        }
+
+    lease_lost = False
+    last_renewed = time.monotonic()
+
+    def progress(current: int, total: int, label: str) -> None:
+        nonlocal last_renewed, lease_lost
+        now = time.monotonic()
+        if now - last_renewed >= REMOTE_XG_LEASE_RENEW_INTERVAL_SECONDS:
+            try:
+                renewed = remote_sync_lease.renew(
+                    REMOTE_XG_BATCH_KEY,
+                    owner,
+                    lease_seconds=REMOTE_XG_LEASE_SECONDS,
+                )
+            except Exception:
+                renewed = False
+            if not renewed:
+                lease_lost = True
+            else:
+                last_renewed = now
+        if progress_callback:
+            progress_callback(current, total, label)
+
+    try:
+        result = _sync_xg_rows(
+            rows,
+            pause=pause,
+            retry_hours=retry_hours,
+            progress_callback=progress,
+            sync_run_id=sync_run_id,
+            remote_lease_lost_check=lambda: lease_lost,
+        )
+        if lease_lost:
+            result["preempted"] = True
+            result["checkpoint"] = result.get("checkpoint") or REMOTE_XG_BATCH_KEY
+            result["remote_lease_lost"] = True
+            result["message"] = "Lease distante xG perdue ; arrêt au checkpoint."
+        return result
+    finally:
+        try:
+            remote_sync_lease.release(REMOTE_XG_BATCH_KEY, owner)
+        except Exception:
+            logging.warning("Unable to release remote historical xG lease", exc_info=True)
+
+
+
 def sync_historical_xg(
     *,
     league_ids=None,
@@ -1081,7 +1193,7 @@ def sync_historical_xg(
             ),
             params,
         ).mappings().all()
-    summary = _sync_xg_rows(
+    summary = _sync_xg_rows_with_remote_lease(
         rows,
         pause=pause,
         retry_hours=retry_hours,
