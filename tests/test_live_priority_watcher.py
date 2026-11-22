@@ -149,3 +149,25 @@ def test_poll_once_can_detect_changes_without_writing_during_secondary_job(monke
     assert result["live_count"] == 1
     assert result["changed"] == 0
     assert result["signature"]
+
+
+def test_daily_quota_exhaustion_is_recognized_without_generic_backoff():
+    assert live_priority_watcher._is_daily_quota_exhausted(
+        "Quota API journalier déjà atteint : appel bloqué localement"
+    )
+    assert live_priority_watcher._is_daily_quota_exhausted(
+        "You have reached the request limit for the day"
+    )
+    assert not live_priority_watcher._is_daily_quota_exhausted(
+        "Quota API par minute atteint"
+    )
+
+
+def test_daily_quota_wait_targets_next_utc_reset():
+    now = datetime.datetime(2026, 11, 22, 23, 59, 30, tzinfo=datetime.UTC)
+    assert live_priority_watcher._seconds_until_utc_reset(now=now) == 35
+
+
+def test_daily_quota_wait_is_almost_one_day_when_early_utc():
+    now = datetime.datetime(2026, 11, 22, 0, 0, 0, tzinfo=datetime.UTC)
+    assert live_priority_watcher._seconds_until_utc_reset(now=now) == 86405
