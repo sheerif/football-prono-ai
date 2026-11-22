@@ -727,6 +727,7 @@ class ExhaustiveSyncTests(unittest.TestCase):
 
     def test_full_sync_covers_past_and_future_matches(self):
         events = []
+        progress_updates = []
         past = {
             "fixture_id": 1,
             "league_id": 61,
@@ -788,7 +789,15 @@ class ExhaustiveSyncTests(unittest.TestCase):
             patch.object(
                 full_sync_service.import_service,
                 "import_leagues_cautious",
-                side_effect=lambda _ids, seasons=None, **_kwargs: (
+                side_effect=lambda _ids, seasons=None, progress_callback=None, **_kwargs: (
+                    progress_callback(1, 2, "historical-core-test-1")
+                    if int(seasons[0]) == 2024 and progress_callback
+                    else None
+                ) or (
+                    progress_callback(2, 2, "historical-core-test-2")
+                    if int(seasons[0]) == 2024 and progress_callback
+                    else None
+                ) or (
                     events.append(
                         "recent_core" if int(seasons[0]) == 2025 else f"core_{seasons[0]}"
                     ) or {}
@@ -831,7 +840,11 @@ class ExhaustiveSyncTests(unittest.TestCase):
             patch.object(full_sync_service, "prediction_coverage", return_value={}),
             patch.object(full_sync_service.xg_service, "coverage", return_value={}),
         ):
-            result = full_sync_service.run_full_sync()
+            result = full_sync_service.run_full_sync(
+                progress_callback=lambda current, total, label: progress_updates.append(
+                    (current, label)
+                )
+            )
 
         marked_keys = [item.args[0] for item in mark.call_args_list]
         self.assertIn("fixture-detail:1", marked_keys)
@@ -856,6 +869,13 @@ class ExhaustiveSyncTests(unittest.TestCase):
         )
         self.assertLess(events.index("recent_core"), events.index("upcoming_prediction_check"))
         self.assertLess(events.index("core_2024"), events.index("historical_xg"))
+        core_callback_progress = [
+            current for current, label in progress_updates
+            if label.startswith("historical-core-test")
+        ]
+        self.assertEqual(core_callback_progress, [29, 33])
+        progress_values = [current for current, _label in progress_updates]
+        self.assertEqual(progress_values, sorted(progress_values))
         self.assertLess(events.index("fixture-lineup:2"), events.index("fixture-detail:2"))
         self.assertLess(events.index("fixture-detail:2"), events.index("fixture-prediction:2"))
         self.assertLess(events.index("upcoming_prediction_check"), events.index("historical_xg"))
