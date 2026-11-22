@@ -105,7 +105,7 @@ def test_core_import_stops_when_lease_is_lost(monkeypatch):
     monkeypatch.setattr(
         sync_registry,
         "renew_download_claim",
-        lambda *args, **kwargs: calls.append("local_renew") or True,
+        lambda *args, **kwargs: calls.append("local_renew") or False,
     )
     monkeypatch.setattr(
         sync_registry,
@@ -147,12 +147,12 @@ def test_core_import_aborts_before_api_when_progress_renewal_fails(monkeypatch):
     monkeypatch.setattr(
         sync_registry,
         "renew_download_claim",
-        lambda *args, **kwargs: calls.append("renew") or False,
+        lambda *args, **kwargs: calls.append("local_renew") or True,
     )
     monkeypatch.setattr(
         sync_registry,
         "release_download_claim",
-        lambda *args, **kwargs: calls.append("release") or True,
+        lambda *args, **kwargs: calls.append("local_release") or True,
     )
 
     def fake_import(*args, progress_callback, **kwargs):
