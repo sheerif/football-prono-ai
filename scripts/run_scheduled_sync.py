@@ -200,10 +200,12 @@ def run() -> dict:
 def main() -> int:
     try:
         result = run()
+        status = result.get("status")
+        checkpoint_required = status in {"waiting_quota", "partial"}
         backup = (
             {"status": "skipped_active_sync"}
-            if result.get("status") == "skipped"
-            else git_backup.backup_to_github(force=False)
+            if status == "skipped"
+            else git_backup.backup_to_github(force=checkpoint_required)
         )
         result["database_backup"] = backup
         print(
