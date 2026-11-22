@@ -103,3 +103,37 @@ def test_core_import_stops_when_lease_is_lost(monkeypatch):
     assert result["lease_lost"] is True
     assert result["checkpoint"] == "teams:61:2026"
     assert calls == ["renew", "release"]
+
+
+
+def test_core_import_aborts_before_api_when_progress_renewal_fails(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        import_service, "register_league_seasons", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(sync_registry, "claim_download", lambda *args, **kwargs: True)
+    monkeypatch.setattr(
+        sync_registry,
+        "renew_download_claim",
+        lambda *args, **kwargs: calls.append("renew") or False,
+    )
+    monkeypatch.setattr(
+        sync_registry,
+        "release_download_claim",
+        lambda *args, **kwargs: calls.append("release") or True,
+    )
+
+    def fake_import(*args, progress_callback, **kwargs):
+        progress_callback(1, 3, "teams")
+        raise AssertionError("API work must not continue after lease loss")
+
+    monkeypatch.setattr(
+        import_service, "_import_leagues_cautious_unleased", fake_import
+    )
+
+    result = import_service.import_leagues_cautious([61], seasons=[2026])
+
+    assert result["skipped"] is True
+    assert result["lease_lost"] is True
+    assert result["checkpoint"] == "core:61:2026"
+    assert calls == ["renew", "release"]
