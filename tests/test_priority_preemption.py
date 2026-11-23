@@ -444,3 +444,26 @@ def test_manual_import_restarts_when_checkpoint_page_is_stale(monkeypatch):
     assert saved_fixture_ids == [1001]
     assert result["preempted"] is True
     assert result["checkpoint"] == "fixtures-page:61:2026:2"
+
+def test_record_update_result_marks_deferred_current_refresh_as_partial(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(
+        import_service,
+        "record_update_log",
+        lambda **kwargs: captured.update(kwargs) or 1,
+    )
+
+    import_service.record_update_result(
+        "championnats_en_cours",
+        "2026-11-23T00:00:00",
+        {
+            "ran": True,
+            "partial": True,
+            "reason": "Certaines ligues ont été différées.",
+            "skipped_scopes": ["core:39:2026"],
+        },
+    )
+
+    assert captured["status"] == "partielle"
+    assert captured["reason"] == "Certaines ligues ont été différées."
+
