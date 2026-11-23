@@ -401,7 +401,7 @@ class ApiRequestPolicyTests(unittest.TestCase):
 
     def test_quota_ledger_error_fails_closed_before_data_endpoint(self):
         session = Mock()
-        session.get.return_value = self._status_response(
+        session.get.return_value = ApiFootballClientTests._status_response(
             current=1, limit=100, daily_remaining=99
         )
         client = ApiFootballClient(api_key="test-key", session=session)
