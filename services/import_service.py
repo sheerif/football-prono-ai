@@ -1601,6 +1601,8 @@ def _import_leagues_cautious_unleased(
     - `pause`: base seconds between API calls
     - `max_retries`: number of retries on 429 or transient errors
     """
+    from services import sync_registry
+
     seasons = seasons or _configured_season_range()
     register_league_seasons(league_ids, seasons, source="import")
     session = SessionLocal()
@@ -1616,6 +1618,20 @@ def _import_leagues_cautious_unleased(
         completed_steps = min(total_steps, completed_steps + increment)
         if progress_callback:
             progress_callback(completed_steps, total_steps, label)
+
+    def persist_checkpoint(checkpoint: str, message: str, **details):
+        sync_registry.mark(
+            f"core:{int(lid)}:{int(season)}",
+            "core_season",
+            "partial",
+            message=message,
+            metadata={
+                "checkpoint": checkpoint,
+                "league_id": int(lid),
+                "season": int(season),
+                **details,
+            },
+        )
 
     try:
         for league_index, lid in enumerate(league_ids):
@@ -1653,6 +1669,10 @@ def _import_leagues_cautious_unleased(
                     _progress(f"Ligue {lid} - {season}: déjà en base ({existing_count} matchs)", increment=3)
                     continue
 
+                persist_checkpoint(
+                    f"core:{lid}:{season}",
+                    "Reprise persistante : métadonnées de la ligue/saison.",
+                )
                 league = session.get(models.League, lid)
                 if not league or not league.name or not league.logo:
                     _sync_league_metadata(session, lid, season)
@@ -1667,7 +1687,15 @@ def _import_leagues_cautious_unleased(
                 }
                 teams_ok = team_count > 0 or skip_teams
                 last_error = None
+                persist_checkpoint(
+                    f"teams:{lid}:{season}",
+                    "Reprise persistante : téléchargement des équipes.",
+                )
                 while not teams_ok and tries < max_retries:
+                    persist_checkpoint(
+                        f"teams:{lid}:{season}",
+                        "Reprise persistante : téléchargement des équipes.",
+                    )
                     try:
                         resp = client.get_teams(lid, season)
                         if (api_error := _api_error(resp)):
@@ -1700,6 +1728,10 @@ def _import_leagues_cautious_unleased(
                         f"après {max_retries} tentatives.{detail}"
                     )
                 _progress(f"Ligue {lid} - {season}: équipes traitées", increment=1)
+                persist_checkpoint(
+                    f"fixtures:{lid}:{season}",
+                    "Reprise persistante : téléchargement des matchs.",
+                )
 
                 time.sleep(pause)
 
@@ -1713,7 +1745,20 @@ def _import_leagues_cautious_unleased(
                     existing_count > 0 and not force_refresh_scope
                 )
                 last_error = None
+                initial_fixture_checkpoint = (
+                    f"fixtures-page:{lid}:{season}:{resume_page}"
+                    if resume_scope and resume_phase == "fixtures-page"
+                    else f"fixtures:{lid}:{season}"
+                )
+                persist_checkpoint(
+                    initial_fixture_checkpoint,
+                    "Reprise persistante : téléchargement des matchs.",
+                )
                 while not fixtures_ok and tries < max_retries:
+                    persist_checkpoint(
+                        initial_fixture_checkpoint,
+                        "Reprise persistante : téléchargement des matchs.",
+                    )
                     try:
                         resuming_fixture_page = bool(
                             resume_scope
@@ -1768,6 +1813,10 @@ def _import_leagues_cautious_unleased(
                                     raw_current_page,
                                     raw_total_pages,
                                 )
+                                persist_checkpoint(
+                                    f"fixtures:{lid}:{season}",
+                                    "Checkpoint pagination obsolète : reprise depuis la page 1.",
+                                )
                                 resp = client.get_fixtures(lid, season)
                                 if (api_error := _api_error(resp)):
                                     raise RuntimeError(api_error)
@@ -1789,6 +1838,17 @@ def _import_leagues_cautious_unleased(
                                 _save_match(session, item, lid, season)
                                 _save_fixture_api_detail(session, item, lid, season)
                             session.commit()
+                            next_checkpoint = (
+                                f"standings:{lid}:{season}"
+                                if page >= total_pages
+                                else f"fixtures-page:{lid}:{season}:{page + 1}"
+                            )
+                            persist_checkpoint(
+                                next_checkpoint,
+                                f"Page fixtures {page}/{total_pages} validée ; reprise au checkpoint suivant.",
+                                completed_page=int(page),
+                                total_pages=int(total_pages),
+                            )
                             if page >= total_pages:
                                 break
                             if priority_preemption_check and priority_preemption_check():
@@ -1836,7 +1896,15 @@ def _import_leagues_cautious_unleased(
                     standing_count > 0 and not force_refresh_scope
                 )
                 last_error = None
+                persist_checkpoint(
+                    f"standings:{lid}:{season}",
+                    "Reprise persistante : téléchargement du classement.",
+                )
                 while not standings_ok and tries < max_retries:
+                    persist_checkpoint(
+                        f"standings:{lid}:{season}",
+                        "Reprise persistante : téléchargement du classement.",
+                    )
                     try:
                         resp = client.get_standings(lid, season)
                         if (api_error := _api_error(resp)):
@@ -2062,9 +2130,12 @@ def import_leagues_cautious(
                     )
 
             try:
+                previous_state = sync_registry.get(key) or {}
+                previous_metadata = dict(previous_state.get("metadata") or {})
                 sync_registry.mark(
                     key, "core_season", "running",
                     message="Leases persistantes locale et distante acquises",
+                    metadata=previous_metadata,
                 )
                 result = _import_leagues_cautious_unleased(
                     [league_id],
@@ -2113,8 +2184,12 @@ def import_leagues_cautious(
                 }
             except Exception as exc:
                 if not lease_lost:
+                    persisted_state = sync_registry.get(key) or {}
+                    persisted_metadata = dict(persisted_state.get("metadata") or {})
                     sync_registry.mark(
-                        key, "core_season", "error", message=str(exc)
+                        key, "core_season", "error",
+                        message=str(exc),
+                        metadata=persisted_metadata,
                     )
                 raise
             finally:

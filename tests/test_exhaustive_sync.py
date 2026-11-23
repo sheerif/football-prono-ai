@@ -1019,3 +1019,41 @@ class ExhaustiveSyncTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+
+def test_persisted_core_checkpoint_is_reusable_after_error_status():
+    state = {
+        "status": "error",
+        "metadata": {"checkpoint": "fixtures-page:61:2026:4"},
+    }
+    with patch.object(sync_registry, "get", return_value=state):
+        assert full_sync_service._persisted_core_resume_checkpoint(61, 2026) == (
+            "fixtures-page:61:2026:4"
+        )
+
+
+def test_resumable_core_scopes_include_checkpointed_old_seasons():
+    state = {
+        "status": "partial",
+        "metadata": {"checkpoint": "standings:39:2018"},
+    }
+    with patch.object(
+        sync_registry,
+        "get",
+        side_effect=lambda key: state if key == "core:39:2018" else None,
+    ):
+        assert full_sync_service._resumable_core_scopes([61, 39], [2018, 2026]) == {
+            (39, 2018)
+        }
+
+
+def test_persisted_core_checkpoint_rejects_invalid_scope_and_page():
+    invalid = [
+        {"status": "error", "metadata": {"checkpoint": "fixtures-page:61:2026:0"}},
+        {"status": "error", "metadata": {"checkpoint": "fixtures-page:62:2026:3"}},
+        {"status": "complete", "metadata": {"checkpoint": "fixtures-page:61:2026:3"}},
+    ]
+    for state in invalid:
+        with patch.object(sync_registry, "get", return_value=state):
+            assert full_sync_service._persisted_core_resume_checkpoint(61, 2026) is None
