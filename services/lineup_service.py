@@ -16,6 +16,7 @@ from services import remote_sync_lease, sync_registry
 
 client = ApiFootballClient(response_archiver=archive_response)
 REMOTE_LINEUP_LEASE_SECONDS = 900
+REMOTE_FIXTURE_PLAYER_LEASE_SECONDS = 900
 _schema_ready = False
 
 FORMATION_PLANS = {
@@ -379,9 +380,36 @@ def sync_fixture_players(fixture_id: int, force: bool = False) -> dict:
 
     key = f"fixture-players:{fixture_id}"
     owner = f"fixture-players:{fixture_id}:{time.time_ns()}"
-    if not sync_registry.claim_download(key, owner):
-        return {"players": 0, "cached": False, "available": False, "skipped": True, "reason": "claimed"}
+    local_claimed = False
+    remote_claimed = False
+
     try:
+        local_claimed = sync_registry.claim_download(key, owner)
+        if not local_claimed:
+            return {
+                "players": 0,
+                "cached": False,
+                "available": False,
+                "skipped": True,
+                "reason": "local_claimed",
+            }
+        try:
+            remote_claimed = remote_sync_lease.claim(
+                key, owner, lease_seconds=REMOTE_FIXTURE_PLAYER_LEASE_SECONDS
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                "Lease distante des joueurs de match indisponible ; aucun téléchargement lancé."
+            ) from exc
+        if not remote_claimed:
+            return {
+                "players": 0,
+                "cached": False,
+                "available": False,
+                "skipped": True,
+                "reason": "remote_claimed",
+            }
+
         try:
             response = client.get_fixture_players(fixture_id)
             error = _api_error(response)
@@ -412,7 +440,15 @@ def sync_fixture_players(fixture_id: int, force: bool = False) -> dict:
                 session.commit()
             raise
     finally:
-        sync_registry.release_download_claim(key, owner)
+        if remote_claimed:
+            try:
+                remote_sync_lease.release(key, owner)
+            except Exception:
+                logging.warning(
+                    "Unable to release remote fixture-player lease %s", key, exc_info=True
+                )
+        if local_claimed:
+            sync_registry.release_download_claim(key, owner)
 
 
 def _recent_fixture_ids(team_id: int, before_date, limit: int = 5) -> list[int]:
@@ -458,6 +494,7 @@ def sync_match_intelligence(
         "season_players_skipped": [],
         "recent_fixtures": 0,
         "recent_players": 0,
+        "recent_players_skipped": [],
         "errors": [],
     }
     league_id = _fixture_league_id(int(fixture_id))
@@ -531,20 +568,43 @@ def sync_match_intelligence(
     for fixture_index, recent_fixture_id in enumerate(fixture_ids, start=1):
         try:
             saved = sync_fixture_players(recent_fixture_id)
-            result["recent_players"] += int(saved.get("players") or 0)
+            if saved.get("skipped"):
+                result["recent_players_skipped"].append(
+                    {
+                        "fixture_id": recent_fixture_id,
+                        "reason": saved.get("reason", "claimed"),
+                    }
+                )
+            else:
+                result["recent_players"] += int(saved.get("players") or 0)
         except Exception as exc:
             result["errors"].append(f"Match {recent_fixture_id} : {exc}")
+        recent_label = (
+            f"Performance récente {fixture_index}/{len(fixture_ids)} différée (lease détenue)"
+            if any(
+                item["fixture_id"] == recent_fixture_id
+                for item in result["recent_players_skipped"]
+            )
+            else f"Performance récente {fixture_index}/{len(fixture_ids)} enregistrée"
+        )
+        if any(error.startswith(f"Match {recent_fixture_id} :") for error in result["errors"]):
+            recent_label = f"Performance récente {fixture_index}/{len(fixture_ids)} en erreur"
         progress(
             45 + int((fixture_index / total_recent) * 55),
             100,
-            f"Performance récente {fixture_index}/{len(fixture_ids)} enregistrée",
+            recent_label,
         )
         time.sleep(0.35)
-    if result["season_players_skipped"] or result["lineups_skipped"]:
+    if (
+        result["season_players_skipped"]
+        or result["lineups_skipped"]
+        or result["recent_players_skipped"]
+        or result["errors"]
+    ):
         progress(
             100,
             100,
-            "Synchronisation partielle : effectifs saison ou compositions différés",
+            "Synchronisation partielle : téléchargements différés ou en erreur",
         )
     else:
         progress(100, 100, "Compositions et forme des joueurs synchronisées")
