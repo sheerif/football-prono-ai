@@ -285,3 +285,24 @@ def test_remote_block_covers_cost_larger_than_configured_block():
             os.environ.pop("API_QUOTA_REMOTE_BLOCK_SIZE", None)
         else:
             os.environ["API_QUOTA_REMOTE_BLOCK_SIZE"] = old
+
+def test_remote_allocation_denies_when_reserved_amount_is_below_cost():
+    import os
+    old = os.environ.get("API_QUOTA_REMOTE_BLOCK_SIZE")
+    os.environ["API_QUOTA_REMOTE_BLOCK_SIZE"] = "10"
+    try:
+        test = RemoteQuotaTests()
+        test.setup_method()
+        try:
+            result = api_quota_remote.reserve_block(
+                _snapshot(20, 100), "historical_backfill", cost=6
+            )
+            assert result["allowed"] is False
+            assert result["reason"] == "remote_shared_quota_exhausted"
+        finally:
+            test.teardown_method()
+    finally:
+        if old is None:
+            os.environ.pop("API_QUOTA_REMOTE_BLOCK_SIZE", None)
+        else:
+            os.environ["API_QUOTA_REMOTE_BLOCK_SIZE"] = old
