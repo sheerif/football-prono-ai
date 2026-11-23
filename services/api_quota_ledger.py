@@ -238,6 +238,7 @@ def reserve_call(
                         snapshot,
                         priority,
                         spent_allocation_ids=pending_ids,
+                        cost=cost,
                         now=current,
                     )
                     if remote_block.get("spent_reported"):
