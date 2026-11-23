@@ -453,7 +453,13 @@ def _render_sync(
                     team_id=team_id,
                     progress_callback=update_progress,
                 )
-                if result["profiles"] == 0:
+                if result.get("skipped"):
+                    st.warning(
+                        "Synchronisation différée : une autre instance détient la lease "
+                        "des joueurs de cette ligue/saison. Aucun téléchargement n'a été lancé. "
+                        "Réessayez après la fin de l'autre synchronisation."
+                    )
+                elif result["profiles"] == 0:
                     if fallback_season is not None:
                         st.session_state[season_key] = int(fallback_season)
                         st.session_state["players_sync_notice"] = (
