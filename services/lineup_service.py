@@ -453,7 +453,9 @@ def sync_match_intelligence(
     _ensure_schema()
     result = {
         "lineups": {"available": False, "teams": 0},
+        "lineups_skipped": False,
         "season_players": 0,
+        "season_players_skipped": [],
         "recent_fixtures": 0,
         "recent_players": 0,
         "errors": [],
@@ -467,9 +469,15 @@ def sync_match_intelligence(
     progress(0, 100, "Préparation des compositions et performances")
     try:
         result["lineups"] = sync_lineups(int(fixture_id))
+        result["lineups_skipped"] = bool(result["lineups"].get("skipped"))
     except Exception as exc:
         result["errors"].append(f"Compositions : {exc}")
-    progress(15, 100, "Composition du match vérifiée")
+    lineup_label = (
+        "Composition du match différée (lease détenue)"
+        if result["lineups_skipped"]
+        else "Composition du match vérifiée"
+    )
+    progress(15, 100, lineup_label)
 
     for team_index, team_id in enumerate((int(home_team_id), int(away_team_id))):
         team_start = 15 + team_index * 15
@@ -496,10 +504,23 @@ def sync_match_intelligence(
                         label,
                     ),
                 )
-                result["season_players"] += int(synced.get("profiles") or 0)
+                if synced.get("skipped"):
+                    result["season_players_skipped"].append(
+                        {"team_id": team_id, "reason": synced.get("reason", "claimed")}
+                    )
+                else:
+                    result["season_players"] += int(synced.get("profiles") or 0)
             except Exception as exc:
                 result["errors"].append(f"Effectif {team_id} : {exc}")
-        progress(team_start + 15, 100, f"Effectif de l’équipe {team_id} vérifié")
+        team_skipped = any(
+            item["team_id"] == team_id for item in result["season_players_skipped"]
+        )
+        team_label = (
+            f"Effectif de l’équipe {team_id} différé (lease détenue)"
+            if team_skipped
+            else f"Effectif de l’équipe {team_id} vérifié"
+        )
+        progress(team_start + 15, 100, team_label)
 
     fixture_ids = []
     for team_id in (int(home_team_id), int(away_team_id)):
@@ -519,7 +540,14 @@ def sync_match_intelligence(
             f"Performance récente {fixture_index}/{len(fixture_ids)} enregistrée",
         )
         time.sleep(0.35)
-    progress(100, 100, "Compositions et forme des joueurs synchronisées")
+    if result["season_players_skipped"] or result["lineups_skipped"]:
+        progress(
+            100,
+            100,
+            "Synchronisation partielle : effectifs saison ou compositions différés",
+        )
+    else:
+        progress(100, 100, "Compositions et forme des joueurs synchronisées")
     return result
 
 
