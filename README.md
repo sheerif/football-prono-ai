@@ -97,11 +97,22 @@ La limite du fournisseur reste incontournable ; lorsqu'elle est atteinte, la
 progression est conservée jusqu'à minuit UTC.
 Tous les clients API partagent aussi un coupe-circuit en mémoire : dès qu'une
 réponse indique zéro requête restante ou une limite journalière atteinte, les
-appels suivants sont bloqués localement jusqu'à minuit UTC. Un verrou commun
-évite que plusieurs tâches concurrentes dépassent la limite en même temps.
+appels suivants sont bloqués localement jusqu'à minuit UTC. Avant chaque
+requête de données non mise en cache, un ledger SQLite UTC réserve atomiquement
+un token via `BEGIN IMMEDIATE`. Les processus qui utilisent le même fichier
+SQLite ne peuvent donc pas dépenser le même token ; les réservations réseau
+échouées sont conservées de façon prudente, et les snapshots quota plus récents
+ne réaugmentent pas le budget du jour. La réserve d'urgence reste protégée pour
+les appels secondaires ; si le quota est inconnu, seuls les appels critiques
+peuvent utiliser un petit budget configurable.
+Ce ledger ne coordonne pas encore les fichiers SQLite séparés de Streamlit Cloud
+et GitHub Actions : les leases distantes continuent de sérialiser les
+synchronisations exhaustives, mais les appels live indépendants entre ces deux
+environnements peuvent encore se concurrencer. Une allocation distante globale
+de quota reste une amélioration à venir.
 Les réponses identiques demandées simultanément ou dans les 60 secondes sont
-également partagées entre tous les clients sans nouvel appel réseau. Ce délai
-peut être réglé avec `API_FOOTBALL_REQUEST_CACHE_SECONDS`.
+également partagées entre tous les clients du même processus sans nouvel appel
+réseau. Ce délai peut être réglé avec `API_FOOTBALL_REQUEST_CACHE_SECONDS`.
 
 L'audit endpoint par endpoint et les exceptions autorisées sont documentés dans
 [`docs/api-request-audit.md`](docs/api-request-audit.md).
