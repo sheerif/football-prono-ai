@@ -342,7 +342,7 @@ def test_current_refresh_renews_and_releases_both_scope_leases(monkeypatch):
     result = import_service.refresh_current_competitions_on_connection()
 
     assert result["refreshed"] == [{"league_id": 61, "season": 2026}]
-    assert result["partial"] is not True
+    assert not result.get("partial", False)
     assert [call[0] for call in calls].count("local_claim") == 1
     assert [call[0] for call in calls].count("remote_claim") == 1
     assert [call[0] for call in calls].count("local_renew") == 1
