@@ -437,3 +437,40 @@ if __name__ == "__main__":
         self.assertEqual(job["details"]["current"]["skipped_scopes"], ["core:39:2026"])
         mark_connection.assert_not_called()
 
+    def test_startup_history_skips_recent_cached_current_season(self):
+        captured = {}
+
+        def refresh_history(*, progress_callback, skip_force_refresh_seasons=None, priority_preemption_check=None):
+            captured["skipped"] = skip_force_refresh_seasons
+            return {"ran": False, "reason": "Test"}
+
+        with (
+            patch.object(background_jobs, "_jobs", {}),
+            patch.object(background_jobs, "_startup_started", False),
+            patch.object(background_jobs.threading, "Thread", _ImmediateThread),
+            patch.object(
+                background_jobs,
+                "api_quota_status",
+                return_value={"verified": True, "remaining": 10, "current": 90, "limit": 100},
+            ),
+            patch.object(background_jobs.import_service, "init_db"),
+            patch.object(
+                background_jobs.import_service,
+                "refresh_current_competitions_on_connection",
+                return_value={
+                    "ran": True,
+                    "cached_scopes": [{"league_id": 61, "season": 2026}],
+                    "refreshed": [],
+                },
+            ),
+            patch.object(
+                background_jobs.import_service,
+                "auto_refresh_if_due",
+                side_effect=refresh_history,
+            ),
+            patch.object(background_jobs.import_service, "record_update_result"),
+        ):
+            background_jobs.start_startup_updates_once()
+
+        self.assertEqual(captured["skipped"], {2026})
+
