@@ -340,7 +340,18 @@ if __name__ == "__main__":
 
 
 class ApiRequestPolicyTests(unittest.TestCase):
+    def setUp(self):
+        api_football._daily_blocked_until = None
+        api_football._response_cache.clear()
+        api_football.cache_metrics_snapshot(reset=True)
+
+    def tearDown(self):
+        api_football._daily_blocked_until = None
+        api_football._response_cache.clear()
+        api_football.cache_metrics_snapshot(reset=True)
+
     def test_live_and_backfill_calls_are_classified_by_priority(self):
+
         self.assertEqual(api_football._request_priority("/fixtures", {"live": "all"}), "live")
         self.assertEqual(api_football._request_priority("/players", {"season": 2024}), "player_stats")
         self.assertEqual(api_football._request_priority("/fixtures", {"league": 1, "season": 2024}), "current_fixtures")
@@ -371,7 +382,7 @@ class ApiRequestPolicyTests(unittest.TestCase):
 
     def test_atomic_quota_reservation_blocks_before_data_endpoint(self):
         session = Mock()
-        session.get.return_value = self._status_response(
+        session.get.return_value = ApiFootballClientTests._status_response(
             current=1, limit=100, daily_remaining=99
         )
         client = ApiFootballClient(api_key="test-key", session=session)
