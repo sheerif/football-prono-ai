@@ -198,7 +198,6 @@ def reserve_call(
             }
         else:
             remote_shared = False
-            remote_reason = ""
             allocation_row = None
             if remote_enabled:
                 allocation_row = connection.execute(
