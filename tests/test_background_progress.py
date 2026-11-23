@@ -393,3 +393,47 @@ class BackgroundProgressTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+    def test_startup_job_reports_partial_when_current_refresh_skips_scopes(self):
+        current_result = {
+            "ran": True,
+            "partial": True,
+            "refreshed": [{"league_id": 61, "season": 2026}],
+            "skipped_scopes": ["core:39:2026"],
+            "reason": "Certaines ligues ont été différées.",
+        }
+        with (
+            patch.object(background_jobs, "_jobs", {}),
+            patch.object(background_jobs, "_startup_started", False),
+            patch.object(background_jobs.threading, "Thread", _ImmediateThread),
+            patch.object(
+                background_jobs,
+                "api_quota_status",
+                return_value={"verified": True, "remaining": 10, "current": 90, "limit": 100},
+            ),
+            patch.object(background_jobs.import_service, "init_db"),
+            patch.object(
+                background_jobs.import_service,
+                "refresh_current_competitions_on_connection",
+                return_value=current_result,
+            ),
+            patch.object(
+                background_jobs.import_service,
+                "auto_refresh_if_due",
+                return_value={"ran": False, "reason": "Rien à mettre à jour"},
+            ),
+            patch.object(background_jobs.import_service, "record_update_result"),
+            patch.object(
+                background_jobs.import_service,
+                "mark_connection_current_refreshed",
+            ) as mark_connection,
+        ):
+            job_id = background_jobs.start_startup_updates_once(connection_log_id=42)
+            job = next(job for job in background_jobs.list_jobs() if job["id"] == job_id)
+
+        self.assertEqual(job["status"], "partial")
+        self.assertIn("scopes différés", job["message"])
+        self.assertTrue(job["details"]["partial"])
+        self.assertEqual(job["details"]["current"]["skipped_scopes"], ["core:39:2026"])
+        mark_connection.assert_not_called()
+
