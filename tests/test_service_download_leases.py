@@ -34,7 +34,11 @@ class LineupLeaseIntegrationTests(unittest.TestCase):
 
         self.assertTrue(result["skipped"])
         self.assertEqual(result["reason"], "remote_claimed")
-        remote_claim.assert_called_once_with("fixture-lineup:123", local_claim.call_args.args[1], lease_seconds=900)
+        remote_claim.assert_called_once_with(
+            "fixture-lineup:123",
+            local_claim.call_args.args[1],
+            lease_seconds=900,
+        )
         remote_release.assert_not_called()
         local_release.assert_called_once_with("fixture-lineup:123", local_claim.call_args.args[1])
         fetch.assert_not_called()
@@ -79,7 +83,11 @@ class LineupLeaseIntegrationTests(unittest.TestCase):
         self.assertFalse(result.get("skipped", False))
         self.assertFalse(result["available"])
         claim.assert_called_once_with("fixture-lineup:123", claim.call_args.args[1])
-        remote_claim.assert_called_once_with("fixture-lineup:123", claim.call_args.args[1], lease_seconds=900)
+        remote_claim.assert_called_once_with(
+            "fixture-lineup:123",
+            claim.call_args.args[1],
+            lease_seconds=900,
+        )
         remote_release.assert_called_once_with("fixture-lineup:123", claim.call_args.args[1])
         release.assert_called_once_with("fixture-lineup:123", claim.call_args.args[1])
 
