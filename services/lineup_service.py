@@ -1,5 +1,6 @@
 import datetime
 import json
+import logging
 import time
 from collections import defaultdict
 
@@ -10,10 +11,11 @@ from database import models
 from database.database import SessionLocal, engine
 from services.api_football import ApiFootballClient
 from services.api_response_store import archive_response
-from services import sync_registry
+from services import remote_sync_lease, sync_registry
 
 
 client = ApiFootballClient(response_archiver=archive_response)
+REMOTE_LINEUP_LEASE_SECONDS = 900
 _schema_ready = False
 
 FORMATION_PLANS = {
@@ -249,7 +251,23 @@ def sync_lineups(fixture_id: int) -> dict:
     owner = f"lineups:{fixture_id}:{time.time_ns()}"
     if not sync_registry.claim_download(key, owner):
         return {"teams": 0, "available": False, "skipped": True, "reason": "claimed"}
+    remote_claimed = False
     try:
+        try:
+            remote_claimed = remote_sync_lease.claim(
+                key, owner, lease_seconds=REMOTE_LINEUP_LEASE_SECONDS
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                "Lease distante des compositions indisponible ; aucun téléchargement lancé."
+            ) from exc
+        if not remote_claimed:
+            return {
+                "teams": 0,
+                "available": False,
+                "skipped": True,
+                "reason": "remote_claimed",
+            }
         response = client.get_fixture_lineups(fixture_id)
         error = _api_error(response)
         if error:
@@ -259,6 +277,11 @@ def sync_lineups(fixture_id: int) -> dict:
             count = _save_lineups(session, fixture_id, items)
         return {"teams": count, "available": count > 0}
     finally:
+        if remote_claimed:
+            try:
+                remote_sync_lease.release(key, owner)
+            except Exception:
+                logging.warning("Unable to release remote fixture-lineup lease %s", key, exc_info=True)
         sync_registry.release_download_claim(key, owner)
 
 
