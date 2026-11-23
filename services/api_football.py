@@ -22,6 +22,8 @@ RETRY_STATUS_CODES = (500, 502, 503, 504)
 _request_lock = threading.RLock()
 _daily_blocked_until: datetime.datetime | None = None
 _response_cache: dict[tuple, tuple[float, dict]] = {}
+CACHE_METRICS_SCHEMA_VERSION = 2
+
 _cache_metrics = {
     "cache_hits": 0,
     "cache_misses": 0,
@@ -42,7 +44,26 @@ _cache_metrics = {
 def cache_metrics_snapshot(*, reset: bool = False) -> dict:
     """Expose process-local cache/quota savings without request payloads."""
     with _request_lock:
-        snapshot = {**_cache_metrics, "cache_entries": len(_response_cache)}
+        snapshot = {
+            **{
+                "cache_hits": 0,
+                "cache_misses": 0,
+                "requests_avoided": 0,
+                "api_data_requests": 0,
+                "quota_status_checks": 0,
+                "quota_policy_blocks": 0,
+                "quota_atomic_reservations": 0,
+                "quota_atomic_blocks": 0,
+                "quota_ledger_errors": 0,
+                "quota_remote_shared_tokens": 0,
+                "quota_remote_block_denials": 0,
+                "quota_remote_fallbacks": 0,
+                "cache_evictions": 0,
+            },
+            **_cache_metrics,
+            "cache_entries": len(_response_cache),
+            "schema_version": CACHE_METRICS_SCHEMA_VERSION,
+        }
         if reset:
             for key in _cache_metrics:
                 _cache_metrics[key] = 0
