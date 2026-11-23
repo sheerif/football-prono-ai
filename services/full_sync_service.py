@@ -1228,6 +1228,43 @@ def sync_historical_xg(
     return summary
 
 
+def _persisted_core_resume_checkpoint(league_id, season):
+    """Return a validated checkpoint even after a quota/error or runner interruption."""
+    state = sync_registry.get(f"core:{int(league_id)}:{int(season)}")
+    if not state or state.get("status") not in {"partial", "error", "running"}:
+        return None
+    checkpoint = (state.get("metadata") or {}).get("checkpoint")
+    parts = str(checkpoint or "").split(":")
+    if (
+        len(parts) < 3
+        or parts[0] not in {"core", "teams", "fixtures", "fixtures-page", "standings"}
+        or parts[1] != str(int(league_id))
+        or parts[2] != str(int(season))
+    ):
+        return None
+    if parts[0] == "fixtures-page":
+        if len(parts) != 4:
+            return None
+        try:
+            if int(parts[3]) < 1:
+                return None
+        except (TypeError, ValueError):
+            return None
+    elif len(parts) != 3:
+        return None
+    return checkpoint
+
+
+def _resumable_core_scopes(league_ids, seasons):
+    """Find persisted interrupted core scopes, including older seasons outside refresh windows."""
+    return {
+        (int(league_id), int(season))
+        for league_id in league_ids
+        for season in seasons
+        if _persisted_core_resume_checkpoint(league_id, season)
+    }
+
+
 def run_full_sync(progress_callback=None) -> dict:
     """Synchronise exhaustivement les données exploitées par l'application.
 
@@ -1301,12 +1338,12 @@ def run_full_sync(progress_callback=None) -> dict:
         if result in summary:
             summary[result] += 1
 
-    def stop_for_quota(key: str, exc: Exception) -> dict:
+    def stop_for_quota(key: str, exc: Exception, *, checkpoint=None) -> dict:
         summary["errors"].append(f"{key}: {exc}")
         summary["quota_reached"] = True
         if "quota journalier protégé" in str(exc).casefold():
             summary["budget_reserved"] = True
-        summary["checkpoint"] = key
+        summary["checkpoint"] = checkpoint or key
         return finalize()
 
     def stop_for_priority(key: str) -> dict:
@@ -1331,8 +1368,11 @@ def run_full_sync(progress_callback=None) -> dict:
             f"core:{int(league_id)}:{int(season)}", core_refresh_hours
         )
     }
+    resumable_core_scopes = _resumable_core_scopes(
+        config["league_ids"], seasons
+    )
     priority_core_scopes = sorted(
-        (missing_core | recent_due)
+        (missing_core | recent_due | resumable_core_scopes)
         & {
             (int(league_id), int(season))
             for league_id in config["league_ids"]
@@ -1341,32 +1381,6 @@ def run_full_sync(progress_callback=None) -> dict:
         key=lambda scope: (-scope[1], scope[0]),
     )
     priority_core_keys = {f"core:{league_id}:{season}" for league_id, season in priority_core_scopes}
-
-    def persisted_core_resume_checkpoint(league_id, season):
-        key = f"core:{league_id}:{season}"
-        previous_core_state = sync_registry.get(key)
-        if not previous_core_state or previous_core_state.get("status") != "partial":
-            return None
-        checkpoint = (previous_core_state.get("metadata") or {}).get("checkpoint")
-        parts = str(checkpoint or "").split(":")
-        if (
-            len(parts) < 3
-            or parts[0] not in {"core", "teams", "fixtures", "fixtures-page", "standings"}
-            or parts[1] != str(league_id)
-            or parts[2] != str(season)
-        ):
-            return None
-        if parts[0] == "fixtures-page":
-            if len(parts) != 4:
-                return None
-            try:
-                if int(parts[3]) < 1:
-                    return None
-            except (TypeError, ValueError):
-                return None
-        elif len(parts) != 3:
-            return None
-        return checkpoint
 
     # Refresh the latest seasons first so newly scheduled fixtures are known
     # before any historical backfill can consume the API quota.
@@ -1380,7 +1394,7 @@ def run_full_sync(progress_callback=None) -> dict:
         ):
             return stop_for_quota(key, RuntimeError(_reserve_message()))
         try:
-            resume_checkpoint = persisted_core_resume_checkpoint(league_id, season)
+            resume_checkpoint = _persisted_core_resume_checkpoint(league_id, season)
             import_result = import_service.import_leagues_cautious(
                 [league_id],
                 seasons=[season],
@@ -1404,9 +1418,19 @@ def run_full_sync(progress_callback=None) -> dict:
                 summary["downloaded"] += 1
                 core_scope_completed += 1
         except Exception as exc:
-            sync_registry.mark(key, "core_season", "error", message=str(exc))
-            if _is_quota_error(exc):
-                return stop_for_quota(key, exc)
+            persisted_state = sync_registry.get(key) or {}
+            persisted_metadata = dict(persisted_state.get("metadata") or {})
+            checkpoint = persisted_metadata.get("checkpoint")
+            quota_error = _is_quota_error(exc)
+            sync_registry.mark(
+                key,
+                "core_season",
+                "partial" if quota_error and checkpoint else "error",
+                message=str(exc),
+                metadata=persisted_metadata,
+            )
+            if quota_error:
+                return stop_for_quota(key, exc, checkpoint=checkpoint or key)
             summary["errors"].append(f"{key}: {exc}")
         progress(
             int(index / max(1, len(priority_core_scopes)) * 8),
@@ -1689,7 +1713,7 @@ def run_full_sync(progress_callback=None) -> dict:
         )
         missing_core = set(_missing_core_scopes(config["league_ids"], seasons))
         core_scopes = sorted(
-            (missing_core | recent_due) - priority_core_keys,
+            (missing_core | recent_due | resumable_core_scopes) - priority_core_keys,
             key=lambda scope: (-scope[1], scope[0]),
         )
         for index, (league_id, season) in enumerate(core_scopes, start=1):
@@ -1736,9 +1760,19 @@ def run_full_sync(progress_callback=None) -> dict:
                     summary["downloaded"] += 1
                     core_scope_completed += 1
             except Exception as exc:
-                sync_registry.mark(key, "core_season", "error", message=str(exc))
-                if _is_quota_error(exc):
-                    return stop_for_quota(key, exc)
+                persisted_state = sync_registry.get(key) or {}
+                persisted_metadata = dict(persisted_state.get("metadata") or {})
+                checkpoint = persisted_metadata.get("checkpoint")
+                quota_error = _is_quota_error(exc)
+                sync_registry.mark(
+                    key,
+                    "core_season",
+                    "partial" if quota_error and checkpoint else "error",
+                    message=str(exc),
+                    metadata=persisted_metadata,
+                )
+                if quota_error:
+                    return stop_for_quota(key, exc, checkpoint=checkpoint or key)
                 summary["errors"].append(f"{key}: {exc}")
             progress(
                 phase_start + int(

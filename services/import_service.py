@@ -1737,9 +1737,13 @@ def _import_leagues_cautious_unleased(
                     )
                 _progress(f"Ligue {lid} - {season}: équipes traitées", increment=1)
                 fixtures_checkpoint = (
-                    f"standings:{lid}:{season}"
-                    if skip_fixtures
-                    else f"fixtures:{lid}:{season}"
+                    initial_scope_checkpoint
+                    if resume_scope and resume_phase == "fixtures-page"
+                    else (
+                        f"standings:{lid}:{season}"
+                        if skip_fixtures
+                        else f"fixtures:{lid}:{season}"
+                    )
                 )
                 persist_checkpoint(
                     fixtures_checkpoint,
