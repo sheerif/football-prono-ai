@@ -1524,7 +1524,7 @@ def start_startup_updates_once(connection_log_id: int | None = None) -> str | No
                     details={**details, "background": True},
                 )
                 return
-            if current_result.get("ran") and connection_log_id:
+            if current_result.get("ran") and not current_result.get("partial") and connection_log_id:
                 import_service.mark_connection_current_refreshed(connection_log_id)
 
             _progress(job_id, 50, 100, "Synchronisation historique si nécessaire...")
@@ -1572,17 +1572,26 @@ def start_startup_updates_once(connection_log_id: int | None = None) -> str | No
                 )
                 return
 
-            _progress(job_id, 100, 100, "Mises à jour de démarrage terminées")
+            overall_partial = bool(
+                current_result.get("partial") or auto_result.get("partial")
+            )
+            final_message = (
+                "Mises à jour de démarrage terminées avec des scopes différés"
+                if overall_partial
+                else "Mises à jour de démarrage terminées"
+            )
+            _progress(job_id, 100, 100, final_message)
             _set_job(
                 job_id,
-                status="done",
+                status="partial" if overall_partial else "done",
                 progress=1.0,
-                message="Mises à jour de démarrage terminées",
+                message=final_message,
                 finished_at=_now(),
                 details={
                     "started_at": started_at,
                     "current": current_result,
                     "auto": auto_result,
+                    "partial": overall_partial,
                 },
             )
         except Exception as exc:
