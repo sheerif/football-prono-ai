@@ -1688,6 +1688,7 @@ def _import_leagues_cautious_unleased(
                 skip_teams = resume_scope and resume_phase in {
                     "fixtures", "fixtures-page", "standings"
                 }
+                skip_fixtures = resume_scope and resume_phase == "standings"
                 teams_ok = team_count > 0 or skip_teams
                 last_error = None
                 teams_checkpoint = (
@@ -1741,7 +1742,7 @@ def _import_leagues_cautious_unleased(
                     if resume_scope and resume_phase == "fixtures-page"
                     else (
                         f"standings:{lid}:{season}"
-                        if skip_fixtures
+                        if skip_fixtures or (existing_count > 0 and not force_refresh_scope)
                         else f"fixtures:{lid}:{season}"
                     )
                 )
@@ -1757,14 +1758,13 @@ def _import_leagues_cautious_unleased(
                     return {"preempted": True, "checkpoint": f"fixtures:{lid}:{season}", "league_id": lid, "season": season}
                 _progress(f"Ligue {lid} - {season}: téléchargement des matchs")
                 tries = 0
-                skip_fixtures = resume_scope and resume_phase == "standings"
                 fixtures_ok = skip_fixtures or (
                     existing_count > 0 and not force_refresh_scope
                 )
                 last_error = None
                 initial_fixture_checkpoint = (
                     f"standings:{lid}:{season}"
-                    if skip_fixtures
+                    if skip_fixtures or fixtures_ok
                     else (
                         f"fixtures-page:{lid}:{season}:{resume_page}"
                         if resume_scope and resume_phase == "fixtures-page"

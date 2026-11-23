@@ -1726,7 +1726,7 @@ def run_full_sync(progress_callback=None) -> dict:
             ):
                 return stop_for_quota(key, RuntimeError(_reserve_message()))
             try:
-                resume_checkpoint = persisted_core_resume_checkpoint(league_id, season)
+                resume_checkpoint = _persisted_core_resume_checkpoint(league_id, season)
                 import_result = import_service.import_leagues_cautious(
                     [league_id],
                     seasons=[season],
