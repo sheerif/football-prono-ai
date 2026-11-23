@@ -330,7 +330,7 @@ class ScheduledSyncTests(unittest.TestCase):
         self.assertEqual(result, 1)
         backup.assert_called_once_with(force=True)
 
-    def test_scheduled_entrypoint_accepts_safe_lease_contention_skip(self):
+    def test_scheduled_entrypoint_fails_when_lease_contention_skips_sync(self):
         with (
             patch.object(
                 run_scheduled_sync,
@@ -342,7 +342,7 @@ class ScheduledSyncTests(unittest.TestCase):
         ):
             result = run_scheduled_sync.main()
 
-        self.assertEqual(result, 0)
+        self.assertEqual(result, 1)
         backup.assert_not_called()
 
     def test_scheduled_entrypoint_fails_when_backup_is_not_configured(self):
