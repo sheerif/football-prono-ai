@@ -307,7 +307,11 @@ class ApiFootballClient:
                     ) from exc
                 if reservation.get("remote_shared"):
                     _cache_metrics["quota_remote_shared_tokens"] += 1
-                elif reservation.get("remote_enabled") is True and not reservation.get("allowed"):
+                elif (
+                    reservation.get("remote_enabled") is True
+                    and not reservation.get("allowed")
+                    and str(reservation.get("reason", "")).startswith("remote_")
+                ):
                     _cache_metrics["quota_remote_block_denials"] += 1
                 elif reservation.get("remote_enabled") is False:
                     _cache_metrics["quota_remote_fallbacks"] += 1
