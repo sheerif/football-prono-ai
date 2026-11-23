@@ -961,6 +961,14 @@ class ExhaustiveSyncTests(unittest.TestCase):
             patch.object(full_sync_service.import_service, "init_db"),
             patch.object(full_sync_service.sync_registry, "ensure_table"),
             patch.object(full_sync_service.sync_registry, "mark"),
+            patch.object(
+                full_sync_service.sync_registry,
+                "get",
+                return_value={
+                    "status": "partial",
+                    "metadata": {"checkpoint": "fixtures-page:61:2025:3"},
+                },
+            ),
             patch.object(full_sync_service, "download_plan", return_value={}),
             patch.object(
                 full_sync_service.import_service,
@@ -1000,6 +1008,10 @@ class ExhaustiveSyncTests(unittest.TestCase):
             result = full_sync_service.run_full_sync()
 
         core_import.assert_called_once()
+        self.assertEqual(
+            core_import.call_args.kwargs["resume_checkpoint"],
+            "fixtures-page:61:2025:3",
+        )
         self.assertFalse(result["quota_reached"])
         self.assertTrue(result["xg_budget_reserved"])
         self.assertEqual(result["xg_resume_checkpoint"], "fixture-statistics:99")
