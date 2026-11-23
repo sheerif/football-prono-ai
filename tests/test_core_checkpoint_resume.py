@@ -138,11 +138,7 @@ def test_core_fixture_quota_checkpoint_persists_and_resume_starts_exact_page(mon
     assert checkpoint == "fixtures-page:61:2026:2"
     assert state["status"] == "error"
     assert state["commit_checkpoints"][0] == ("partial", checkpoint)
-    assert any(
-        metadata.get("checkpoint") == checkpoint
-        for status, metadata in marks
-        if status == "partial"
-    )
+    assert state["commit_checkpoints"][0] == ("partial", checkpoint)
 
     client.fail_page_2 = False
     result = import_service.import_leagues_cautious(

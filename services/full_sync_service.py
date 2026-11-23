@@ -1713,7 +1713,8 @@ def run_full_sync(progress_callback=None) -> dict:
         )
         missing_core = set(_missing_core_scopes(config["league_ids"], seasons))
         core_scopes = sorted(
-            (missing_core | recent_due | resumable_core_scopes) - priority_core_keys,
+            (missing_core | recent_due | resumable_core_scopes)
+            - set(priority_core_scopes),
             key=lambda scope: (-scope[1], scope[0]),
         )
         for index, (league_id, season) in enumerate(core_scopes, start=1):
