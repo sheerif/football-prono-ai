@@ -15,7 +15,7 @@ from database.database import engine
 from services.api_football import ApiFootballClient
 from services.api_response_store import archive_response
 from services import analysis_store, cross_insight_service, final_prediction_service, lineup_service, pdf_report_service, prediction_helpers, ranking_service, xg_service
-from services import schema_guard, sync_registry
+from services import remote_sync_lease, schema_guard, sync_registry
 from services.season_format import season_period
 
 
@@ -682,12 +682,25 @@ def _api_prediction(fixture_id: int, force_refresh: bool = False) -> dict:
         return cached
 
     owner = f"upcoming-page-prediction:{int(fixture_id)}:{uuid.uuid4().hex}"
-    if not sync_registry.claim_download(key, owner):
-        # The exhaustive/background worker owns this fixture. Reuse any cached
-        # value and never issue a duplicate API request from the page.
-        return cached
-
+    local_claimed = False
+    remote_claimed = False
     try:
+        local_claimed = sync_registry.claim_download(key, owner)
+        if not local_claimed:
+            # The exhaustive/background worker owns this fixture. Reuse any cached
+            # value and never issue a duplicate API request from the page.
+            return cached
+        try:
+            remote_claimed = remote_sync_lease.claim(
+                key, owner, lease_seconds=remote_sync_lease.LEASE_SECONDS
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                f"Lease distante indisponible pour {key} ; aucun téléchargement lancé."
+            ) from exc
+        if not remote_claimed:
+            return cached
+
         sync_registry.mark(key, "fixture_prediction", "running")
         response = api_client.get_predictions(int(fixture_id))
         items = response.get("response") or []
@@ -709,15 +722,24 @@ def _api_prediction(fixture_id: int, force_refresh: bool = False) -> dict:
         )
         return cached
     finally:
-        try:
-            sync_registry.release_download_claim(key, owner)
-        except Exception:
-            logging.getLogger(__name__).warning(
-                "Unable to release prediction page lease for %s",
-                key,
-                exc_info=True,
-            )
-
+        if remote_claimed:
+            try:
+                remote_sync_lease.release(key, owner)
+            except Exception:
+                logging.getLogger(__name__).warning(
+                    "Unable to release remote prediction lease for %s",
+                    key,
+                    exc_info=True,
+                )
+        if local_claimed:
+            try:
+                sync_registry.release_download_claim(key, owner)
+            except Exception:
+                logging.getLogger(__name__).warning(
+                    "Unable to release prediction page lease for %s",
+                    key,
+                    exc_info=True,
+                )
 
 def _enrich_with_api_details(upcoming: pd.DataFrame, force_refresh: bool = False, progress_callback=None) -> pd.DataFrame:
     if upcoming.empty:

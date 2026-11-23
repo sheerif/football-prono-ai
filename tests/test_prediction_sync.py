@@ -14,6 +14,7 @@ class PredictionSyncTests(unittest.TestCase):
             patch.object(matchs_a_venir.sync_registry, "claim_download", return_value=False),
             patch.object(matchs_a_venir.sync_registry, "mark") as mark,
             patch.object(matchs_a_venir.sync_registry, "release_download_claim") as release,
+            patch.object(matchs_a_venir.remote_sync_lease, "claim") as remote_claim,
             patch.object(matchs_a_venir.api_client, "get_predictions") as request,
         ):
             result = matchs_a_venir._api_prediction(123, force_refresh=True)
@@ -22,17 +23,74 @@ class PredictionSyncTests(unittest.TestCase):
         request.assert_not_called()
         mark.assert_not_called()
         release.assert_not_called()
+        remote_claim.assert_not_called()
+
+    def test_upcoming_page_prediction_skips_when_remote_lease_is_contended(self):
+        cached = {"api_advice": "cached"}
+        local_claim = Mock(return_value=True)
+        local_release = Mock()
+        remote_claim = Mock(return_value=False)
+        with (
+            patch.object(matchs_a_venir, "_load_cached_prediction", return_value=cached),
+            patch.object(matchs_a_venir.sync_registry, "claim_download", local_claim),
+            patch.object(matchs_a_venir.sync_registry, "release_download_claim", local_release),
+            patch.object(matchs_a_venir.remote_sync_lease, "claim", remote_claim),
+            patch.object(matchs_a_venir.remote_sync_lease, "release") as remote_release,
+            patch.object(matchs_a_venir.sync_registry, "mark") as mark,
+            patch.object(matchs_a_venir.api_client, "get_predictions") as request,
+        ):
+            result = matchs_a_venir._api_prediction(123, force_refresh=True)
+
+        self.assertEqual(result, cached)
+        remote_claim.assert_called_once_with(
+            "fixture-prediction:123",
+            local_claim.call_args.args[1],
+            lease_seconds=matchs_a_venir.remote_sync_lease.LEASE_SECONDS,
+        )
+        local_release.assert_called_once_with(
+            "fixture-prediction:123", local_claim.call_args.args[1]
+        )
+        remote_release.assert_not_called()
+        mark.assert_not_called()
+        request.assert_not_called()
+
+    def test_upcoming_page_prediction_fails_closed_when_remote_lease_unavailable(self):
+        cached = {"api_advice": "cached"}
+        local_release = Mock()
+        with (
+            patch.object(matchs_a_venir, "_load_cached_prediction", return_value=cached),
+            patch.object(matchs_a_venir.sync_registry, "claim_download", return_value=True),
+            patch.object(matchs_a_venir.sync_registry, "release_download_claim", local_release),
+            patch.object(
+                matchs_a_venir.remote_sync_lease, "claim",
+                side_effect=RuntimeError("remote coordination unavailable"),
+            ),
+            patch.object(matchs_a_venir.remote_sync_lease, "release") as remote_release,
+            patch.object(matchs_a_venir.sync_registry, "mark") as mark,
+            patch.object(matchs_a_venir.api_client, "get_predictions") as request,
+        ):
+            result = matchs_a_venir._api_prediction(123, force_refresh=True)
+
+        self.assertEqual(result, cached)
+        self.assertEqual(mark.call_args_list[-1].args[2], "error")
+        local_release.assert_called_once()
+        remote_release.assert_not_called()
+        request.assert_not_called()
 
     def test_upcoming_page_prediction_releases_lease_after_fetch(self):
         cached = {"api_advice": "old"}
         updated = {"api_advice": "new"}
         claim = Mock(return_value=True)
         release = Mock(return_value=True)
+        remote_claim = Mock(return_value=True)
+        remote_release = Mock(return_value=True)
         with (
             patch.object(matchs_a_venir, "_load_cached_prediction", side_effect=[cached, updated]),
             patch.object(matchs_a_venir, "_save_prediction") as save,
             patch.object(matchs_a_venir.sync_registry, "claim_download", claim),
             patch.object(matchs_a_venir.sync_registry, "release_download_claim", release),
+            patch.object(matchs_a_venir.remote_sync_lease, "claim", remote_claim),
+            patch.object(matchs_a_venir.remote_sync_lease, "release", remote_release),
             patch.object(matchs_a_venir.sync_registry, "mark"),
             patch.object(matchs_a_venir.api_client, "get_predictions", return_value={"response": [{"winner": "home"}]}),
         ):
@@ -41,6 +99,14 @@ class PredictionSyncTests(unittest.TestCase):
         self.assertEqual(result, updated)
         save.assert_called_once_with(123, {"winner": "home"})
         claim.assert_called_once()
+        remote_claim.assert_called_once_with(
+            "fixture-prediction:123",
+            claim.call_args.args[1],
+            lease_seconds=matchs_a_venir.remote_sync_lease.LEASE_SECONDS,
+        )
+        remote_release.assert_called_once_with(
+            "fixture-prediction:123", claim.call_args.args[1]
+        )
         release.assert_called_once_with(
             "fixture-prediction:123", claim.call_args.args[1]
         )
@@ -48,10 +114,14 @@ class PredictionSyncTests(unittest.TestCase):
     def test_upcoming_page_prediction_releases_lease_on_api_error(self):
         cached = {"api_advice": "cached"}
         release = Mock(return_value=True)
+        remote_claim = Mock(return_value=True)
+        remote_release = Mock(return_value=True)
         with (
             patch.object(matchs_a_venir, "_load_cached_prediction", return_value=cached),
             patch.object(matchs_a_venir.sync_registry, "claim_download", return_value=True),
             patch.object(matchs_a_venir.sync_registry, "release_download_claim", release),
+            patch.object(matchs_a_venir.remote_sync_lease, "claim", remote_claim),
+            patch.object(matchs_a_venir.remote_sync_lease, "release", remote_release),
             patch.object(matchs_a_venir.sync_registry, "mark") as mark,
             patch.object(matchs_a_venir.api_client, "get_predictions", side_effect=RuntimeError("API unavailable")),
         ):
@@ -60,6 +130,10 @@ class PredictionSyncTests(unittest.TestCase):
         self.assertEqual(result, cached)
         self.assertEqual(mark.call_args_list[-1].args[2], "error")
         release.assert_called_once()
+        remote_claim.assert_called_once()
+        remote_release.assert_called_once_with(
+            "fixture-prediction:123", remote_claim.call_args.args[1]
+        )
 
     def test_upcoming_page_defers_recently_unavailable_prediction(self):
         with (
@@ -120,6 +194,7 @@ class PredictionSyncTests(unittest.TestCase):
         with (
             patch.object(full_sync_service.sync_registry, "get", return_value=None),
             patch.object(full_sync_service.sync_registry, "claim_download", return_value=False),
+            patch.object(full_sync_service.remote_sync_lease, "claim") as remote_claim,
             patch.object(full_sync_service.sync_registry, "mark") as mark,
         ):
             result = full_sync_service._fetch_one(
@@ -131,14 +206,78 @@ class PredictionSyncTests(unittest.TestCase):
         self.assertEqual(result, "skipped")
         fetch.assert_not_called()
         mark.assert_not_called()
+        remote_claim.assert_not_called()
+
+    def test_fetch_one_skips_when_remote_lease_is_contended(self):
+        local_claim = Mock(return_value=True)
+        local_release = Mock()
+        remote_claim = Mock(return_value=False)
+        fetch = Mock()
+        with (
+            patch.object(full_sync_service.sync_registry, "get", return_value=None),
+            patch.object(full_sync_service.sync_registry, "claim_download", local_claim),
+            patch.object(full_sync_service.sync_registry, "release_download_claim", local_release),
+            patch.object(full_sync_service.remote_sync_lease, "claim", remote_claim),
+            patch.object(full_sync_service.remote_sync_lease, "release") as remote_release,
+            patch.object(full_sync_service.sync_registry, "mark") as mark,
+        ):
+            result = full_sync_service._fetch_one(
+                "fixture-prediction:remote-lock",
+                "fixture_prediction",
+                fetch,
+                Mock(),
+            )
+        self.assertEqual(result, "skipped")
+        remote_claim.assert_called_once_with(
+            "fixture-prediction:remote-lock",
+            local_claim.call_args.args[1],
+            lease_seconds=full_sync_service.REMOTE_FETCH_ONE_LEASE_SECONDS,
+        )
+        local_release.assert_called_once_with(
+            "fixture-prediction:remote-lock", local_claim.call_args.args[1]
+        )
+        remote_release.assert_not_called()
+        fetch.assert_not_called()
+        mark.assert_not_called()
+
+    def test_fetch_one_fails_closed_when_remote_lease_unavailable(self):
+        local_claim = Mock(return_value=True)
+        local_release = Mock()
+        fetch = Mock()
+        with (
+            patch.object(full_sync_service.sync_registry, "get", return_value=None),
+            patch.object(full_sync_service.sync_registry, "claim_download", local_claim),
+            patch.object(full_sync_service.sync_registry, "release_download_claim", local_release),
+            patch.object(
+                full_sync_service.remote_sync_lease, "claim",
+                side_effect=RuntimeError("remote unavailable"),
+            ),
+            patch.object(full_sync_service.remote_sync_lease, "release") as remote_release,
+            patch.object(full_sync_service.sync_registry, "mark") as mark,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "aucun téléchargement lancé"):
+                full_sync_service._fetch_one(
+                    "fixture-prediction:remote-error",
+                    "fixture_prediction",
+                    fetch,
+                    Mock(),
+                )
+        self.assertEqual(mark.call_args_list[-1].args[2], "error")
+        local_release.assert_called_once()
+        remote_release.assert_not_called()
+        fetch.assert_not_called()
 
     def test_fetch_one_releases_claim_after_download(self):
         owner_claim = Mock(return_value=True)
         release = Mock(return_value=True)
+        remote_claim = Mock(return_value=True)
+        remote_release = Mock(return_value=True)
         with (
             patch.object(full_sync_service.sync_registry, "get", return_value=None),
             patch.object(full_sync_service.sync_registry, "claim_download", owner_claim),
             patch.object(full_sync_service.sync_registry, "release_download_claim", release),
+            patch.object(full_sync_service.remote_sync_lease, "claim", remote_claim),
+            patch.object(full_sync_service.remote_sync_lease, "release", remote_release),
             patch.object(full_sync_service.sync_registry, "mark"),
         ):
             result = full_sync_service._fetch_one(
@@ -149,6 +288,14 @@ class PredictionSyncTests(unittest.TestCase):
             )
         self.assertEqual(result, "downloaded")
         owner_claim.assert_called_once()
+        remote_claim.assert_called_once_with(
+            "fixture-prediction:lease-test",
+            owner_claim.call_args.args[1],
+            lease_seconds=full_sync_service.REMOTE_FETCH_ONE_LEASE_SECONDS,
+        )
+        remote_release.assert_called_once_with(
+            "fixture-prediction:lease-test", owner_claim.call_args.args[1]
+        )
         release.assert_called_once_with(
             "fixture-prediction:lease-test",
             owner_claim.call_args.args[1],
@@ -157,6 +304,8 @@ class PredictionSyncTests(unittest.TestCase):
     def test_unavailable_response_is_persisted(self):
         with (
             patch.object(full_sync_service.sync_registry, "get", return_value=None),
+            patch.object(full_sync_service.remote_sync_lease, "claim", return_value=True),
+            patch.object(full_sync_service.remote_sync_lease, "release"),
             patch.object(full_sync_service.sync_registry, "mark") as mark,
         ):
             result = full_sync_service._fetch_one(
