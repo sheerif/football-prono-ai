@@ -171,6 +171,7 @@ class SeasonPlayerLeaseIntegrationTests(unittest.TestCase):
 
         def sync_with_checkpoint(*args, **kwargs):
             kwargs["progress_callback"](1, 1, "Page 1/1 enregistrée · 12 joueur(s)")
+            return {"profiles": 12, "statistics": 4, "pages": 1, "total_pages": 1, "truncated": False}
 
         with (
             patch.object(player_service.remote_sync_lease, "claim", remote_claim),
