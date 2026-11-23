@@ -552,6 +552,8 @@ def record_update_result(event_type: str, started_at: str, result: dict, error: 
         if error
         else "interrompue_priorité"
         if result.get("preempted")
+        else "partielle"
+        if result.get("partial")
         else "effectuée"
         if result.get("ran")
         else "ignorée"
@@ -1068,16 +1070,22 @@ def _refresh_league_season(
     existing_teams = session.query(models.Team).filter_by(
         league_id=league_id
     ).count()
+    teams_complete = existing_teams > 0
+    failed_phases = []
     while existing_teams <= 0 and tries < max_retries:
         if priority_preemption_check and priority_preemption_check():
             return {"preempted": True, "checkpoint": f"teams:{league_id}:{season}"}
         try:
             resp = client.get_teams(league_id, season)
-            for item in resp.get("response", []):
+            if (api_error := _api_error(resp)):
+                raise RuntimeError(api_error)
+            team_items = resp.get("response", [])
+            for item in team_items:
                 team_info = item.get("team") if "team" in item else item
                 _get_or_create_team(session, team_info, league_id=league_id)
             session.commit()
             existing_teams = 1
+            teams_complete = bool(team_items)
             break
         except HTTPError as exc:
             tries += 1
@@ -1092,6 +1100,8 @@ def _refresh_league_season(
             logger.warning(f"Error refreshing teams {league_id}/{season}: {exc} — retry {tries}")
             time.sleep(pause * tries)
 
+    if not teams_complete:
+        failed_phases.append("teams")
     if progress_callback:
         progress_callback(1, 3, f"Équipes {league_id}/{season} vérifiées")
 
@@ -1100,11 +1110,14 @@ def _refresh_league_season(
     if priority_preemption_check and priority_preemption_check():
         return {"preempted": True, "checkpoint": f"fixtures:{league_id}:{season}"}
     tries = 0
+    fixtures_complete = False
     while tries < max_retries:
         if priority_preemption_check and priority_preemption_check():
             return {"preempted": True, "checkpoint": f"fixtures:{league_id}:{season}"}
         try:
             resp = client.get_fixtures(league_id, season)
+            if (api_error := _api_error(resp)):
+                raise RuntimeError(api_error)
             items = resp.get("response", [])
             paging = resp.get("paging") or {}
             page = 1
@@ -1126,7 +1139,14 @@ def _refresh_league_season(
                     return {"preempted": True, "checkpoint": f"fixtures-page:{league_id}:{season}:{page + 1}"}
                 page += 1
                 resp = client._get("/fixtures", {"league": league_id, "season": season, "page": page})
+                if (api_error := _api_error(resp)):
+                    raise RuntimeError(api_error)
                 items = resp.get("response", [])
+            fixtures_complete = bool(
+                session.query(models.Match).filter_by(
+                    league_id=league_id, season=season
+                ).count()
+            )
             break
         except HTTPError as exc:
             tries += 1
@@ -1141,6 +1161,8 @@ def _refresh_league_season(
             logger.warning(f"Error refreshing fixtures {league_id}/{season}: {exc} — retry {tries}")
             time.sleep(pause * tries)
 
+    if not fixtures_complete:
+        failed_phases.append("fixtures")
     if progress_callback:
         progress_callback(2, 3, f"Matchs {league_id}/{season} vérifiés")
 
@@ -1149,11 +1171,14 @@ def _refresh_league_season(
     if priority_preemption_check and priority_preemption_check():
         return {"preempted": True, "checkpoint": f"standings:{league_id}:{season}"}
     tries = 0
+    standings_complete = False
     while tries < max_retries:
         if priority_preemption_check and priority_preemption_check():
             return {"preempted": True, "checkpoint": f"standings:{league_id}:{season}"}
         try:
             resp = client.get_standings(league_id, season)
+            if (api_error := _api_error(resp)):
+                raise RuntimeError(api_error)
             for item in resp.get("response", []):
                 table = None
                 if isinstance(item, dict) and "league" in item and "standings" in item["league"]:
@@ -1192,6 +1217,11 @@ def _refresh_league_season(
                     else:
                         session.add(models.Standing(team_id=team_id, season=season, **values))
                 session.commit()
+            standings_complete = bool(
+                session.query(models.Standing).filter_by(
+                    league_id=league_id, season=season
+                ).count()
+            )
             break
         except HTTPError as exc:
             tries += 1
@@ -1206,15 +1236,29 @@ def _refresh_league_season(
             logger.warning(f"Error refreshing standings {league_id}/{season}: {exc} — retry {tries}")
             time.sleep(pause * tries)
 
+    if not standings_complete:
+        failed_phases.append("standings")
     if progress_callback:
         progress_callback(3, 3, f"Classement {league_id}/{season} vérifié")
+
+    return {
+        "partial": bool(failed_phases),
+        "failed_phases": failed_phases,
+        "completed_phases": [
+            phase for phase, completed in (
+                ("teams", teams_complete),
+                ("fixtures", fixtures_complete),
+                ("standings", standings_complete),
+            ) if completed
+        ],
+    }
 
 
 def refresh_current_competitions_on_connection(
     progress_callback=None,
     priority_preemption_check=None,
 ) -> dict:
-    """Refresh active seasons for every configured competition once per app session."""
+    """Refresh active seasons under the same persistent core-scope leases as full sync."""
     config = get_auto_refresh_config()
     if not config["enabled"] or not config["current_enabled"]:
         return {"ran": False, "reason": "Mise à jour des championnats en cours désactivée.", "config": config}
@@ -1232,16 +1276,25 @@ def refresh_current_competitions_on_connection(
         except (TypeError, ValueError):
             pass
 
+    from services import remote_sync_lease, sync_registry
+
     register_league_seasons(config["league_ids"], [config["end_season"]], source="current_refresh")
     session = SessionLocal()
     refreshed = []
+    cached_scopes = []
+    skipped_scopes = []
     league_ids = config["league_ids"]
     total_steps = max(1, len(league_ids) * 3)
+    lease_seconds = 1800
+    renew_interval = 60
+
     if progress_callback:
         progress_callback(0, total_steps, "Préparation des championnats en cours")
     try:
         for league_index, league_id in enumerate(league_ids):
             season = _active_season_for_league(session, league_id, config["end_season"])
+            key = f"core:{int(league_id)}:{int(season)}"
+            scope_state_key = f"current-refresh:{int(league_id)}:{int(season)}"
             if priority_preemption_check and priority_preemption_check():
                 return {
                     "ran": True,
@@ -1249,37 +1302,238 @@ def refresh_current_competitions_on_connection(
                     "checkpoint": f"current-refresh:{league_id}:{season}",
                     "config": config,
                     "refreshed": refreshed,
+                    "cached_scopes": cached_scopes,
+                    "skipped_scopes": skipped_scopes,
                 }
-            logger.info(f"Refreshing active competition {league_id} season {season}")
-            refresh_result = _refresh_league_season(
-                session,
-                league_id,
-                season,
-                pause=config["pause"],
-                max_retries=config["max_retries"],
-                progress_callback=(
-                    lambda current, total, label, offset=league_index * 3: progress_callback(
-                        offset + current,
+
+            prior_state = sync_registry.get(scope_state_key)
+            if prior_state and prior_state.get("status") == "complete":
+                try:
+                    updated_at = datetime.datetime.fromisoformat(prior_state["updated_at"])
+                    if updated_at.tzinfo is not None:
+                        updated_at = updated_at.astimezone(datetime.UTC).replace(tzinfo=None)
+                    if (
+                        (utc_now() - updated_at).total_seconds()
+                        < config["interval_minutes"] * 60
+                    ):
+                        cached_scopes.append({"league_id": int(league_id), "season": int(season)})
+                        if progress_callback:
+                            progress_callback(
+                                min(total_steps, (league_index + 1) * 3),
+                                total_steps,
+                                f"Ligue {league_id} - {season}: actualisation récente réutilisée",
+                            )
+                        continue
+                except (KeyError, TypeError, ValueError):
+                    pass
+
+            owner = f"current-refresh:{os.getpid()}:{time.time_ns()}"
+            try:
+                local_claimed = sync_registry.claim_download(
+                    key, owner, lease_seconds=lease_seconds
+                )
+            except Exception as exc:
+                logger.warning("Unable to claim local current-refresh lease %s: %s", key, exc)
+                skipped_scopes.append(key)
+                continue
+            if not local_claimed:
+                skipped_scopes.append(key)
+                if progress_callback:
+                    progress_callback(
+                        min(total_steps, (league_index + 1) * 3),
+                        total_steps,
+                        f"Ligue {league_id} - {season}: lease locale persistante détenue par un autre worker",
+                    )
+                continue
+
+            remote_claimed = False
+            try:
+                remote_claimed = remote_sync_lease.claim(
+                    key, owner, lease_seconds=lease_seconds
+                )
+            except Exception as exc:
+                logger.warning("Remote current-refresh lease unavailable for %s: %s", key, exc)
+            if not remote_claimed:
+                try:
+                    sync_registry.release_download_claim(key, owner)
+                except Exception:
+                    logger.warning("Unable to release local current-refresh lease %s", key, exc_info=True)
+                skipped_scopes.append(key)
+                if progress_callback:
+                    progress_callback(
+                        min(total_steps, (league_index + 1) * 3),
+                        total_steps,
+                        f"Ligue {league_id} - {season}: lease distante indisponible ou détenue par un autre worker",
+                    )
+                continue
+
+            lease_lost = False
+            last_local_renewed = time.monotonic()
+            last_remote_renewed = last_local_renewed
+
+            def _renew_scope(*, force=False):
+                nonlocal lease_lost, last_local_renewed, last_remote_renewed
+                now = time.monotonic()
+                if not force and now - min(last_local_renewed, last_remote_renewed) < renew_interval:
+                    return not lease_lost
+                try:
+                    local_ok = sync_registry.renew_download_claim(
+                        key, owner, lease_seconds=lease_seconds
+                    )
+                except Exception:
+                    local_ok = False
+                if not local_ok:
+                    lease_lost = True
+                    return False
+                last_local_renewed = now
+                try:
+                    remote_ok = remote_sync_lease.renew(
+                        key, owner, lease_seconds=lease_seconds
+                    )
+                except Exception:
+                    remote_ok = False
+                if not remote_ok:
+                    lease_lost = True
+                    return False
+                last_remote_renewed = now
+                return True
+
+            def _renew_and_check_priority():
+                if not _renew_scope():
+                    return True
+                return bool(
+                    priority_preemption_check
+                    and priority_preemption_check()
+                )
+
+            def _scoped_progress(current, _scope_total, label):
+                if not _renew_scope():
+                    logger.warning("Current-refresh scope lease lost at checkpoint %s", key)
+                if progress_callback:
+                    progress_callback(
+                        min(total_steps, league_index * 3 + int(current or 0)),
                         total_steps,
                         label,
                     )
-                    if progress_callback
-                    else None
-                ),
-                priority_preemption_check=priority_preemption_check,
-            )
-            if refresh_result and refresh_result.get("preempted"):
-                return {
-                    "ran": True,
-                    "preempted": True,
-                    "checkpoint": refresh_result.get("checkpoint"),
-                    "config": config,
-                    "refreshed": refreshed,
-                }
-            refreshed.append({"league_id": league_id, "season": season})
+
+            try:
+                sync_registry.mark(
+                    scope_state_key,
+                    "current_season",
+                    "running",
+                    message="Leases persistantes locale et distante acquises",
+                )
+                logger.info("Refreshing active competition %s season %s", league_id, season)
+                refresh_result = _refresh_league_season(
+                    session,
+                    league_id,
+                    season,
+                    pause=config["pause"],
+                    max_retries=config["max_retries"],
+                    progress_callback=_scoped_progress,
+                    priority_preemption_check=_renew_and_check_priority,
+                )
+                if lease_lost:
+                    skipped_scopes.append(key)
+                    sync_registry.mark(
+                        scope_state_key,
+                        "current_season",
+                        "deferred",
+                        message="Lease persistante perdue ; reprise requise.",
+                    )
+                    return {
+                        "ran": True,
+                        "partial": True,
+                        "lease_lost": True,
+                        "checkpoint": (refresh_result or {}).get("checkpoint") or f"current-refresh:{league_id}:{season}",
+                        "config": config,
+                        "refreshed": refreshed,
+                        "cached_scopes": cached_scopes,
+                        "skipped_scopes": skipped_scopes,
+                        "reason": "Lease persistante perdue ; arrêt sûr et reprise requise.",
+                    }
+                if refresh_result and refresh_result.get("partial"):
+                    failed_phases = list(refresh_result.get("failed_phases") or [])
+                    skipped_scopes.append(key)
+                    reason = (
+                        "Actualisation incomplète ; phases à reprendre : "
+                        + ", ".join(failed_phases or ["inconnues"])
+                    )
+                    sync_registry.mark(
+                        scope_state_key,
+                        "current_season",
+                        "deferred",
+                        message=reason,
+                    )
+                    return {
+                        "ran": True,
+                        "partial": True,
+                        "checkpoint": f"current-refresh:{league_id}:{season}",
+                        "failed_phases": failed_phases,
+                        "config": config,
+                        "refreshed": refreshed,
+                        "cached_scopes": cached_scopes,
+                        "skipped_scopes": skipped_scopes,
+                        "reason": reason,
+                    }
+                if refresh_result and refresh_result.get("preempted"):
+                    sync_registry.mark(
+                        scope_state_key,
+                        "current_season",
+                        "deferred",
+                        message=f"Préemption au checkpoint {refresh_result.get('checkpoint')}.",
+                    )
+                    return {
+                        "ran": True,
+                        "preempted": True,
+                        "checkpoint": refresh_result.get("checkpoint"),
+                        "config": config,
+                        "refreshed": refreshed,
+                        "cached_scopes": cached_scopes,
+                        "skipped_scopes": skipped_scopes,
+                    }
+                sync_registry.mark(
+                    scope_state_key,
+                    "current_season",
+                    "complete",
+                    message="Actualisation de la saison courante terminée.",
+                )
+                refreshed.append({"league_id": league_id, "season": season})
+            except Exception as exc:
+                try:
+                    sync_registry.mark(
+                        scope_state_key,
+                        "current_season",
+                        "error",
+                        message=str(exc),
+                    )
+                except Exception:
+                    logger.warning("Unable to record current-refresh error for %s", key, exc_info=True)
+                raise
+            finally:
+                if remote_claimed:
+                    try:
+                        remote_sync_lease.release(key, owner)
+                    except Exception:
+                        logger.warning("Unable to release remote current-refresh lease %s", key, exc_info=True)
+                try:
+                    sync_registry.release_download_claim(key, owner)
+                except Exception:
+                    logger.warning("Unable to release local current-refresh lease %s", key, exc_info=True)
             time.sleep(config["pause"])
     finally:
         session.close()
+
+    if skipped_scopes:
+        return {
+            "ran": True,
+            "partial": True,
+            "reason": "Certaines ligues/saisons ont été différées faute de lease ; nouvelle tentative nécessaire.",
+            "config": config,
+            "refreshed": refreshed,
+            "cached_scopes": cached_scopes,
+            "skipped_scopes": skipped_scopes,
+        }
 
     now = utc_now().isoformat()
     _set_sync_value("last_current_refresh_utc", now)
@@ -1288,9 +1542,9 @@ def refresh_current_competitions_on_connection(
         "reason": "Championnats en cours mis à jour.",
         "config": config,
         "refreshed": refreshed,
+        "cached_scopes": cached_scopes,
         "refreshed_at": now,
     }
-
 
 def import_multiple_leagues(league_ids: List[int], seasons: List[int] | None = None):
     seasons = seasons or _configured_season_range()
