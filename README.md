@@ -105,11 +105,16 @@ SQLite ne peuvent donc pas dépenser le même token ; les réservations réseau
 ne réaugmentent pas le budget du jour. La réserve d'urgence reste protégée pour
 les appels secondaires ; si le quota est inconnu, seuls les appels critiques
 peuvent utiliser un petit budget configurable.
-Ce ledger ne coordonne pas encore les fichiers SQLite séparés de Streamlit Cloud
-et GitHub Actions : les leases distantes continuent de sérialiser les
-synchronisations exhaustives, mais les appels live indépendants entre ces deux
-environnements peuvent encore se concurrencer. Une allocation distante globale
-de quota reste une amélioration à venir.
+Lorsque le token GitHub de coordination est configuré, le ledger réserve
+également des blocs de quota globaux sur la branche `sync-coordination`. Les
+fichiers SQLite de Streamlit Cloud et Actions ne peuvent ainsi pas réutiliser
+les mêmes blocs, même après restauration d'une sauvegarde. Le bloc par défaut
+est de 25 appels (`API_QUOTA_REMOTE_BLOCK_SIZE`) ; les blocs non consommés ne
+sont pas remboursés après un crash et peuvent être perdus jusqu'au prochain
+jour UTC, par prudence. `API_QUOTA_REMOTE_RESERVATIONS=0` désactive cette
+coordination (retour au ledger local) ; `=1` la rend obligatoire et fail-closed.
+En mode auto, elle s'active lorsque le token existant est disponible. Les
+métriques distinguent les réservations partagées, refus et fallbacks locaux.
 Les réponses identiques demandées simultanément ou dans les 60 secondes sont
 également partagées entre tous les clients du même processus sans nouvel appel
 réseau. Ce délai peut être réglé avec `API_FOOTBALL_REQUEST_CACHE_SECONDS`.

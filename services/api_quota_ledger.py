@@ -1,9 +1,9 @@
-"""Atomic daily API-Football budget reservations across SQLite processes.
+"""Atomic daily API-Football quota reservations.
 
-Each uncached data request reserves one token before network I/O. SQLite's
-BEGIN IMMEDIATE serializes reservations made by independent workers sharing the
-same database file. The ledger is conservative: a token is not refunded after
-a request attempt, and newer quota snapshots can only lower the local budget.
+SQLite serializes local consumers. When GitHub coordination credentials are
+available, the remote allocator additionally hands out conservative quota
+blocks shared by Streamlit Cloud and Actions. Remote blocks are owner-scoped
+and never reused from a restored database by a different runtime.
 """
 from __future__ import annotations
 
@@ -13,9 +13,10 @@ import os
 from sqlalchemy import text
 
 from database.database import engine
-from services import api_quota_policy
+from services import api_quota_policy, api_quota_remote
 
 _TABLE = "api_quota_ledger"
+_REMOTE_TABLE = "api_quota_remote_allocations"
 _URGENT_PRIORITY = api_quota_policy.PRIORITIES["prediction_blocking"]
 
 
@@ -47,12 +48,9 @@ def reserve_call(
     cost: int = 1,
     database_engine=None,
     now: datetime.datetime | None = None,
+    remote_owner: str | None = None,
 ) -> dict:
-    """Atomically consume a local shared budget token, or reject the request.
-
-    The ledger is process-shared only when workers use the same SQLite file.
-    Remote Cloud/Actions quota arbitration remains a separate coordination layer.
-    """
+    """Atomically reserve a local token and, when enabled, a remote shared token."""
     cost = max(1, int(cost))
     snapshot = dict(snapshot or {})
     database_engine = database_engine or engine
@@ -80,6 +78,9 @@ def reserve_call(
     reserve = api_quota_policy.reserve_for(snapshot)
     score = api_quota_policy.PRIORITIES.get(priority, 0)
     urgent = score >= _URGENT_PRIORITY
+    remote_enabled = api_quota_remote.enabled()
+    owner = remote_owner or api_quota_remote.allocation_owner()
+    priority_class = "urgent" if urgent else "normal"
 
     connection = database_engine.connect()
     try:
@@ -97,10 +98,32 @@ def reserve_call(
                 """
             )
         )
+        if remote_enabled:
+            connection.execute(
+                text(
+                    f"""
+                    CREATE TABLE IF NOT EXISTS {_REMOTE_TABLE} (
+                        quota_day TEXT NOT NULL,
+                        allocation_id TEXT NOT NULL,
+                        allocation_owner TEXT NOT NULL,
+                        priority_class TEXT NOT NULL,
+                        remaining INTEGER NOT NULL,
+                        remote_reported INTEGER NOT NULL DEFAULT 0,
+                        created_at TEXT NOT NULL,
+                        PRIMARY KEY (quota_day, allocation_id)
+                    )
+                    """
+                )
+            )
         connection.execute(
             text(f"DELETE FROM {_TABLE} WHERE quota_day < :day"),
             {"day": day_key},
         )
+        if remote_enabled:
+            connection.execute(
+                text(f"DELETE FROM {_REMOTE_TABLE} WHERE quota_day < :day"),
+                {"day": day_key},
+            )
         connection.execute(
             text(
                 f"""
@@ -150,6 +173,8 @@ def reserve_call(
                 "remaining": available,
                 "reserve": reserve,
                 "known": False,
+                "remote_enabled": remote_enabled,
+                "remote_shared": False,
             }
         elif available < cost:
             result = {
@@ -158,6 +183,8 @@ def reserve_call(
                 "remaining": available,
                 "reserve": reserve,
                 "known": stored_known,
+                "remote_enabled": remote_enabled,
+                "remote_shared": False,
             }
         elif not urgent and available - cost < reserve:
             result = {
@@ -166,8 +193,121 @@ def reserve_call(
                 "remaining": available,
                 "reserve": reserve,
                 "known": stored_known,
+                "remote_enabled": remote_enabled,
+                "remote_shared": False,
             }
         else:
+            remote_shared = False
+            allocation_row = None
+            if remote_enabled:
+                allocation_row = connection.execute(
+                    text(
+                        f"""
+                        SELECT allocation_id, remaining
+                        FROM {_REMOTE_TABLE}
+                        WHERE quota_day = :day
+                          AND allocation_owner = :owner
+                          AND priority_class = :priority_class
+                          AND remaining >= :cost
+                        ORDER BY created_at
+                        LIMIT 1
+                        """
+                    ),
+                    {
+                        "day": day_key,
+                        "owner": owner,
+                        "priority_class": priority_class,
+                        "cost": cost,
+                    },
+                ).mappings().first()
+                if allocation_row is None:
+                    pending = connection.execute(
+                        text(
+                            f"""
+                            SELECT allocation_id FROM {_REMOTE_TABLE}
+                            WHERE quota_day = :day
+                              AND allocation_owner = :owner
+                              AND remaining = 0
+                              AND remote_reported = 0
+                            """
+                        ),
+                        {"day": day_key, "owner": owner},
+                    ).mappings().all()
+                    pending_ids = [item["allocation_id"] for item in pending]
+                    remote_block = api_quota_remote.reserve_block(
+                        snapshot,
+                        priority,
+                        spent_allocation_ids=pending_ids,
+                        cost=cost,
+                        now=current,
+                    )
+                    if remote_block.get("spent_reported"):
+                        connection.execute(
+                            text(
+                                f"""
+                                UPDATE {_REMOTE_TABLE}
+                                SET remote_reported = 1
+                                WHERE quota_day = :day
+                                  AND allocation_owner = :owner
+                                  AND remaining = 0
+                                """
+                            ),
+                            {"day": day_key, "owner": owner},
+                        )
+                    if not remote_block.get("allowed"):
+                        result = {
+                            "allowed": False,
+                            "reason": remote_block.get("reason", "remote_shared_quota_denied"),
+                            "remaining": available,
+                            "reserve": reserve,
+                            "known": stored_known,
+                            "remote_enabled": True,
+                            "remote_shared": False,
+                        }
+                        connection.commit()
+                        return result
+                    connection.execute(
+                        text(
+                            f"""
+                            INSERT INTO {_REMOTE_TABLE} (
+                                quota_day, allocation_id, allocation_owner,
+                                priority_class, remaining, remote_reported, created_at
+                            ) VALUES (
+                                :day, :allocation_id, :owner, :priority_class,
+                                :remaining, 0, :created_at
+                            )
+                            """
+                        ),
+                        {
+                            "day": day_key,
+                            "allocation_id": remote_block["allocation_id"],
+                            "owner": owner,
+                            "priority_class": priority_class,
+                            "remaining": int(remote_block["amount"]),
+                            "created_at": timestamp,
+                        },
+                    )
+                    allocation_row = {
+                        "allocation_id": remote_block["allocation_id"],
+                        "remaining": int(remote_block["amount"]),
+                    }
+                if allocation_row is not None:
+                    remote_remaining = int(allocation_row["remaining"]) - cost
+                    connection.execute(
+                        text(
+                            f"""
+                            UPDATE {_REMOTE_TABLE}
+                            SET remaining = :remaining
+                            WHERE quota_day = :day AND allocation_id = :allocation_id
+                            """
+                        ),
+                        {
+                            "day": day_key,
+                            "allocation_id": allocation_row["allocation_id"],
+                            "remaining": remote_remaining,
+                        },
+                    )
+                    remote_shared = True
             updated = available - cost
             connection.execute(
                 text(f"UPDATE {_TABLE} SET remaining = :remaining, updated_at = :updated_at WHERE quota_day = :day"),
@@ -179,6 +319,11 @@ def reserve_call(
                 "remaining": updated,
                 "reserve": reserve,
                 "known": stored_known,
+                "remote_enabled": remote_enabled,
+                "remote_shared": remote_shared,
+                "remote_allocation_id": (
+                    allocation_row["allocation_id"] if remote_shared else None
+                ),
             }
         connection.commit()
         return result

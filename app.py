@@ -84,3 +84,8 @@ with st.sidebar:
 		f"Quota · {cache_metrics['quota_status_checks']} préflights / "
 		f"{cache_metrics['quota_policy_blocks']} blocages · métriques locales au processus"
 	)
+	st.caption(
+		f"Quota partagé · {cache_metrics['quota_remote_shared_tokens']} tokens réservés / "
+		f"{cache_metrics['quota_remote_block_denials']} refus · "
+		f"{cache_metrics['quota_remote_fallbacks']} fallback(s) local(aux)"
+	)
