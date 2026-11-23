@@ -1,5 +1,6 @@
 import datetime
 import json
+import logging
 import time
 from typing import Any
 
@@ -10,7 +11,9 @@ from database import models
 from database.database import SessionLocal, engine
 from services.api_football import ApiFootballClient
 from services.api_response_store import archive_response
-from services import sync_registry
+from services import remote_sync_lease, sync_registry
+
+REMOTE_PLAYER_LEASE_SECONDS = 900
 
 
 client = ApiFootballClient(response_archiver=archive_response)
@@ -170,17 +173,20 @@ def sync_players(
     max_pages: int = 100,
     progress_callback=None,
 ) -> dict:
-    """Synchronise a league-season scope with a cross-process persistent lease."""
+    """Synchronise players under local and remote persistent leases.
+
+    The league-season key is shared by team-scoped and whole-season syncs so
+    those scopes cannot overlap and duplicate API downloads across runtimes.
+    """
     league_id = int(league_id)
     season = int(season)
     team_id = int(team_id) if team_id is not None else None
-    key = (
-        f"season-players:{league_id}:{season}"
-        if team_id is None
-        else f"season-players:{league_id}:{season}:team:{team_id}"
-    )
-    owner = f"season-players:{league_id}:{season}:{team_id}:{time.time_ns()}"
-    if not sync_registry.claim_download(key, owner):
+    key = f"season-players:{league_id}:{season}"
+    owner = f"season-players:{league_id}:{season}:team:{team_id}:{time.time_ns()}"
+    remote_claimed = False
+    local_claimed = False
+
+    def skipped(reason: str) -> dict:
         return {
             "profiles": 0,
             "statistics": 0,
@@ -188,15 +194,53 @@ def sync_players(
             "total_pages": 0,
             "truncated": False,
             "skipped": True,
-            "reason": "claimed",
+            "reason": reason,
         }
-    def renew_and_report(current, total, label):
-        if not sync_registry.renew_download_claim(key, owner):
-            raise RuntimeError(f"Lease persistante perdue pendant la synchronisation {key}")
-        if progress_callback:
-            progress_callback(current, total, label)
 
     try:
+        try:
+            remote_claimed = remote_sync_lease.claim(
+                key, owner, lease_seconds=REMOTE_PLAYER_LEASE_SECONDS
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                "Lease distante des joueurs indisponible ; aucun téléchargement lancé."
+            ) from exc
+        if not remote_claimed:
+            return skipped("remote_claimed")
+
+        local_claimed = sync_registry.claim_download(
+            key, owner, lease_seconds=REMOTE_PLAYER_LEASE_SECONDS
+        )
+        if not local_claimed:
+            return skipped("local_claimed")
+
+        def renew_and_report(current, total, label):
+            if not sync_registry.renew_download_claim(
+                key, owner, lease_seconds=REMOTE_PLAYER_LEASE_SECONDS
+            ):
+                raise RuntimeError(
+                    f"Lease locale persistante perdue pendant la synchronisation {key}"
+                )
+            # A page is committed before its remote renewal checkpoint. The
+            # initial remote claim protects page 1; every subsequent page is
+            # preceded by the successful renewal of the previous checkpoint.
+            if label.startswith("Page ") and " enregistrée" in label:
+                try:
+                    renewed = remote_sync_lease.renew(
+                        key, owner, lease_seconds=REMOTE_PLAYER_LEASE_SECONDS
+                    )
+                except Exception as exc:
+                    raise RuntimeError(
+                        f"Lease distante indisponible au checkpoint {key}"
+                    ) from exc
+                if not renewed:
+                    raise RuntimeError(
+                        f"Lease distante perdue au checkpoint {key}"
+                    )
+            if progress_callback:
+                progress_callback(current, total, label)
+
         return _sync_players_unleased(
             league_id,
             season,
@@ -205,7 +249,16 @@ def sync_players(
             progress_callback=renew_and_report,
         )
     finally:
-        sync_registry.release_download_claim(key, owner)
+        if local_claimed:
+            try:
+                sync_registry.release_download_claim(key, owner)
+            except Exception:
+                logging.warning("Unable to release local season-player lease %s", key, exc_info=True)
+        if remote_claimed:
+            try:
+                remote_sync_lease.release(key, owner)
+            except Exception:
+                logging.warning("Unable to release remote season-player lease %s", key, exc_info=True)
 
 
 def _sync_players_unleased(
