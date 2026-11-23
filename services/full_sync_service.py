@@ -27,6 +27,7 @@ from services.api_response_store import archive_response
 
 
 client = ApiFootballClient(response_archiver=archive_response)
+REMOTE_FETCH_ONE_LEASE_SECONDS = remote_sync_lease.LEASE_SECONDS
 REMOTE_XG_BATCH_KEY = "historical-xg:batch"
 REMOTE_XG_LEASE_SECONDS = 900
 REMOTE_XG_LEASE_RENEW_INTERVAL_SECONDS = 60
@@ -718,9 +719,22 @@ def _fetch_one(resource_key: str, resource_type: str, fetch, save, retry_hours: 
     ):
         return "skipped"
     owner = f"fetch-one:{os.getpid()}:{time.time_ns()}"
-    if not sync_registry.claim_download(resource_key, owner):
-        return "skipped"
+    local_claimed = False
+    remote_claimed = False
     try:
+        local_claimed = sync_registry.claim_download(resource_key, owner)
+        if not local_claimed:
+            return "skipped"
+        try:
+            remote_claimed = remote_sync_lease.claim(
+                resource_key, owner, lease_seconds=REMOTE_FETCH_ONE_LEASE_SECONDS
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                f"Lease distante indisponible pour {resource_key} ; aucun téléchargement lancé."
+            ) from exc
+        if not remote_claimed:
+            return "skipped"
         sync_registry.mark(resource_key, resource_type, "running")
         response = fetch()
         error = _api_error(response)
@@ -737,8 +751,15 @@ def _fetch_one(resource_key: str, resource_type: str, fetch, save, retry_hours: 
         sync_registry.mark(resource_key, resource_type, "error", message=str(exc))
         raise
     finally:
-        sync_registry.release_download_claim(resource_key, owner)
-
+        if remote_claimed:
+            try:
+                remote_sync_lease.release(resource_key, owner)
+            except Exception:
+                logging.warning(
+                    "Unable to release remote fetch-one lease %s", resource_key, exc_info=True
+                )
+        if local_claimed:
+            sync_registry.release_download_claim(resource_key, owner)
 
 def prediction_coverage(days: int | None = None) -> dict:
     """Mesure la couverture des conseils API sur les matchs futurs en base."""
