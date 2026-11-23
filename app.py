@@ -1,10 +1,13 @@
+import logging
 import streamlit as st
 import datetime
 import os
 
 from services import api_football, background_jobs, git_backup, import_service, live_priority_watcher, schema_guard
-from components import auth, sidebar, ui
+from components import api_metrics, auth, sidebar, ui
 from pages import dashboard, data_management, api_widgets, matchs_a_venir, analyse_match, prediction_ia
+
+logger = logging.getLogger(__name__)
 
 st.set_page_config(page_title="Prono insight", layout="wide", initial_sidebar_state="auto")
 ui.inject_app_style()
@@ -75,19 +78,27 @@ with st.sidebar:
 	st.caption(f"Dernière MAJ en cours: {import_service.get_last_current_refresh_label()}")
 	st.caption(f"Dernière MAJ historique: {import_service.get_last_auto_refresh_label()}")
 	st.caption(import_service.get_api_access_message())
-	cache_metrics = api_football.cache_metrics_snapshot() or {}
-	# Defensive defaults keep the sidebar renderable when app.py and a worker
-	# module temporarily expose different metric versions during deployment.
-	st.caption(
-		f"Cache API · {cache_metrics.get('requests_avoided', 0)} requêtes data évitées "
-		f"({cache_metrics.get('cache_hits', 0)} hits / {cache_metrics.get('cache_entries', 0)} entrées)"
-	)
-	st.caption(
-		f"Quota · {cache_metrics.get('quota_status_checks', 0)} préflights / "
-		f"{cache_metrics.get('quota_policy_blocks', 0)} blocages · métriques locales au processus"
-	)
-	st.caption(
-		f"Quota partagé · {cache_metrics.get('quota_remote_shared_tokens', 0)} tokens réservés / "
-		f"{cache_metrics.get('quota_remote_block_denials', 0)} refus · "
-		f"{cache_metrics.get('quota_remote_fallbacks', 0)} fallback(s) local(aux)"
-	)
+	cache_metrics_snapshot = None
+	try:
+		cache_metrics_snapshot = api_football.cache_metrics_snapshot()
+		metrics_captions = api_metrics.format_api_metrics_captions(cache_metrics_snapshot)
+	except Exception:
+		# Sidebar telemetry must never take down the application. This also
+		# contains KeyErrors from stale or incompatible runtime modules.
+		logger.exception("API cache/quota metrics snapshot failed; using zero defaults")
+		metrics_captions = (
+			"Cache API · 0 requêtes data évitées (0 hits / 0 entrées)",
+			"Quota · 0 préflights / 0 blocages · métriques locales au processus",
+			"Quota partagé · 0 tokens réservés / 0 refus · 0 fallback(s) local(aux)",
+		)
+	for metrics_caption in metrics_captions:
+		st.caption(metrics_caption)
+	if not st.session_state.get("_api_metrics_runtime_logged"):
+		logger.info(
+			"API metrics runtime fingerprint: app=%s api_module=%s formatter=%s schema=%s snapshot_keys=%s",
+			__file__, getattr(api_football, "__file__", "unknown"),
+			getattr(api_metrics, "__file__", "unknown"),
+			getattr(api_football, "CACHE_METRICS_SCHEMA_VERSION", "legacy"),
+			sorted(cache_metrics_snapshot) if isinstance(cache_metrics_snapshot, dict) else [],
+		)
+		st.session_state["_api_metrics_runtime_logged"] = True
