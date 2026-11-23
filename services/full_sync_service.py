@@ -1653,12 +1653,25 @@ def run_full_sync(progress_callback=None) -> dict:
             ):
                 return stop_for_quota(key, RuntimeError(_reserve_message()))
             try:
+                previous_core_state = sync_registry.get(key)
+                resume_checkpoint = None
+                if previous_core_state and previous_core_state.get("status") == "partial":
+                    checkpoint = (previous_core_state.get("metadata") or {}).get("checkpoint")
+                    parts = str(checkpoint or "").split(":")
+                    if (
+                        len(parts) >= 3
+                        and parts[0] in {"core", "teams", "fixtures", "fixtures-page", "standings"}
+                        and parts[1] == str(league_id)
+                        and parts[2] == str(season)
+                    ):
+                        resume_checkpoint = checkpoint
                 import_result = import_service.import_leagues_cautious(
                     [league_id],
                     seasons=[season],
                     pause=pause,
                     max_retries=config["max_retries"],
                     force_refresh_seasons=[season] if season in recent_seasons else None,
+                    resume_checkpoint=resume_checkpoint,
                     priority_preemption_check=_priority_preemption_requested,
                     progress_callback=lambda current, total, label: progress(
                         phase_start + int(
