@@ -75,17 +75,19 @@ with st.sidebar:
 	st.caption(f"Dernière MAJ en cours: {import_service.get_last_current_refresh_label()}")
 	st.caption(f"Dernière MAJ historique: {import_service.get_last_auto_refresh_label()}")
 	st.caption(import_service.get_api_access_message())
-	cache_metrics = api_football.cache_metrics_snapshot()
+	cache_metrics = api_football.cache_metrics_snapshot() or {}
+	# Defensive defaults keep the sidebar renderable when app.py and a worker
+	# module temporarily expose different metric versions during deployment.
 	st.caption(
-		f"Cache API · {cache_metrics['requests_avoided']} requêtes data évitées "
-		f"({cache_metrics['cache_hits']} hits / {cache_metrics['cache_entries']} entrées)"
+		f"Cache API · {cache_metrics.get('requests_avoided', 0)} requêtes data évitées "
+		f"({cache_metrics.get('cache_hits', 0)} hits / {cache_metrics.get('cache_entries', 0)} entrées)"
 	)
 	st.caption(
-		f"Quota · {cache_metrics['quota_status_checks']} préflights / "
-		f"{cache_metrics['quota_policy_blocks']} blocages · métriques locales au processus"
+		f"Quota · {cache_metrics.get('quota_status_checks', 0)} préflights / "
+		f"{cache_metrics.get('quota_policy_blocks', 0)} blocages · métriques locales au processus"
 	)
 	st.caption(
-		f"Quota partagé · {cache_metrics['quota_remote_shared_tokens']} tokens réservés / "
-		f"{cache_metrics['quota_remote_block_denials']} refus · "
-		f"{cache_metrics['quota_remote_fallbacks']} fallback(s) local(aux)"
+		f"Quota partagé · {cache_metrics.get('quota_remote_shared_tokens', 0)} tokens réservés / "
+		f"{cache_metrics.get('quota_remote_block_denials', 0)} refus · "
+		f"{cache_metrics.get('quota_remote_fallbacks', 0)} fallback(s) local(aux)"
 	)
