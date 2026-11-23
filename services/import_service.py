@@ -1299,7 +1299,7 @@ def import_multiple_leagues(league_ids: List[int], seasons: List[int] | None = N
 
 
 def _manual_import_resume_plan(league_ids, seasons, checkpoint):
-    """Parse a manual-import checkpoint into an ordered resume position."""
+    """Parse a manual-import checkpoint into a validated ordered resume position."""
     if not checkpoint:
         return None
     parts = str(checkpoint).split(":")
@@ -1307,10 +1307,17 @@ def _manual_import_resume_plan(league_ids, seasons, checkpoint):
         "core", "teams", "fixtures", "fixtures-page", "standings"
     }:
         return None
+    phase = parts[0]
+    if (phase == "fixtures-page" and len(parts) != 4) or (
+        phase != "fixtures-page" and len(parts) != 3
+    ):
+        return None
     try:
         league_id = int(parts[1])
         season = int(parts[2])
-        page = int(parts[3]) if parts[0] == "fixtures-page" and len(parts) > 3 else 1
+        page = int(parts[3]) if phase == "fixtures-page" else 1
+        if league_id <= 0 or season <= 0 or page <= 0:
+            return None
         league_index = list(league_ids).index(league_id)
         season_index = list(seasons).index(season)
     except (TypeError, ValueError, IndexError):
@@ -1320,8 +1327,8 @@ def _manual_import_resume_plan(league_ids, seasons, checkpoint):
         "season": season,
         "league_index": league_index,
         "season_index": season_index,
-        "phase": parts[0],
-        "page": max(1, page),
+        "phase": phase,
+        "page": page,
     }
 
 
@@ -1454,7 +1461,12 @@ def _import_leagues_cautious_unleased(
                 last_error = None
                 while not fixtures_ok and tries < max_retries:
                     try:
-                        if resume_scope and resume_phase == "fixtures-page" and resume_page > 1:
+                        resuming_fixture_page = bool(
+                            resume_scope
+                            and resume_phase == "fixtures-page"
+                            and resume_page > 1
+                        )
+                        if resuming_fixture_page:
                             resp = client._get(
                                 "/fixtures",
                                 {"league": lid, "season": season, "page": resume_page},
@@ -1464,10 +1476,54 @@ def _import_leagues_cautious_unleased(
                         if (api_error := _api_error(resp)):
                             raise RuntimeError(api_error)
                         items = resp.get('response', [])
-                        # Support paging if present
+                        # Support paging if present. A persisted page can become stale
+                        # when the API changes its page count; restart safely rather
+                        # than treating an out-of-range page as a complete import.
                         paging = resp.get('paging') or {}
-                        page = resume_page if resume_scope and resume_phase == "fixtures-page" else 1
-                        total_pages = paging.get('total') or 1
+                        page = resume_page if resuming_fixture_page else 1
+                        raw_total_pages = paging.get('total')
+                        try:
+                            total_pages = max(1, int(raw_total_pages or 1))
+                        except (TypeError, ValueError):
+                            total_pages = 1
+                        if resuming_fixture_page:
+                            raw_current_page = paging.get('current')
+                            try:
+                                current_page = (
+                                    int(raw_current_page)
+                                    if raw_current_page is not None
+                                    else None
+                                )
+                            except (TypeError, ValueError):
+                                current_page = None
+                            checkpoint_valid = (
+                                raw_total_pages is not None
+                                and page <= total_pages
+                                and (
+                                    raw_current_page is None
+                                    or current_page == page
+                                )
+                            )
+                            if not checkpoint_valid:
+                                logging.warning(
+                                    "Invalid/stale fixtures checkpoint %s/%s page %s "
+                                    "(API current=%r total=%r); restarting from page 1",
+                                    lid,
+                                    season,
+                                    page,
+                                    raw_current_page,
+                                    raw_total_pages,
+                                )
+                                resp = client.get_fixtures(lid, season)
+                                if (api_error := _api_error(resp)):
+                                    raise RuntimeError(api_error)
+                                items = resp.get('response', [])
+                                paging = resp.get('paging') or {}
+                                page = 1
+                                try:
+                                    total_pages = max(1, int(paging.get('total') or 1))
+                                except (TypeError, ValueError):
+                                    total_pages = 1
                         while True:
                             for item in items:
                                 teams = item.get('teams') or {}
