@@ -422,6 +422,13 @@ class ApiMetricsAndPriorityTests(unittest.TestCase):
         api_football._daily_blocked_until = None
         api_football._response_cache.clear()
         api_football.cache_metrics_snapshot(reset=True)
+        self._quota_ledger_patch = patch.object(
+            api_football.api_quota_ledger,
+            "reserve_call",
+            return_value={"allowed": True, "reason": "reserved", "remaining": 99},
+        )
+        self._quota_ledger_patch.start()
+        self.addCleanup(self._quota_ledger_patch.stop)
 
     def tearDown(self):
         api_football._daily_blocked_until = None
