@@ -236,6 +236,65 @@ def mark(
         )
 
 
+def mark_in_session(
+    session,
+    resource_key: str,
+    resource_type: str,
+    status: str,
+    *,
+    item_count: int = 0,
+    page_count: int = 0,
+    message: str | None = None,
+    metadata: dict | None = None,
+) -> None:
+    """Write a checkpoint in the caller's SQL transaction.
+
+    Fixture rows and their next-page checkpoint commit or roll back together.
+    The caller must ensure the registry table exists before opening the session.
+    """
+    previous = session.execute(
+        text("SELECT attempts FROM resource_sync_state WHERE resource_key = :key"),
+        {"key": str(resource_key)},
+    ).mappings().first()
+    attempts = int((previous or {}).get("attempts") or 0)
+    if status in {"running", "error"}:
+        attempts += 1
+    session.execute(
+        text(
+            """
+            INSERT INTO resource_sync_state (
+                resource_key, resource_type, status, item_count, page_count,
+                attempts, message, metadata_json, updated_at
+            )
+            VALUES (
+                :resource_key, :resource_type, :status, :item_count, :page_count,
+                :attempts, :message, :metadata_json, :updated_at
+            )
+            ON CONFLICT(resource_key) DO UPDATE SET
+                resource_type = excluded.resource_type,
+                status = excluded.status,
+                item_count = excluded.item_count,
+                page_count = excluded.page_count,
+                attempts = excluded.attempts,
+                message = excluded.message,
+                metadata_json = excluded.metadata_json,
+                updated_at = excluded.updated_at
+            """
+        ),
+        {
+            "resource_key": str(resource_key),
+            "resource_type": str(resource_type),
+            "status": str(status),
+            "item_count": int(item_count or 0),
+            "page_count": int(page_count or 0),
+            "attempts": attempts,
+            "message": message,
+            "metadata_json": json.dumps(metadata or {}, ensure_ascii=False, default=str),
+            "updated_at": _now().isoformat(),
+        },
+    )
+
+
 def counts() -> dict[str, int]:
     ensure_table()
     with engine.begin() as conn:
