@@ -1,3 +1,4 @@
+import datetime
 import pytest
 
 from services import import_service, remote_sync_lease, sync_registry
@@ -226,6 +227,7 @@ def _configure_current_refresh(monkeypatch):
     monkeypatch.setattr(import_service, "SessionLocal", lambda: session)
     monkeypatch.setattr(import_service, "_active_season_for_league", lambda *args: 2026)
     monkeypatch.setattr(sync_registry, "mark", lambda *args, **kwargs: None)
+    monkeypatch.setattr(sync_registry, "get", lambda key: None)
     return session
 
 
@@ -378,5 +380,42 @@ def test_current_refresh_stops_when_remote_lease_renewal_is_lost(monkeypatch):
     assert result["skipped_scopes"] == ["core:61:2026"]
     assert result["refreshed"] == []
     assert calls == ["remote_release", "local_release"]
+    assert session.closed
+
+def test_current_refresh_reuses_recent_completed_scope_without_claim_or_api(monkeypatch):
+    session = _configure_current_refresh(monkeypatch)
+    updated_at = (
+        datetime.datetime.now(datetime.UTC).replace(tzinfo=None)
+        - datetime.timedelta(minutes=5)
+    ).isoformat()
+    monkeypatch.setattr(
+        sync_registry,
+        "get",
+        lambda key: {
+            "status": "complete",
+            "updated_at": updated_at,
+        },
+    )
+    monkeypatch.setattr(
+        sync_registry,
+        "claim_download",
+        lambda *args, **kwargs: pytest.fail("recent complete scope should not claim"),
+    )
+    monkeypatch.setattr(
+        remote_sync_lease,
+        "claim",
+        lambda *args, **kwargs: pytest.fail("cached scope must not claim remote lease"),
+    )
+    monkeypatch.setattr(
+        import_service,
+        "_refresh_league_season",
+        lambda *args, **kwargs: pytest.fail("cached scope must not call API"),
+    )
+
+    result = import_service.refresh_current_competitions_on_connection()
+
+    assert result["refreshed"] == []
+    assert result["cached_scopes"] == [{"league_id": 61, "season": 2026}]
+    assert result["partial"] is not True
     assert session.closed
 
