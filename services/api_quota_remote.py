@@ -1,10 +1,9 @@
-"""Shared API-Football quota reservations in coarse, conservative blocks.
+"""Shared API-Football quota reservations in conservative blocks.
 
-Cloud and GitHub Actions use different SQLite files. This allocator uses the
-remote coordination branch to reserve daily quota blocks globally; each worker
-consumes its own block locally. Blocks are never refunded after a crash, which
-can waste quota but prevents two restored databases from spending the same
-reservation. Exhausted block IDs are reported on the next allocation.
+Cloud and GitHub Actions use different SQLite files. The coordination branch
+allocates daily blocks globally; each runtime consumes its block locally.
+Blocks are not refunded after crashes, so quota can be wasted but never
+re-issued based on an uncertain process's usage.
 """
 from __future__ import annotations
 
@@ -82,7 +81,7 @@ def _path(day_key: str) -> str:
     return f"{_REMOTE_PREFIX}/{digest}.json"
 
 
-def _read_record(repository: str, branch: str, path: str, token: str):
+def _read_record(repository: str, branch: str, path: str, token: str, day_key: str):
     endpoint = (
         f"/repos/{repository}/contents/{quote(path, safe='/')}"
         f"?ref={quote(branch, safe='')}"
@@ -98,11 +97,14 @@ def _read_record(repository: str, branch: str, path: str, token: str):
         record = json.loads(raw)
     except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise RemoteQuotaUnavailable("Ledger quota distant illisible.") from exc
-    if not isinstance(record, dict) or record.get("schema_version") != _SCHEMA_VERSION:
-        raise RemoteQuotaUnavailable("Version du ledger quota distant inconnue.")
-    if record.get("quota_day") != path.split("/")[-1].split(".")[0]:
-        # The path is hashed; callers validate the day field separately.
-        pass
+    if (
+        not isinstance(record, dict)
+        or record.get("schema_version") != _SCHEMA_VERSION
+        or record.get("quota_day") != day_key
+    ):
+        raise RemoteQuotaUnavailable("Version ou date du ledger quota distant incohérente.")
+    if not isinstance(record.get("allocations"), dict):
+        raise RemoteQuotaUnavailable("Allocations du ledger quota distant invalides.")
     return record, response.get("sha")
 
 
@@ -149,22 +151,27 @@ def _initial_record(day_key: str, snapshot: dict, now: datetime.datetime) -> dic
 
 
 def _merge_snapshot(record: dict, snapshot: dict) -> bool:
-    """Lower the global ceiling from fresh status, never raise it from stale data."""
+    """Lower the shared ceiling from fresh quota status; stale values never raise it."""
     remaining = _int(snapshot.get("daily_remaining"))
     limit = _int(snapshot.get("daily_limit"))
     known = bool(snapshot.get("known")) and remaining is not None and limit is not None
     if not known:
         return False
+    allocations = record.get("allocations", {})
     outstanding = sum(
         max(0, _int(item.get("remaining"), 0) or 0)
-        for item in record.get("allocations", {}).values()
+        for item in allocations.values()
         if isinstance(item, dict)
     )
     previous_low = _int(record.get("lowest_observed_remaining"))
     low = max(0, remaining) if previous_low is None else min(previous_low, max(0, remaining))
     candidate = max(0, low - outstanding)
     current_available = max(0, _int(record.get("available"), 0) or 0)
-    record["available"] = min(current_available, candidate)
+    if not record.get("known"):
+        # A fresh known status may safely replace the small unknown-quota pool.
+        record["available"] = candidate
+    else:
+        record["available"] = min(current_available, candidate)
     record["lowest_observed_remaining"] = low
     previous_limit = _int(record.get("daily_limit"))
     record["daily_limit"] = limit if previous_limit is None else min(previous_limit, limit)
@@ -198,11 +205,9 @@ def reserve_block(
         repository, token = remote_sync_lease._repo_token()
         branch = remote_sync_lease._branch()
         path = _path(day_key)
-        record, sha = _read_record(repository, branch, path, token)
+        record, sha = _read_record(repository, branch, path, token, day_key)
         if record is None:
             record = _initial_record(day_key, snapshot, current)
-        if record.get("quota_day") != day_key:
-            raise RemoteQuotaUnavailable("Date du ledger quota distant incohérente.")
 
         allocations = record.setdefault("allocations", {})
         spent_changed = False
@@ -213,7 +218,6 @@ def reserve_block(
                 allocation["spent_reported_at"] = current.isoformat()
                 spent_changed = True
 
-        known = bool(record.get("known"))
         snapshot_known = (
             bool(snapshot.get("known"))
             and _int(snapshot.get("daily_remaining")) is not None
@@ -229,17 +233,23 @@ def reserve_block(
         available = max(0, _int(record.get("available"), 0) or 0)
         reserve = max(0, _int(record.get("reserve"), 0) or 0)
         urgent = api_quota_policy.PRIORITIES.get(priority, 0) >= _URGENT_SCORE
-        max_allocatable = available if urgent else max(0, available - reserve)
-        amount = min(_block_size(), max_allocatable)
+        # Unknown quota snapshots are urgent-only even if another runtime
+        # previously initialized a known pool.
+        if not snapshot_known and not urgent:
+            amount = 0
+            reason = "remote_quota_unknown_urgent_only"
+        else:
+            max_allocatable = available if urgent else max(0, available - reserve)
+            amount = min(_block_size(), max_allocatable)
+            reason = "remote_shared_quota_exhausted"
 
         if amount <= 0:
-            # Report exhausted blocks even when no replacement can be granted.
             if spent_changed or snapshot_known:
                 record["updated_at"] = current.isoformat()
                 reported = _write_record(repository, branch, path, token, record, sha)
             return {
                 "allowed": False,
-                "reason": "remote_shared_quota_exhausted" if known or snapshot_known else "remote_unknown_quota_exhausted",
+                "reason": reason,
                 "remaining": available,
                 "reserve": reserve,
                 "known": bool(record.get("known")),
