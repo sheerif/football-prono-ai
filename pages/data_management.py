@@ -7,6 +7,7 @@ import pandas as pd
 import streamlit as st
 
 from components import ui
+from components.dataframe_utils import finished_jobs_dataframe
 from database.database import engine
 from services import (
     background_jobs,
@@ -496,7 +497,7 @@ def _render_jobs():
                         }.get(job.get("backup_status"), "—"),
                     }
                 )
-            st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+            st.dataframe(finished_jobs_dataframe(rows), hide_index=True, width="stretch")
 
 
 def _launch_import(label: str, league_ids: list[int], seasons: list[int], pause: float = 2.0, max_retries: int = 6):

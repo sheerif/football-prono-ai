@@ -6,6 +6,7 @@ from components.api_metrics import (
     normalize_metrics_snapshot,
 )
 from services import api_football
+from components.dataframe_utils import finished_jobs_dataframe
 
 
 class ApiMetricsFormattingTests(unittest.TestCase):
@@ -70,6 +71,20 @@ class ApiMetricsFormattingTests(unittest.TestCase):
         ):
             self.assertIn(key, snapshot)
         self.assertEqual(snapshot["schema_version"], api_football.CACHE_METRICS_SCHEMA_VERSION)
+
+    def test_finished_jobs_dataframe_is_arrow_safe_with_missing_metrics(self):
+        rows = [
+            {"Tâche": "Import A", "Appels API": 12, "Requêtes évitées": 5},
+            {"Tâche": "Import B", "Appels API": "—", "Requêtes évitées": "—"},
+        ]
+        frame = finished_jobs_dataframe(rows)
+        self.assertEqual(str(frame["Appels API"].dtype), "string")
+        self.assertEqual(str(frame["Requêtes évitées"].dtype), "string")
+        self.assertEqual(frame.iloc[0]["Appels API"], "12")
+        self.assertEqual(frame.iloc[1]["Appels API"], "—")
+        import pyarrow as pa
+        table = pa.Table.from_pandas(frame, preserve_index=False)
+        self.assertEqual(table.num_rows, 2)
 
 
 if __name__ == "__main__":
