@@ -441,7 +441,7 @@ def test_current_refresh_marks_failed_api_phases_incomplete(monkeypatch):
             pass
 
     session = FakeSession()
-    monkeypatch.setattr(import_service, "time.sleep", lambda *_: None)
+    monkeypatch.setattr(import_service.time, "sleep", lambda *_: None)
     monkeypatch.setattr(import_service.client, "get_teams", lambda *_: (_ for _ in ()).throw(RuntimeError("transient teams error")))
     monkeypatch.setattr(import_service.client, "get_fixtures", lambda *_: (_ for _ in ()).throw(RuntimeError("transient fixtures error")))
     monkeypatch.setattr(import_service.client, "get_standings", lambda *_: (_ for _ in ()).throw(RuntimeError("transient standings error")))
