@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from database import models
@@ -19,7 +21,21 @@ class _FakeQuery:
         return 0
 
 
+class _FakeResult:
+    def __init__(self, row=None):
+        self.row = row
+
+    def mappings(self):
+        return self
+
+    def first(self):
+        return self.row
+
+
 class _FakeSession:
+    def __init__(self, state):
+        self.state = state
+
     def query(self, model):
         return _FakeQuery(model)
 
@@ -28,8 +44,24 @@ class _FakeSession:
             return models.League(id=key, name="Test League", logo="logo")
         return None
 
+    def execute(self, statement, params):
+        sql = str(statement)
+        if sql.lstrip().startswith("SELECT attempts"):
+            return _FakeResult({"attempts": int(self.state.get("attempts") or 0)})
+        if "INSERT INTO resource_sync_state" in sql:
+            self.state.update(
+                status=params["status"],
+                metadata=json.loads(params["metadata_json"]),
+                attempts=params["attempts"],
+                message=params["message"],
+            )
+            return _FakeResult()
+        raise AssertionError(f"Unexpected SQL in fake session: {sql}")
+
     def commit(self):
-        pass
+        self.state.setdefault("commit_checkpoints", []).append(
+            (self.state.get("status"), self.state.get("metadata", {}).get("checkpoint"))
+        )
 
     def rollback(self):
         pass
@@ -75,7 +107,8 @@ def test_core_fixture_quota_checkpoint_persists_and_resume_starts_exact_page(mon
         state["metadata"] = dict(metadata or {})
         marks.append((status, dict(metadata or {})))
 
-    monkeypatch.setattr(import_service, "SessionLocal", _FakeSession)
+    monkeypatch.setattr(import_service, "SessionLocal", lambda: _FakeSession(state))
+    monkeypatch.setattr(sync_registry, "ensure_table", lambda: None)
     monkeypatch.setattr(import_service, "register_league_seasons", lambda *args, **kwargs: None)
     monkeypatch.setattr(import_service, "_get_or_create_team", lambda *args, **kwargs: None)
     monkeypatch.setattr(import_service, "_save_match", lambda *args, **kwargs: None)
@@ -104,6 +137,7 @@ def test_core_fixture_quota_checkpoint_persists_and_resume_starts_exact_page(mon
     checkpoint = state["metadata"]["checkpoint"]
     assert checkpoint == "fixtures-page:61:2026:2"
     assert state["status"] == "error"
+    assert state["commit_checkpoints"][0] == ("partial", checkpoint)
     assert any(
         metadata.get("checkpoint") == checkpoint
         for status, metadata in marks
@@ -123,4 +157,8 @@ def test_core_fixture_quota_checkpoint_persists_and_resume_starts_exact_page(mon
     assert result is None
     assert client.first_page_calls == 1, "resume must not redownload page 1"
     assert client.page_calls == [2, 2, 3]
+    assert state["commit_checkpoints"][-2:] == [
+        ("partial", "fixtures-page:61:2026:3"),
+        ("partial", "standings:61:2026"),
+    ]
     assert state["status"] == "complete"

@@ -1603,6 +1603,7 @@ def _import_leagues_cautious_unleased(
     """
     from services import sync_registry
 
+    sync_registry.ensure_table()
     seasons = seasons or _configured_season_range()
     register_league_seasons(league_ids, seasons, source="import")
     session = SessionLocal()
@@ -1619,19 +1620,31 @@ def _import_leagues_cautious_unleased(
         if progress_callback:
             progress_callback(completed_steps, total_steps, label)
 
-    def persist_checkpoint(checkpoint: str, message: str, **details):
-        sync_registry.mark(
-            f"core:{int(lid)}:{int(season)}",
-            "core_season",
-            "partial",
-            message=message,
-            metadata={
-                "checkpoint": checkpoint,
-                "league_id": int(lid),
-                "season": int(season),
-                **details,
-            },
-        )
+    def persist_checkpoint(checkpoint: str, message: str, *, session=None, **details):
+        key = f"core:{int(lid)}:{int(season)}"
+        metadata = {
+            "checkpoint": checkpoint,
+            "league_id": int(lid),
+            "season": int(season),
+            **details,
+        }
+        if session is not None:
+            sync_registry.mark_in_session(
+                session,
+                key,
+                "core_season",
+                "partial",
+                message=message,
+                metadata=metadata,
+            )
+        else:
+            sync_registry.mark(
+                key,
+                "core_season",
+                "partial",
+                message=message,
+                metadata=metadata,
+            )
 
     try:
         for league_index, lid in enumerate(league_ids):
@@ -1858,7 +1871,6 @@ def _import_leagues_cautious_unleased(
                                         _get_or_create_team(session, teams.get('away'), league_id=lid)
                                 _save_match(session, item, lid, season)
                                 _save_fixture_api_detail(session, item, lid, season)
-                            session.commit()
                             next_checkpoint = (
                                 f"standings:{lid}:{season}"
                                 if page >= total_pages
@@ -1867,9 +1879,11 @@ def _import_leagues_cautious_unleased(
                             persist_checkpoint(
                                 next_checkpoint,
                                 f"Page fixtures {page}/{total_pages} validée ; reprise au checkpoint suivant.",
+                                session=session,
                                 completed_page=int(page),
                                 total_pages=int(total_pages),
                             )
+                            session.commit()
                             if page >= total_pages:
                                 break
                             if priority_preemption_check and priority_preemption_check():
