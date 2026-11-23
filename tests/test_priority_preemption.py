@@ -275,6 +275,22 @@ def test_manual_import_resume_plan_rejects_unknown_scope():
     ) is None
 
 
+def test_manual_import_resume_plan_rejects_malformed_checkpoint():
+    invalid = (
+        "fixtures-page:61:2026:0",
+        "fixtures-page:61:2026:-2",
+        "fixtures-page:61:2026:3:extra",
+        "fixtures:61:2026:extra",
+        "teams:61:2026:1",
+    )
+    for checkpoint in invalid:
+        assert import_service._manual_import_resume_plan(
+            [61], [2026], checkpoint
+        ) is None
+
+
+
+
 
 def test_manual_import_resumes_fixture_pagination_at_checkpoint_page(monkeypatch):
     from database import models
@@ -345,3 +361,86 @@ def test_manual_import_resumes_fixture_pagination_at_checkpoint_page(monkeypatch
     assert requested == [("/fixtures", {"league": 61, "season": 2026, "page": 3})]
     assert result["preempted"] is True
     assert result["checkpoint"] == "fixtures-page:61:2026:4"
+
+
+
+def test_manual_import_restarts_when_checkpoint_page_is_stale(monkeypatch):
+    from database import models
+    from services import remote_sync_lease, sync_registry
+
+    monkeypatch.setattr(remote_sync_lease, "claim", lambda *args, **kwargs: True)
+    monkeypatch.setattr(remote_sync_lease, "renew", lambda *args, **kwargs: True)
+    monkeypatch.setattr(remote_sync_lease, "release", lambda *args, **kwargs: True)
+    monkeypatch.setattr(sync_registry, "mark", lambda *args, **kwargs: None)
+    monkeypatch.setattr(sync_registry, "claim_download", lambda *args, **kwargs: True)
+    monkeypatch.setattr(sync_registry, "renew_download_claim", lambda *args, **kwargs: True)
+    monkeypatch.setattr(sync_registry, "release_download_claim", lambda *args, **kwargs: True)
+
+    class Query:
+        def __init__(self, model):
+            self.model = model
+        def filter_by(self, **kwargs):
+            return self
+        def count(self):
+            if self.model is models.Team:
+                return 4
+            return 0
+
+    class FakeSession:
+        def query(self, model):
+            return Query(model)
+        def get(self, model, key):
+            if model is models.League:
+                return models.League(id=key, name="Test League", logo="logo")
+            return None
+        def commit(self):
+            pass
+        def rollback(self):
+            pass
+        def close(self):
+            pass
+
+    monkeypatch.setattr(import_service, "SessionLocal", FakeSession)
+    monkeypatch.setattr(import_service, "register_league_seasons", lambda *args, **kwargs: None)
+    monkeypatch.setattr(import_service, "_get_or_create_team", lambda *args, **kwargs: None)
+    saved_fixture_ids = []
+    monkeypatch.setattr(
+        import_service,
+        "_save_match",
+        lambda session, item, league_id, season: saved_fixture_ids.append(
+            item["fixture"]["id"]
+        ),
+    )
+    monkeypatch.setattr(import_service, "_save_fixture_api_detail", lambda *args, **kwargs: None)
+
+    requested = []
+    class Client:
+        def _get(self, path, params):
+            requested.append(("resume", params["page"]))
+            return {
+                "response": [{"fixture": {"id": 5005}, "teams": {}}],
+                "paging": {"current": 5, "total": 4},
+            }
+        def get_fixtures(self, *args, **kwargs):
+            requested.append(("restart", 1))
+            return {
+                "response": [{"fixture": {"id": 1001}, "teams": {}}],
+                "paging": {"current": 1, "total": 4},
+            }
+        def get_standings(self, *args, **kwargs):
+            raise AssertionError("the test preempts before standings")
+
+    monkeypatch.setattr(import_service, "client", Client())
+    priority_checks = iter([False, False, False, True])
+    result = import_service.import_leagues_cautious(
+        [61],
+        seasons=[2026],
+        pause=0,
+        max_retries=1,
+        resume_checkpoint="fixtures-page:61:2026:5",
+        priority_preemption_check=lambda: next(priority_checks),
+    )
+    assert requested == [("resume", 5), ("restart", 1)]
+    assert saved_fixture_ids == [1001]
+    assert result["preempted"] is True
+    assert result["checkpoint"] == "fixtures-page:61:2026:2"
