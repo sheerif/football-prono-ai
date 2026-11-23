@@ -96,6 +96,28 @@ class ApiFootballClientTests(unittest.TestCase):
         self.assertEqual(metrics["quota_remote_block_denials"], 0)
         self.assertEqual(metrics["quota_remote_fallbacks"], 0)
 
+    def test_remote_quota_denial_metric_counts_only_remote_denials(self):
+        session = Mock()
+        session.get.return_value = self._status_response()
+        client = ApiFootballClient(api_key="test-key", session=session)
+        with patch.object(
+            api_football.api_quota_ledger,
+            "reserve_call",
+            return_value={
+                "allowed": False,
+                "reason": "remote_shared_quota_exhausted",
+                "remaining": 50,
+                "remote_enabled": True,
+                "remote_shared": False,
+            },
+        ):
+            with self.assertRaises(RuntimeError):
+                client.get_leagues()
+        metrics = api_football.cache_metrics_snapshot()
+        self.assertEqual(metrics["quota_remote_block_denials"], 1)
+        self.assertEqual(metrics["quota_remote_fallbacks"], 0)
+        session.get.assert_called_once()
+
     def test_every_uncached_data_download_is_preceded_by_fresh_status(self):
         first_data = Mock()
         first_data.json.return_value = {"response": [{"id": 1}]}
