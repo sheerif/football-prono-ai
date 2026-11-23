@@ -1237,14 +1237,12 @@ def refresh_current_competitions_on_connection(
     register_league_seasons(config["league_ids"], [config["end_season"]], source="current_refresh")
     session = SessionLocal()
     refreshed = []
+    cached_scopes = []
     skipped_scopes = []
     league_ids = config["league_ids"]
     total_steps = max(1, len(league_ids) * 3)
     lease_seconds = 1800
     renew_interval = 60
-
-    class _CurrentRefreshLeaseLost(Exception):
-        pass
 
     if progress_callback:
         progress_callback(0, total_steps, "Préparation des championnats en cours")
@@ -1252,6 +1250,7 @@ def refresh_current_competitions_on_connection(
         for league_index, league_id in enumerate(league_ids):
             season = _active_season_for_league(session, league_id, config["end_season"])
             key = f"core:{int(league_id)}:{int(season)}"
+            scope_state_key = f"current-refresh:{int(league_id)}:{int(season)}"
             if priority_preemption_check and priority_preemption_check():
                 return {
                     "ran": True,
@@ -1259,8 +1258,30 @@ def refresh_current_competitions_on_connection(
                     "checkpoint": f"current-refresh:{league_id}:{season}",
                     "config": config,
                     "refreshed": refreshed,
+                    "cached_scopes": cached_scopes,
                     "skipped_scopes": skipped_scopes,
                 }
+
+            prior_state = sync_registry.get(scope_state_key)
+            if prior_state and prior_state.get("status") == "complete":
+                try:
+                    updated_at = datetime.datetime.fromisoformat(prior_state["updated_at"])
+                    if updated_at.tzinfo is not None:
+                        updated_at = updated_at.astimezone(datetime.UTC).replace(tzinfo=None)
+                    if (
+                        (utc_now() - updated_at).total_seconds()
+                        < config["interval_minutes"] * 60
+                    ):
+                        cached_scopes.append(key)
+                        if progress_callback:
+                            progress_callback(
+                                min(total_steps, (league_index + 1) * 3),
+                                total_steps,
+                                f"Ligue {league_id} - {season}: actualisation récente réutilisée",
+                            )
+                        continue
+                except (KeyError, TypeError, ValueError):
+                    pass
 
             owner = f"current-refresh:{os.getpid()}:{time.time_ns()}"
             try:
@@ -1353,7 +1374,7 @@ def refresh_current_competitions_on_connection(
 
             try:
                 sync_registry.mark(
-                    key,
+                    scope_state_key,
                     "current_season",
                     "running",
                     message="Leases persistantes locale et distante acquises",
@@ -1370,6 +1391,12 @@ def refresh_current_competitions_on_connection(
                 )
                 if lease_lost:
                     skipped_scopes.append(key)
+                    sync_registry.mark(
+                        scope_state_key,
+                        "current_season",
+                        "deferred",
+                        message="Lease persistante perdue ; reprise requise.",
+                    )
                     return {
                         "ran": True,
                         "partial": True,
@@ -1377,19 +1404,44 @@ def refresh_current_competitions_on_connection(
                         "checkpoint": (refresh_result or {}).get("checkpoint") or f"current-refresh:{league_id}:{season}",
                         "config": config,
                         "refreshed": refreshed,
+                        "cached_scopes": cached_scopes,
                         "skipped_scopes": skipped_scopes,
                         "reason": "Lease persistante perdue ; arrêt sûr et reprise requise.",
                     }
                 if refresh_result and refresh_result.get("preempted"):
+                    sync_registry.mark(
+                        scope_state_key,
+                        "current_season",
+                        "deferred",
+                        message=f"Préemption au checkpoint {refresh_result.get('checkpoint')}.",
+                    )
                     return {
                         "ran": True,
                         "preempted": True,
                         "checkpoint": refresh_result.get("checkpoint"),
                         "config": config,
                         "refreshed": refreshed,
+                        "cached_scopes": cached_scopes,
                         "skipped_scopes": skipped_scopes,
                     }
+                sync_registry.mark(
+                    scope_state_key,
+                    "current_season",
+                    "complete",
+                    message="Actualisation de la saison courante terminée.",
+                )
                 refreshed.append({"league_id": league_id, "season": season})
+            except Exception as exc:
+                try:
+                    sync_registry.mark(
+                        scope_state_key,
+                        "current_season",
+                        "error",
+                        message=str(exc),
+                    )
+                except Exception:
+                    logger.warning("Unable to record current-refresh error for %s", key, exc_info=True)
+                raise
             finally:
                 if remote_claimed:
                     try:
@@ -1411,6 +1463,7 @@ def refresh_current_competitions_on_connection(
             "reason": "Certaines ligues/saisons ont été différées faute de lease ; nouvelle tentative nécessaire.",
             "config": config,
             "refreshed": refreshed,
+            "cached_scopes": cached_scopes,
             "skipped_scopes": skipped_scopes,
         }
 
@@ -1421,6 +1474,7 @@ def refresh_current_competitions_on_connection(
         "reason": "Championnats en cours mis à jour.",
         "config": config,
         "refreshed": refreshed,
+        "cached_scopes": cached_scopes,
         "refreshed_at": now,
     }
 
