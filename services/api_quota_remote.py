@@ -239,6 +239,8 @@ def reserve_block(
             max_allocatable = available if urgent else max(0, available - reserve)
             amount = min(max(_block_size(), cost), max_allocatable)
             reason = "remote_shared_quota_exhausted"
+            if amount < cost:
+                amount = 0
 
         if amount <= 0:
             if spent_changed or snapshot_known:
