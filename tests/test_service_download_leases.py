@@ -239,7 +239,7 @@ class LineupLeaseIntegrationTests(unittest.TestCase):
         ])
         self.assertFalse(result["errors"])
         self.assertTrue(any("différée" in label for label in progress_events))
-        self.assertIn("différés ou en erreur", progress_events[-1])
+        self.assertIn("performances récentes différées", progress_events[-1])
 
 
 class SeasonPlayerLeaseIntegrationTests(unittest.TestCase):
