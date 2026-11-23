@@ -188,12 +188,14 @@ def reserve_block(
     priority: str,
     *,
     spent_allocation_ids: tuple[str, ...] | list[str] = (),
+    cost: int = 1,
     now: datetime.datetime | None = None,
 ) -> dict:
     """CAS-reserve a block for one runtime, or reject without granting tokens."""
     if not enabled():
         return {"allowed": False, "reason": "remote_reservations_disabled", "remote": False}
     snapshot = dict(snapshot or {})
+    cost = max(1, int(cost))
     current = _utc_now(now)
     day_key = current.date().isoformat()
     lock_key = f"api-quota-ledger:{day_key}"
@@ -235,7 +237,7 @@ def reserve_block(
             reason = "remote_quota_unknown_urgent_only"
         else:
             max_allocatable = available if urgent else max(0, available - reserve)
-            amount = min(_block_size(), max_allocatable)
+            amount = min(max(_block_size(), cost), max_allocatable)
             reason = "remote_shared_quota_exhausted"
 
         if amount <= 0:
