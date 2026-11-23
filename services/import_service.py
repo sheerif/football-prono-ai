@@ -1142,7 +1142,11 @@ def _refresh_league_season(
                 if (api_error := _api_error(resp)):
                     raise RuntimeError(api_error)
                 items = resp.get("response", [])
-            fixtures_complete = True
+            fixtures_complete = bool(
+                session.query(models.Match).filter_by(
+                    league_id=league_id, season=season
+                ).count()
+            )
             break
         except HTTPError as exc:
             tries += 1
@@ -1213,7 +1217,11 @@ def _refresh_league_season(
                     else:
                         session.add(models.Standing(team_id=team_id, season=season, **values))
                 session.commit()
-            standings_complete = True
+            standings_complete = bool(
+                session.query(models.Standing).filter_by(
+                    league_id=league_id, season=season
+                ).count()
+            )
             break
         except HTTPError as exc:
             tries += 1
