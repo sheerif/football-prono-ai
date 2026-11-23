@@ -91,7 +91,7 @@ class LineupLeaseIntegrationTests(unittest.TestCase):
         remote_release.assert_called_once_with("fixture-lineup:123", claim.call_args.args[1])
         release.assert_called_once_with("fixture-lineup:123", claim.call_args.args[1])
 
-    def test_fixture_players_skip_when_claim_is_held(self):
+    def test_fixture_players_skip_when_local_claim_is_held(self):
         session = MagicMock()
         session.get.return_value = None
         session_context = MagicMock()
@@ -101,12 +101,145 @@ class LineupLeaseIntegrationTests(unittest.TestCase):
             patch.object(lineup_service, "_ensure_schema"),
             patch.object(lineup_service, "SessionLocal", return_value=session_context),
             patch.object(lineup_service.sync_registry, "claim_download", return_value=False),
+            patch.object(lineup_service.remote_sync_lease, "claim") as remote_claim,
             patch.object(lineup_service.client, "get_fixture_players") as fetch,
         ):
             result = lineup_service.sync_fixture_players(123)
 
         self.assertTrue(result["skipped"])
+        self.assertEqual(result["reason"], "local_claimed")
+        remote_claim.assert_not_called()
         fetch.assert_not_called()
+
+    def test_fixture_players_skip_when_remote_claim_is_held_and_release_local(self):
+        session = MagicMock()
+        session.get.return_value = None
+        session_context = MagicMock()
+        session_context.__enter__.return_value = session
+        session_context.__exit__.return_value = False
+        local_claim = MagicMock(return_value=True)
+        local_release = MagicMock()
+        remote_claim = MagicMock(return_value=False)
+        with (
+            patch.object(lineup_service, "_ensure_schema"),
+            patch.object(lineup_service, "SessionLocal", return_value=session_context),
+            patch.object(lineup_service.sync_registry, "claim_download", local_claim),
+            patch.object(lineup_service.sync_registry, "release_download_claim", local_release),
+            patch.object(lineup_service.remote_sync_lease, "claim", remote_claim),
+            patch.object(lineup_service.remote_sync_lease, "release") as remote_release,
+            patch.object(lineup_service.client, "get_fixture_players") as fetch,
+        ):
+            result = lineup_service.sync_fixture_players(123)
+
+        self.assertTrue(result["skipped"])
+        self.assertEqual(result["reason"], "remote_claimed")
+        remote_claim.assert_called_once_with(
+            "fixture-players:123",
+            local_claim.call_args.args[1],
+            lease_seconds=900,
+        )
+        local_release.assert_called_once_with(
+            "fixture-players:123", local_claim.call_args.args[1]
+        )
+        remote_release.assert_not_called()
+        fetch.assert_not_called()
+
+    def test_fixture_players_fails_closed_when_remote_lease_is_unavailable(self):
+        session = MagicMock()
+        session.get.return_value = None
+        session_context = MagicMock()
+        session_context.__enter__.return_value = session
+        session_context.__exit__.return_value = False
+        local_claim = MagicMock(return_value=True)
+        local_release = MagicMock()
+        with (
+            patch.object(lineup_service, "_ensure_schema"),
+            patch.object(lineup_service, "SessionLocal", return_value=session_context),
+            patch.object(lineup_service.sync_registry, "claim_download", local_claim),
+            patch.object(lineup_service.sync_registry, "release_download_claim", local_release),
+            patch.object(lineup_service.remote_sync_lease, "claim", side_effect=RuntimeError("remote unavailable")),
+            patch.object(lineup_service.remote_sync_lease, "release") as remote_release,
+            patch.object(lineup_service.client, "get_fixture_players") as fetch,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "aucun téléchargement lancé"):
+                lineup_service.sync_fixture_players(123)
+
+        local_release.assert_called_once_with(
+            "fixture-players:123", local_claim.call_args.args[1]
+        )
+        remote_release.assert_not_called()
+        fetch.assert_not_called()
+
+    def test_fixture_players_releases_both_claims_after_success(self):
+        session = MagicMock()
+        session.get.return_value = None
+        session_context = MagicMock()
+        session_context.__enter__.return_value = session
+        session_context.__exit__.return_value = False
+        local_claim = MagicMock(return_value=True)
+        local_release = MagicMock()
+        remote_claim = MagicMock(return_value=True)
+        remote_release = MagicMock()
+        with (
+            patch.object(lineup_service, "_ensure_schema"),
+            patch.object(lineup_service, "SessionLocal", return_value=session_context),
+            patch.object(lineup_service.sync_registry, "claim_download", local_claim),
+            patch.object(lineup_service.sync_registry, "release_download_claim", local_release),
+            patch.object(lineup_service.remote_sync_lease, "claim", remote_claim),
+            patch.object(lineup_service.remote_sync_lease, "release", remote_release),
+            patch.object(lineup_service.client, "get_fixture_players", return_value={"response": []}),
+            patch.object(lineup_service, "_save_fixture_players", return_value=3),
+        ):
+            result = lineup_service.sync_fixture_players(123)
+
+        self.assertEqual(result["players"], 3)
+        self.assertTrue(result["available"])
+        remote_claim.assert_called_once_with(
+            "fixture-players:123",
+            local_claim.call_args.args[1],
+            lease_seconds=900,
+        )
+        remote_release.assert_called_once_with(
+            "fixture-players:123", local_claim.call_args.args[1]
+        )
+        local_release.assert_called_once_with(
+            "fixture-players:123", local_claim.call_args.args[1]
+        )
+
+    def test_match_intelligence_reports_deferred_fixture_player_syncs(self):
+        progress_events = []
+        conn = MagicMock()
+        conn.execute.return_value.scalar.return_value = 0
+        context = MagicMock()
+        context.__enter__.return_value = conn
+        context.__exit__.return_value = False
+        skipped = {"profiles": 0, "statistics": 0, "skipped": True, "reason": "remote_claimed"}
+        with (
+            patch.object(lineup_service, "_ensure_schema"),
+            patch.object(lineup_service, "_fixture_league_id", return_value=39),
+            patch.object(lineup_service, "sync_lineups", return_value={"teams": 2, "available": True}),
+            patch.object(lineup_service.engine, "begin", return_value=context),
+            patch.object(player_service, "sync_players", return_value={"profiles": 0, "skipped": False}),
+            patch.object(lineup_service, "_recent_fixture_ids", return_value=[501]),
+            patch.object(lineup_service, "sync_fixture_players", return_value=skipped),
+            patch.object(lineup_service.time, "sleep"),
+        ):
+            result = lineup_service.sync_match_intelligence(
+                fixture_id=500,
+                home_team_id=10,
+                away_team_id=20,
+                season=2026,
+                match_date="2026-11-23",
+                progress_callback=lambda current, total, label: progress_events.append(label),
+            )
+
+        self.assertEqual(result["recent_players"], 0)
+        self.assertEqual(result["recent_players_skipped"], [
+            {"fixture_id": 501, "reason": "remote_claimed"}
+        ])
+        self.assertFalse(result["errors"])
+        self.assertTrue(any("différée" in label for label in progress_events))
+        self.assertIn("différés ou en erreur", progress_events[-1])
 
 
 class SeasonPlayerLeaseIntegrationTests(unittest.TestCase):
