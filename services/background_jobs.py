@@ -1534,6 +1534,11 @@ def start_startup_updates_once(connection_log_id: int | None = None) -> str | No
                 for item in (current_result.get("refreshed") or [])
                 if item.get("season") is not None
             }
+            refreshed_current_seasons.update(
+                int(item["season"])
+                for item in (current_result.get("cached_scopes") or [])
+                if item.get("season") is not None
+            )
             auto_result = import_service.auto_refresh_if_due(
                 skip_force_refresh_seasons=refreshed_current_seasons,
                 progress_callback=lambda current, total, label: _phase_progress(
