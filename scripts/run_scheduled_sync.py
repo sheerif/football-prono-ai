@@ -288,10 +288,11 @@ def main() -> int:
         )
         if result.get("status") == "skipped":
             print(
-                "Synchronisation ignorée : une autre instance possède la lease globale.",
+                "Synchronisation ignorée : une autre instance possède la lease globale. "
+                "Ce run ne constitue pas une synchronisation validée.",
                 file=sys.stderr,
             )
-            return 0
+            return 1
         if result.get("status") != "complete":
             print(
                 "Synchronisation non exhaustive "
