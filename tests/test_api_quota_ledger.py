@@ -1,10 +1,10 @@
 """SQLite atomic API quota reservation tests."""
 from __future__ import annotations
 
+import datetime
 import multiprocessing
 import os
 import tempfile
-from concurrent.futures import ThreadPoolExecutor
 
 from sqlalchemy import create_engine
 
@@ -45,6 +45,9 @@ def test_concurrent_processes_cannot_spend_the_same_quota_tokens():
         for process in processes:
             process.join(30)
         for process in processes:
+            if process.is_alive():
+                process.terminate()
+                process.join()
             assert process.exitcode == 0
         allowed = [queue.get(timeout=5) for _ in processes]
         # The policy reserves 15 tokens of the 100-call daily allowance.
