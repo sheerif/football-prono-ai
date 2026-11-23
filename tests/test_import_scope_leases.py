@@ -419,3 +419,62 @@ def test_current_refresh_reuses_recent_completed_scope_without_claim_or_api(monk
     assert not result.get("partial", False)
     assert session.closed
 
+
+
+def test_current_refresh_marks_failed_api_phases_incomplete(monkeypatch):
+    class Query:
+        def filter_by(self, **kwargs):
+            return self
+        def count(self):
+            return 0
+
+    class FakeSession:
+        def get(self, model, league_id):
+            return type("League", (), {"name": "Test", "logo": "logo"})()
+        def query(self, model):
+            return Query()
+        def commit(self):
+            pass
+        def rollback(self):
+            pass
+        def close(self):
+            pass
+
+    session = FakeSession()
+    monkeypatch.setattr(import_service, "time.sleep", lambda *_: None)
+    monkeypatch.setattr(import_service.client, "get_teams", lambda *_: (_ for _ in ()).throw(RuntimeError("transient teams error")))
+    monkeypatch.setattr(import_service.client, "get_fixtures", lambda *_: (_ for _ in ()).throw(RuntimeError("transient fixtures error")))
+    monkeypatch.setattr(import_service.client, "get_standings", lambda *_: (_ for _ in ()).throw(RuntimeError("transient standings error")))
+
+    result = import_service._refresh_league_season(
+        session, league_id=61, season=2026, pause=0, max_retries=1
+    )
+
+    assert result["partial"] is True
+    assert result["failed_phases"] == ["teams", "fixtures", "standings"]
+    assert result["completed_phases"] == []
+
+
+def test_current_refresh_defers_incomplete_phase_without_caching(monkeypatch):
+    session = _configure_current_refresh(monkeypatch)
+    states = []
+    writes = []
+    monkeypatch.setattr(sync_registry, "mark", lambda key, resource_type, status, **kwargs: states.append((key, status, kwargs.get("message"))))
+    monkeypatch.setattr(sync_registry, "claim_download", lambda *args, **kwargs: True)
+    monkeypatch.setattr(sync_registry, "release_download_claim", lambda *args: True)
+    monkeypatch.setattr(remote_sync_lease, "claim", lambda *args, **kwargs: True)
+    monkeypatch.setattr(remote_sync_lease, "release", lambda *args: True)
+    monkeypatch.setattr(import_service, "_refresh_league_season", lambda *args, **kwargs: {
+        "partial": True, "failed_phases": ["fixtures"], "completed_phases": ["teams", "standings"]
+    })
+    monkeypatch.setattr(import_service, "_set_sync_value", lambda *args: writes.append(args))
+
+    result = import_service.refresh_current_competitions_on_connection()
+
+    assert result["partial"] is True
+    assert result["failed_phases"] == ["fixtures"]
+    assert result["skipped_scopes"] == ["core:61:2026"]
+    assert result["refreshed"] == []
+    assert [status for _, status, _ in states] == ["running", "deferred"]
+    assert writes == []
+    assert session.closed
