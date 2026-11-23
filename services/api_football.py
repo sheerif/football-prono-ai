@@ -11,6 +11,8 @@ from requests.exceptions import HTTPError
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+from services import api_quota_ledger
+
 load_dotenv()
 BASE_URL = "https://v3.football.api-sports.io"
 DEFAULT_TIMEOUT = (5, 30)
@@ -27,6 +29,9 @@ _cache_metrics = {
     "api_data_requests": 0,
     "quota_status_checks": 0,
     "quota_policy_blocks": 0,
+    "quota_atomic_reservations": 0,
+    "quota_atomic_blocks": 0,
+    "quota_ledger_errors": 0,
     "cache_evictions": 0,
 }
 
@@ -287,6 +292,24 @@ class ApiFootballClient:
                         f"Appel API différé ({priority}) : {decision['reason']}; "
                         f"réserve protégée={decision.get('reserve', 0)}."
                     )
+                try:
+                    reservation = api_quota_ledger.reserve_call(
+                        quota_snapshot, priority, cost=1
+                    )
+                except Exception as exc:
+                    _cache_metrics["quota_ledger_errors"] += 1
+                    raise RuntimeError(
+                        "Réservation atomique du quota API indisponible ; "
+                        "appel bloqué par sécurité."
+                    ) from exc
+                if not reservation.get("allowed"):
+                    _cache_metrics["quota_atomic_blocks"] += 1
+                    raise RuntimeError(
+                        f"Appel API différé ({priority}) : "
+                        f"{reservation.get('reason', 'budget atomique épuisé')}; "
+                        f"quota restant atomique={reservation.get('remaining')}."
+                    )
+                _cache_metrics["quota_atomic_reservations"] += 1
             payload = self._get_unlocked(
                 path,
                 params,
