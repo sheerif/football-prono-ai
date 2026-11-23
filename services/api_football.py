@@ -32,6 +32,9 @@ _cache_metrics = {
     "quota_atomic_reservations": 0,
     "quota_atomic_blocks": 0,
     "quota_ledger_errors": 0,
+    "quota_remote_shared_tokens": 0,
+    "quota_remote_block_denials": 0,
+    "quota_remote_fallbacks": 0,
     "cache_evictions": 0,
 }
 
@@ -302,6 +305,12 @@ class ApiFootballClient:
                         "Réservation atomique du quota API indisponible ; "
                         "appel bloqué par sécurité."
                     ) from exc
+                if reservation.get("remote_shared"):
+                    _cache_metrics["quota_remote_shared_tokens"] += 1
+                elif reservation.get("remote_enabled") is True and not reservation.get("allowed"):
+                    _cache_metrics["quota_remote_block_denials"] += 1
+                elif reservation.get("remote_enabled") is False:
+                    _cache_metrics["quota_remote_fallbacks"] += 1
                 if not reservation.get("allowed"):
                     _cache_metrics["quota_atomic_blocks"] += 1
                     raise RuntimeError(
