@@ -1070,16 +1070,22 @@ def _refresh_league_season(
     existing_teams = session.query(models.Team).filter_by(
         league_id=league_id
     ).count()
+    teams_complete = existing_teams > 0
+    failed_phases = []
     while existing_teams <= 0 and tries < max_retries:
         if priority_preemption_check and priority_preemption_check():
             return {"preempted": True, "checkpoint": f"teams:{league_id}:{season}"}
         try:
             resp = client.get_teams(league_id, season)
-            for item in resp.get("response", []):
+            if (api_error := _api_error(resp)):
+                raise RuntimeError(api_error)
+            team_items = resp.get("response", [])
+            for item in team_items:
                 team_info = item.get("team") if "team" in item else item
                 _get_or_create_team(session, team_info, league_id=league_id)
             session.commit()
             existing_teams = 1
+            teams_complete = bool(team_items)
             break
         except HTTPError as exc:
             tries += 1
@@ -1094,6 +1100,8 @@ def _refresh_league_season(
             logger.warning(f"Error refreshing teams {league_id}/{season}: {exc} — retry {tries}")
             time.sleep(pause * tries)
 
+    if not teams_complete:
+        failed_phases.append("teams")
     if progress_callback:
         progress_callback(1, 3, f"Équipes {league_id}/{season} vérifiées")
 
@@ -1102,11 +1110,14 @@ def _refresh_league_season(
     if priority_preemption_check and priority_preemption_check():
         return {"preempted": True, "checkpoint": f"fixtures:{league_id}:{season}"}
     tries = 0
+    fixtures_complete = False
     while tries < max_retries:
         if priority_preemption_check and priority_preemption_check():
             return {"preempted": True, "checkpoint": f"fixtures:{league_id}:{season}"}
         try:
             resp = client.get_fixtures(league_id, season)
+            if (api_error := _api_error(resp)):
+                raise RuntimeError(api_error)
             items = resp.get("response", [])
             paging = resp.get("paging") or {}
             page = 1
@@ -1128,7 +1139,10 @@ def _refresh_league_season(
                     return {"preempted": True, "checkpoint": f"fixtures-page:{league_id}:{season}:{page + 1}"}
                 page += 1
                 resp = client._get("/fixtures", {"league": league_id, "season": season, "page": page})
+                if (api_error := _api_error(resp)):
+                    raise RuntimeError(api_error)
                 items = resp.get("response", [])
+            fixtures_complete = True
             break
         except HTTPError as exc:
             tries += 1
@@ -1143,6 +1157,8 @@ def _refresh_league_season(
             logger.warning(f"Error refreshing fixtures {league_id}/{season}: {exc} — retry {tries}")
             time.sleep(pause * tries)
 
+    if not fixtures_complete:
+        failed_phases.append("fixtures")
     if progress_callback:
         progress_callback(2, 3, f"Matchs {league_id}/{season} vérifiés")
 
@@ -1151,11 +1167,14 @@ def _refresh_league_season(
     if priority_preemption_check and priority_preemption_check():
         return {"preempted": True, "checkpoint": f"standings:{league_id}:{season}"}
     tries = 0
+    standings_complete = False
     while tries < max_retries:
         if priority_preemption_check and priority_preemption_check():
             return {"preempted": True, "checkpoint": f"standings:{league_id}:{season}"}
         try:
             resp = client.get_standings(league_id, season)
+            if (api_error := _api_error(resp)):
+                raise RuntimeError(api_error)
             for item in resp.get("response", []):
                 table = None
                 if isinstance(item, dict) and "league" in item and "standings" in item["league"]:
@@ -1194,6 +1213,7 @@ def _refresh_league_season(
                     else:
                         session.add(models.Standing(team_id=team_id, season=season, **values))
                 session.commit()
+            standings_complete = True
             break
         except HTTPError as exc:
             tries += 1
@@ -1208,8 +1228,22 @@ def _refresh_league_season(
             logger.warning(f"Error refreshing standings {league_id}/{season}: {exc} — retry {tries}")
             time.sleep(pause * tries)
 
+    if not standings_complete:
+        failed_phases.append("standings")
     if progress_callback:
         progress_callback(3, 3, f"Classement {league_id}/{season} vérifié")
+
+    return {
+        "partial": bool(failed_phases),
+        "failed_phases": failed_phases,
+        "completed_phases": [
+            phase for phase, completed in (
+                ("teams", teams_complete),
+                ("fixtures", fixtures_complete),
+                ("standings", standings_complete),
+            ) if completed
+        ],
+    }
 
 
 def refresh_current_competitions_on_connection(
@@ -1409,6 +1443,30 @@ def refresh_current_competitions_on_connection(
                         "cached_scopes": cached_scopes,
                         "skipped_scopes": skipped_scopes,
                         "reason": "Lease persistante perdue ; arrêt sûr et reprise requise.",
+                    }
+                if refresh_result and refresh_result.get("partial"):
+                    failed_phases = list(refresh_result.get("failed_phases") or [])
+                    skipped_scopes.append(key)
+                    reason = (
+                        "Actualisation incomplète ; phases à reprendre : "
+                        + ", ".join(failed_phases or ["inconnues"])
+                    )
+                    sync_registry.mark(
+                        scope_state_key,
+                        "current_season",
+                        "deferred",
+                        message=reason,
+                    )
+                    return {
+                        "ran": True,
+                        "partial": True,
+                        "checkpoint": f"current-refresh:{league_id}:{season}",
+                        "failed_phases": failed_phases,
+                        "config": config,
+                        "refreshed": refreshed,
+                        "cached_scopes": cached_scopes,
+                        "skipped_scopes": skipped_scopes,
+                        "reason": reason,
                     }
                 if refresh_result and refresh_result.get("preempted"):
                     sync_registry.mark(
