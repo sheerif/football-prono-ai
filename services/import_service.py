@@ -552,6 +552,8 @@ def record_update_result(event_type: str, started_at: str, result: dict, error: 
         if error
         else "interrompue_priorité"
         if result.get("preempted")
+        else "partielle"
+        if result.get("partial")
         else "effectuée"
         if result.get("ran")
         else "ignorée"
