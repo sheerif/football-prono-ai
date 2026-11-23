@@ -78,6 +78,7 @@ with st.sidebar:
 	st.caption(f"Dernière MAJ en cours: {import_service.get_last_current_refresh_label()}")
 	st.caption(f"Dernière MAJ historique: {import_service.get_last_auto_refresh_label()}")
 	st.caption(import_service.get_api_access_message())
+	cache_metrics_snapshot = None
 	try:
 		cache_metrics_snapshot = api_football.cache_metrics_snapshot()
 		metrics_captions = api_metrics.format_api_metrics_captions(cache_metrics_snapshot)
