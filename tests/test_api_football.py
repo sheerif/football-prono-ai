@@ -16,10 +16,19 @@ class ApiFootballClientTests(unittest.TestCase):
     def setUp(self):
         api_football._daily_blocked_until = None
         api_football._response_cache.clear()
+        api_football.cache_metrics_snapshot(reset=True)
+        self._quota_ledger_patch = patch.object(
+            api_football.api_quota_ledger,
+            "reserve_call",
+            return_value={"allowed": True, "reason": "reserved", "remaining": 99},
+        )
+        self._quota_ledger_patch.start()
+        self.addCleanup(self._quota_ledger_patch.stop)
 
     def tearDown(self):
         api_football._daily_blocked_until = None
         api_football._response_cache.clear()
+        api_football.cache_metrics_snapshot(reset=True)
 
     @staticmethod
     def _status_response(*, current=1, limit=100, daily_remaining=99, minute_remaining=9):
@@ -331,7 +340,18 @@ if __name__ == "__main__":
 
 
 class ApiRequestPolicyTests(unittest.TestCase):
+    def setUp(self):
+        api_football._daily_blocked_until = None
+        api_football._response_cache.clear()
+        api_football.cache_metrics_snapshot(reset=True)
+
+    def tearDown(self):
+        api_football._daily_blocked_until = None
+        api_football._response_cache.clear()
+        api_football.cache_metrics_snapshot(reset=True)
+
     def test_live_and_backfill_calls_are_classified_by_priority(self):
+
         self.assertEqual(api_football._request_priority("/fixtures", {"live": "all"}), "live")
         self.assertEqual(api_football._request_priority("/players", {"season": 2024}), "player_stats")
         self.assertEqual(api_football._request_priority("/fixtures", {"league": 1, "season": 2024}), "current_fixtures")
@@ -360,6 +380,43 @@ class ApiRequestPolicyTests(unittest.TestCase):
         with patch.dict("os.environ", {"API_FOOTBALL_CACHE_TTL_IMMINENT": "45"}):
             self.assertEqual(api_football._request_cache_ttl("/fixtures", imminent), 45)
 
+    def test_atomic_quota_reservation_blocks_before_data_endpoint(self):
+        session = Mock()
+        session.get.return_value = ApiFootballClientTests._status_response(
+            current=1, limit=100, daily_remaining=99
+        )
+        client = ApiFootballClient(api_key="test-key", session=session)
+        with patch.object(
+            api_football.api_quota_ledger,
+            "reserve_call",
+            return_value={"allowed": False, "reason": "atomic_budget_exhausted", "remaining": 0},
+        ) as reserve:
+            with self.assertRaisesRegex(RuntimeError, "atomic_budget_exhausted"):
+                client.get_leagues()
+        session.get.assert_called_once()  # preflight /status only
+        reserve.assert_called_once()
+        metrics = api_football.cache_metrics_snapshot()
+        self.assertEqual(metrics["quota_atomic_blocks"], 1)
+        self.assertEqual(metrics["api_data_requests"], 0)
+
+    def test_quota_ledger_error_fails_closed_before_data_endpoint(self):
+        session = Mock()
+        session.get.return_value = ApiFootballClientTests._status_response(
+            current=1, limit=100, daily_remaining=99
+        )
+        client = ApiFootballClient(api_key="test-key", session=session)
+        with patch.object(
+            api_football.api_quota_ledger,
+            "reserve_call",
+            side_effect=RuntimeError("database unavailable"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "appel bloqué par sécurité"):
+                client.get_leagues()
+        session.get.assert_called_once()  # no data request after ledger error
+        self.assertEqual(
+            api_football.cache_metrics_snapshot()["quota_ledger_errors"], 1
+        )
+
     def test_quota_reserve_blocks_low_priority_call_before_download(self):
         status = ApiFootballClientTests._status_response(current=80, limit=100, daily_remaining=10)
         session = Mock()
@@ -376,6 +433,13 @@ class ApiMetricsAndPriorityTests(unittest.TestCase):
         api_football._daily_blocked_until = None
         api_football._response_cache.clear()
         api_football.cache_metrics_snapshot(reset=True)
+        self._quota_ledger_patch = patch.object(
+            api_football.api_quota_ledger,
+            "reserve_call",
+            return_value={"allowed": True, "reason": "reserved", "remaining": 99},
+        )
+        self._quota_ledger_patch.start()
+        self.addCleanup(self._quota_ledger_patch.stop)
 
     def tearDown(self):
         api_football._daily_blocked_until = None
