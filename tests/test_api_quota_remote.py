@@ -263,3 +263,25 @@ def test_concurrent_runtimes_cannot_allocate_the_same_shared_budget():
             os.environ.pop("API_QUOTA_REMOTE_BLOCK_SIZE", None)
         else:
             os.environ["API_QUOTA_REMOTE_BLOCK_SIZE"] = old
+
+
+
+def test_remote_block_covers_cost_larger_than_configured_block():
+    import os
+    old = os.environ.get("API_QUOTA_REMOTE_BLOCK_SIZE")
+    os.environ["API_QUOTA_REMOTE_BLOCK_SIZE"] = "1"
+    try:
+        test = RemoteQuotaTests()
+        test.setup_method()
+        try:
+            result = api_quota_remote.reserve_block(_snapshot(100), "live", cost=3)
+            assert result["allowed"] is True
+            assert result["amount"] == 3
+            assert test.github.record["available"] == 97
+        finally:
+            test.teardown_method()
+    finally:
+        if old is None:
+            os.environ.pop("API_QUOTA_REMOTE_BLOCK_SIZE", None)
+        else:
+            os.environ["API_QUOTA_REMOTE_BLOCK_SIZE"] = old
