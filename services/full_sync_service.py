@@ -1321,6 +1321,32 @@ def run_full_sync(progress_callback=None) -> dict:
     )
     priority_core_keys = {f"core:{league_id}:{season}" for league_id, season in priority_core_scopes}
 
+    def persisted_core_resume_checkpoint(league_id, season):
+        key = f"core:{league_id}:{season}"
+        previous_core_state = sync_registry.get(key)
+        if not previous_core_state or previous_core_state.get("status") != "partial":
+            return None
+        checkpoint = (previous_core_state.get("metadata") or {}).get("checkpoint")
+        parts = str(checkpoint or "").split(":")
+        if (
+            len(parts) < 3
+            or parts[0] not in {"core", "teams", "fixtures", "fixtures-page", "standings"}
+            or parts[1] != str(league_id)
+            or parts[2] != str(season)
+        ):
+            return None
+        if parts[0] == "fixtures-page":
+            if len(parts) != 4:
+                return None
+            try:
+                if int(parts[3]) < 1:
+                    return None
+            except (TypeError, ValueError):
+                return None
+        elif len(parts) != 3:
+            return None
+        return checkpoint
+
     # Refresh the latest seasons first so newly scheduled fixtures are known
     # before any historical backfill can consume the API quota.
     for index, (league_id, season) in enumerate(priority_core_scopes, start=1):
@@ -1333,12 +1359,14 @@ def run_full_sync(progress_callback=None) -> dict:
         ):
             return stop_for_quota(key, RuntimeError(_reserve_message()))
         try:
+            resume_checkpoint = persisted_core_resume_checkpoint(league_id, season)
             import_result = import_service.import_leagues_cautious(
                 [league_id],
                 seasons=[season],
                 pause=pause,
                 max_retries=config["max_retries"],
                 force_refresh_seasons=[season],
+                resume_checkpoint=resume_checkpoint,
                 priority_preemption_check=_priority_preemption_requested,
                 progress_callback=progress_callback,
             )
@@ -1653,18 +1681,7 @@ def run_full_sync(progress_callback=None) -> dict:
             ):
                 return stop_for_quota(key, RuntimeError(_reserve_message()))
             try:
-                previous_core_state = sync_registry.get(key)
-                resume_checkpoint = None
-                if previous_core_state and previous_core_state.get("status") == "partial":
-                    checkpoint = (previous_core_state.get("metadata") or {}).get("checkpoint")
-                    parts = str(checkpoint or "").split(":")
-                    if (
-                        len(parts) >= 3
-                        and parts[0] in {"core", "teams", "fixtures", "fixtures-page", "standings"}
-                        and parts[1] == str(league_id)
-                        and parts[2] == str(season)
-                    ):
-                        resume_checkpoint = checkpoint
+                resume_checkpoint = persisted_core_resume_checkpoint(league_id, season)
                 import_result = import_service.import_leagues_cautious(
                     [league_id],
                     seasons=[season],
