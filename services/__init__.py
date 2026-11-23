@@ -1,5 +1,6 @@
 import datetime
 import inspect
+import sys
 
 from sqlalchemy import Column, DateTime, Float, Integer, String, Text
 
@@ -32,12 +33,16 @@ def _ensure_projected_lineup_model():
 
 
 def _ensure_visual_kpi_compatibility():
-    """Accepte le nouveau paramètre columns avec un ancien ui.kpi_grid en mémoire."""
-    from components import ui
+    """Adapte un ancien ui.kpi_grid déjà chargé, sans déclencher d'import circulaire."""
+    # Importer components.ui ici est dangereux : pendant l'initialisation de
+    # services, ui importe services.season_format et peut deadlocker le module.
+    ui = sys.modules.get("components.ui")
+    if ui is None:
+        return
 
     try:
         supports_columns = "columns" in inspect.signature(ui.kpi_grid).parameters
-    except (TypeError, ValueError):
+    except (AttributeError, TypeError, ValueError):
         supports_columns = False
     if supports_columns:
         return
