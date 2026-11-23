@@ -1669,8 +1669,11 @@ def _import_leagues_cautious_unleased(
                     _progress(f"Ligue {lid} - {season}: déjà en base ({existing_count} matchs)", increment=3)
                     continue
 
+                initial_scope_checkpoint = (
+                    resume_checkpoint if resume_scope else f"core:{lid}:{season}"
+                )
                 persist_checkpoint(
-                    f"core:{lid}:{season}",
+                    initial_scope_checkpoint,
                     "Reprise persistante : métadonnées de la ligue/saison.",
                 )
                 league = session.get(models.League, lid)
@@ -1687,13 +1690,18 @@ def _import_leagues_cautious_unleased(
                 }
                 teams_ok = team_count > 0 or skip_teams
                 last_error = None
+                teams_checkpoint = (
+                    initial_scope_checkpoint
+                    if skip_teams
+                    else f"teams:{lid}:{season}"
+                )
                 persist_checkpoint(
-                    f"teams:{lid}:{season}",
+                    teams_checkpoint,
                     "Reprise persistante : téléchargement des équipes.",
                 )
                 while not teams_ok and tries < max_retries:
                     persist_checkpoint(
-                        f"teams:{lid}:{season}",
+                        teams_checkpoint,
                         "Reprise persistante : téléchargement des équipes.",
                     )
                     try:
@@ -1728,8 +1736,13 @@ def _import_leagues_cautious_unleased(
                         f"après {max_retries} tentatives.{detail}"
                     )
                 _progress(f"Ligue {lid} - {season}: équipes traitées", increment=1)
+                fixtures_checkpoint = (
+                    f"standings:{lid}:{season}"
+                    if skip_fixtures
+                    else f"fixtures:{lid}:{season}"
+                )
                 persist_checkpoint(
-                    f"fixtures:{lid}:{season}",
+                    fixtures_checkpoint,
                     "Reprise persistante : téléchargement des matchs.",
                 )
 
@@ -1746,9 +1759,13 @@ def _import_leagues_cautious_unleased(
                 )
                 last_error = None
                 initial_fixture_checkpoint = (
-                    f"fixtures-page:{lid}:{season}:{resume_page}"
-                    if resume_scope and resume_phase == "fixtures-page"
-                    else f"fixtures:{lid}:{season}"
+                    f"standings:{lid}:{season}"
+                    if skip_fixtures
+                    else (
+                        f"fixtures-page:{lid}:{season}:{resume_page}"
+                        if resume_scope and resume_phase == "fixtures-page"
+                        else f"fixtures:{lid}:{season}"
+                    )
                 )
                 persist_checkpoint(
                     initial_fixture_checkpoint,
