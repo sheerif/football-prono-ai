@@ -416,6 +416,6 @@ def test_current_refresh_reuses_recent_completed_scope_without_claim_or_api(monk
 
     assert result["refreshed"] == []
     assert result["cached_scopes"] == [{"league_id": 61, "season": 2026}]
-    assert result["partial"] is not True
+    assert not result.get("partial", False)
     assert session.closed
 
