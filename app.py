@@ -85,13 +85,19 @@ with st.sidebar:
 		# Sidebar telemetry must never take down the application. This also
 		# contains KeyErrors from stale or incompatible runtime modules.
 		logger.exception("API cache/quota metrics snapshot failed; using zero defaults")
-		metrics_captions = api_metrics.format_api_metrics_captions({})
+		metrics_captions = (
+			"Cache API · 0 requêtes data évitées (0 hits / 0 entrées)",
+			"Quota · 0 préflights / 0 blocages · métriques locales au processus",
+			"Quota partagé · 0 tokens réservés / 0 refus · 0 fallback(s) local(aux)",
+		)
 	for metrics_caption in metrics_captions:
 		st.caption(metrics_caption)
 	if not st.session_state.get("_api_metrics_runtime_logged"):
 		logger.info(
-			"API metrics runtime fingerprint: app=%s api_module=%s formatter=%s",
+			"API metrics runtime fingerprint: app=%s api_module=%s formatter=%s schema=%s snapshot_keys=%s",
 			__file__, getattr(api_football, "__file__", "unknown"),
 			getattr(api_metrics, "__file__", "unknown"),
+			getattr(api_football, "CACHE_METRICS_SCHEMA_VERSION", "legacy"),
+			sorted(cache_metrics_snapshot) if isinstance(cache_metrics_snapshot, dict) else [],
 		)
 		st.session_state["_api_metrics_runtime_logged"] = True
