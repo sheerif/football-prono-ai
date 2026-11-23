@@ -1274,7 +1274,7 @@ def refresh_current_competitions_on_connection(
                         (utc_now() - updated_at).total_seconds()
                         < config["interval_minutes"] * 60
                     ):
-                        cached_scopes.append(key)
+                        cached_scopes.append({"league_id": int(league_id), "season": int(season)})
                         if progress_callback:
                             progress_callback(
                                 min(total_steps, (league_index + 1) * 3),
