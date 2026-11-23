@@ -69,7 +69,7 @@ def _int(value, default=None):
 
 
 def _block_size() -> int:
-    return max(1, _int(os.getenv("API_QUOTA_REMOTE_BLOCK_SIZE"), 100) or 100)
+    return max(1, _int(os.getenv("API_QUOTA_REMOTE_BLOCK_SIZE"), 25) or 25)
 
 
 def _unknown_budget() -> int:
@@ -225,11 +225,6 @@ def reserve_block(
         )
         if snapshot_known:
             _merge_snapshot(record, snapshot)
-        outstanding = sum(
-            max(0, _int(item.get("remaining"), 0) or 0)
-            for item in allocations.values()
-            if isinstance(item, dict)
-        )
         available = max(0, _int(record.get("available"), 0) or 0)
         reserve = max(0, _int(record.get("reserve"), 0) or 0)
         urgent = api_quota_policy.PRIORITIES.get(priority, 0) >= _URGENT_SCORE
