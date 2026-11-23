@@ -601,10 +601,17 @@ def sync_match_intelligence(
         or result["recent_players_skipped"]
         or result["errors"]
     ):
+        partial_reasons = []
+        if result["season_players_skipped"] or result["lineups_skipped"]:
+            partial_reasons.append("effectifs saison ou compositions différés")
+        if result["recent_players_skipped"]:
+            partial_reasons.append("performances récentes différées")
+        if result["errors"]:
+            partial_reasons.append("téléchargements en erreur")
         progress(
             100,
             100,
-            "Synchronisation partielle : téléchargements différés ou en erreur",
+            "Synchronisation partielle : " + " ; ".join(partial_reasons),
         )
     else:
         progress(100, 100, "Compositions et forme des joueurs synchronisées")
