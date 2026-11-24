@@ -1,5 +1,7 @@
 import base64
 import gzip
+import hashlib
+import json
 import sqlite3
 import tempfile
 import unittest
@@ -229,7 +231,123 @@ class GitBackupTests(unittest.TestCase):
         self.assertEqual(result["status"], "unchanged")
         self.assertTrue(result["integrity_verified"])
         self.assertTrue(result["gzip_verified"])
+        self.assertTrue(result["remote_verified"])
         request.assert_not_called()
+
+    def test_chunked_backup_reuploads_when_manifest_matches_but_part_is_missing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            chunk_size = 8 * 1024 * 1024
+            archive_bytes = b"x" * (chunk_size + 1)
+            parts = [
+                (
+                    f"football.db.gz.part-{index:04d}",
+                    archive_bytes[offset:offset + chunk_size],
+                )
+                for index, offset in enumerate(range(0, len(archive_bytes), chunk_size), start=1)
+            ]
+            expected_part_shas = {
+                path: git_backup._git_blob_sha(part)
+                for path, part in parts
+            }
+            manifest_bytes = json.dumps(
+                {
+                    "format": 1,
+                    "archive": "football.db.gz",
+                    "size_bytes": len(archive_bytes),
+                    "sha256": hashlib.sha256(archive_bytes).hexdigest(),
+                    "parts": [
+                        {
+                            "path": path,
+                            "size_bytes": len(part),
+                            "git_blob_sha": expected_part_shas[path],
+                        }
+                        for path, part in parts
+                    ],
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            manifest_sha = git_backup._git_blob_sha(manifest_bytes)
+            first_part_path = parts[0][0]
+            old_head = {
+                "commit_sha": "old-commit",
+                "tree_sha": "old-tree",
+                "manifest_sha": manifest_sha,
+                "part_shas": {first_part_path: expected_part_shas[first_part_path]},
+                "archive_paths": [first_part_path, "football.db.manifest.json"],
+                "committed_at": "2026-11-20T10:00:00Z",
+            }
+            current_head = dict(old_head)
+            tree_payloads = []
+            request_calls = []
+
+            def request(method, endpoint, _token, payload=None):
+                request_calls.append((method, endpoint, payload))
+                if method == "POST" and endpoint.endswith("/git/blobs"):
+                    content = base64.b64decode(payload["content"])
+                    return {"sha": git_backup._git_blob_sha(content)}
+                if method == "POST" and endpoint.endswith("/git/trees"):
+                    tree_payloads.append(payload)
+                    return {"sha": "new-tree"}
+                if method == "POST" and endpoint.endswith("/git/commits"):
+                    return {"sha": "new-commit"}
+                if method == "PATCH" and endpoint.endswith("/git/refs/heads/database-backup"):
+                    current_head.update(
+                        {
+                            "commit_sha": "new-commit",
+                            "tree_sha": "new-tree",
+                            "manifest_sha": manifest_sha,
+                            "part_shas": expected_part_shas,
+                            "archive_paths": [
+                                *expected_part_shas,
+                                "football.db.manifest.json",
+                            ],
+                            "committed_at": datetime.now(timezone.utc).strftime(
+                                "%Y-%m-%dT%H:%M:%SZ"
+                            ),
+                        }
+                    )
+                    return {"ref": "updated"}
+                self.fail(f"Unexpected GitHub API call: {method} {endpoint}")
+
+            with (
+                patch.object(
+                    git_backup,
+                    "_setting",
+                    side_effect=lambda name, default="": {
+                        "GITHUB_BACKUP_TOKEN": "test-token",
+                        "GITHUB_BACKUP_REPOSITORY": "owner/repository",
+                        "GITHUB_BACKUP_BRANCH": "database-backup",
+                    }.get(name, default),
+                ),
+                patch.object(git_backup, "_request", side_effect=request),
+                patch.object(
+                    git_backup,
+                    "_backup_head",
+                    side_effect=lambda *_args: dict(current_head),
+                ),
+                patch.object(
+                    git_backup,
+                    "_create_database_archive",
+                    side_effect=lambda _engine, path: Path(path).write_bytes(archive_bytes),
+                ),
+            ):
+                result = git_backup.backup_to_github(
+                    database_engine=object(), force=True
+                )
+
+        self.assertEqual(result["status"], "uploaded")
+        self.assertTrue(result["integrity_verified"])
+        self.assertTrue(result["gzip_verified"])
+        self.assertTrue(result["remote_verified"])
+        self.assertEqual(len(tree_payloads), 1)
+        self.assertTrue(
+            any(method == "PATCH" for method, _endpoint, _payload in request_calls)
+        )
+        self.assertEqual(
+            set(current_head["part_shas"]),
+            set(expected_part_shas),
+        )
 
     def test_skips_when_token_is_not_configured(self):
         with patch.object(git_backup, "_setting", return_value=""):
