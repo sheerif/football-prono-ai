@@ -27,6 +27,10 @@ from services import background_jobs, full_sync_service, git_backup, import_serv
 CONTROL_KEY = "full-sync:exhaustive"
 LEASE_SECONDS = 900
 LEASE_RENEW_INTERVAL_SECONDS = 60
+TRANSIENT_QUOTA_KINDS = frozenset({"minute", "provider_rate_limit", "remote_lock_contention"})
+MAX_TRANSIENT_QUOTA_RETRIES = 5
+DEFAULT_TRANSIENT_RETRY_SECONDS = 90
+MAX_TRANSIENT_RETRY_SECONDS = 300
 
 
 class FullSyncLeaseLost(RuntimeError):
@@ -49,6 +53,21 @@ def _optional_int(value) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _transient_retry_delay_seconds(result: dict) -> float:
+    """Return a bounded wait until a persisted transient-quota retry is due."""
+    try:
+        retry_at = datetime.datetime.fromisoformat(str(result.get("next_retry_at") or ""))
+        if retry_at.tzinfo is not None:
+            retry_at = retry_at.astimezone(datetime.UTC).replace(tzinfo=None)
+        delay = (retry_at - _now()).total_seconds()
+        return min(
+            float(MAX_TRANSIENT_RETRY_SECONDS),
+            max(1.0, delay),
+        )
+    except (TypeError, ValueError, OverflowError):
+        return float(DEFAULT_TRANSIENT_RETRY_SECONDS)
 
 
 def _quota_failure_kind(error: str, status_by_family: dict | None = None) -> str:
@@ -359,81 +378,96 @@ def run() -> dict:
 
 
 def main() -> int:
+    retries = 0
     try:
-        result = run()
-        status = result.get("status")
-        # Force a fresh comparison against the current SQLite snapshot after
-        # every non-skipped sync. The backup service returns "unchanged" when
-        # the remote archive already matches; it must not silently skip based
-        # only on the UTC-day commit timestamp.
-        backup = (
-            {"status": "skipped_active_sync"}
-            if status == "skipped"
-            else git_backup.backup_to_github(force=True)
-        )
-        result["database_backup"] = backup
-        print(
-            "Synchronisation planifiée : "
-            f"{result.get('status')} · "
-            f"{int(result.get('api_calls') or 0)} appel(s) API · "
-            f"archivage pré-match : "
-            f"{int((result.get('pre_match_archive') or {}).get('archived') or 0)} "
-            "prévision(s) · "
-            f"sauvegarde : {backup.get('status', 'unknown')}"
-        )
-        if result.get("status") == "waiting_quota":
-            print(
-                "Diagnostic quota : "
-                f"type={result.get('quota_kind', 'non_classé')} · "
-                f"checkpoint={result.get('checkpoint') or 'non précisé'}"
+        while True:
+            result = run()
+            status = result.get("status")
+            # Persist each partial checkpoint before waiting for a transient
+            # minute/rate-limit window to reset. A retry is never attempted
+            # unless the remote snapshot has been verified.
+            backup = (
+                {"status": "skipped_active_sync"}
+                if status == "skipped"
+                else git_backup.backup_to_github(force=True)
             )
-            if result.get("quota_error"):
-                print(f"Cause quota : {result['quota_error']}")
-            if result.get("quota_status_by_family"):
+            result["database_backup"] = backup
+            print(
+                "Synchronisation planifiée : "
+                f"{result.get('status')} · "
+                f"{int(result.get('api_calls') or 0)} appel(s) API · "
+                f"archivage pré-match : "
+                f"{int((result.get('pre_match_archive') or {}).get('archived') or 0)} "
+                "prévision(s) · "
+                f"sauvegarde : {backup.get('status', 'unknown')}"
+            )
+            if status == "waiting_quota":
                 print(
-                    "Compteurs quota par famille : "
-                    + json.dumps(result["quota_status_by_family"], ensure_ascii=False, sort_keys=True)
+                    "Diagnostic quota : "
+                    f"type={result.get('quota_kind', 'non_classé')} · "
+                    f"checkpoint={result.get('checkpoint') or 'non précisé'}"
                 )
-            if result.get("quota_metrics"):
+                if result.get("quota_error"):
+                    print(f"Cause quota : {result['quota_error']}")
+                if result.get("quota_status_by_family"):
+                    print(
+                        "Compteurs quota par famille : "
+                        + json.dumps(result["quota_status_by_family"], ensure_ascii=False, sort_keys=True)
+                    )
+                if result.get("quota_metrics"):
+                    print(
+                        "Mesures quota : "
+                        + json.dumps(result["quota_metrics"], ensure_ascii=False, sort_keys=True)
+                    )
+                if result.get("quota_preflight"):
+                    print(
+                        "Quota préflight : "
+                        + json.dumps(result["quota_preflight"], ensure_ascii=False, sort_keys=True)
+                    )
+            if status == "skipped":
                 print(
-                    "Mesures quota : "
-                    + json.dumps(result["quota_metrics"], ensure_ascii=False, sort_keys=True)
+                    "Synchronisation ignorée : une autre instance possède la lease globale. "
+                    "Ce run ne constitue pas une synchronisation validée.",
+                    file=sys.stderr,
                 )
-            if result.get("quota_preflight"):
+                return 1
+            if (
+                backup.get("status") not in {"uploaded", "unchanged"}
+                or backup.get("remote_verified") is not True
+            ):
                 print(
-                    "Quota préflight : "
-                    + json.dumps(result["quota_preflight"], ensure_ascii=False, sort_keys=True)
+                    "Sauvegarde post-sync non vérifiée à distance.",
+                    file=sys.stderr,
                 )
-        if result.get("status") == "skipped":
-            print(
-                "Synchronisation ignorée : une autre instance possède la lease globale. "
-                "Ce run ne constitue pas une synchronisation validée.",
-                file=sys.stderr,
-            )
-            return 1
-        if result.get("status") != "complete":
-            print(
-                "Synchronisation non exhaustive "
-                f"(status={result.get('status')}) : le run échoue volontairement.",
-                file=sys.stderr,
-            )
-            return 1
-        if (
-            backup.get("status") not in {"uploaded", "unchanged"}
-            or backup.get("remote_verified") is not True
-        ):
-            print(
-                "Sauvegarde post-sync non vérifiée à distance.",
-                file=sys.stderr,
-            )
-            return 1
-        return 0
+                return 1
+            quota_kind = str(result.get("quota_kind") or "")
+            if (
+                status == "waiting_quota"
+                and quota_kind in TRANSIENT_QUOTA_KINDS
+                and retries < MAX_TRANSIENT_QUOTA_RETRIES
+            ):
+                delay = _transient_retry_delay_seconds(result)
+                retries += 1
+                print(
+                    "Quota transitoire : checkpoint distant vérifié ; "
+                    f"reprise {retries}/{MAX_TRANSIENT_QUOTA_RETRIES} "
+                    f"dans {delay:.0f} seconde(s)."
+                )
+                time.sleep(delay)
+                continue
+            if status != "complete":
+                print(
+                    "Synchronisation non exhaustive "
+                    f"(status={status}) : le run échoue volontairement.",
+                    file=sys.stderr,
+                )
+                return 1
+            return 0
     except Exception as exc:
         print(f"Échec de la synchronisation planifiée : {exc}", file=sys.stderr)
         return 1
     finally:
         engine.dispose()
-
 
 if __name__ == "__main__":
     raise SystemExit(main())
