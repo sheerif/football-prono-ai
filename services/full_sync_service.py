@@ -22,7 +22,7 @@ from services.download_intelligence import (
     order_download_tasks,
     order_season_player_scopes,
 )
-from services.api_football import ApiFootballClient
+from services.api_football import ApiFootballClient, cache_metrics_snapshot
 from services.api_response_store import archive_response
 
 
@@ -1304,6 +1304,7 @@ def run_full_sync(progress_callback=None) -> dict:
         label: _request_count(api_client)
         for label, api_client in tracked_clients.items()
     }
+    initial_quota_metrics = cache_metrics_snapshot()
 
     def finalize() -> dict:
         calls = {
@@ -1316,6 +1317,45 @@ def run_full_sync(progress_callback=None) -> dict:
         }
         summary["api_calls_by_family"] = calls
         summary["api_calls"] = sum(calls.values())
+        quota_status_by_family = {}
+        for label, api_client in tracked_clients.items():
+            headers = dict(getattr(api_client, "last_rate_limit", {}) or {})
+            quota_status_by_family[label] = {
+                "daily_limit": headers.get("daily_limit"),
+                "daily_remaining": headers.get("daily_remaining"),
+                "minute_limit": headers.get("minute_limit"),
+                "minute_remaining": headers.get("minute_remaining"),
+                "retry_after": headers.get("retry_after"),
+                "checked_at": headers.get("checked_at"),
+                "status_error": str(
+                    getattr(api_client, "last_quota_status_error", "") or ""
+                ),
+            }
+        summary["quota_status_by_family"] = quota_status_by_family
+        current_quota_metrics = cache_metrics_snapshot()
+        metric_names = (
+            "cache_hits",
+            "cache_misses",
+            "requests_avoided",
+            "api_data_requests",
+            "quota_status_checks",
+            "quota_policy_blocks",
+            "quota_atomic_reservations",
+            "quota_atomic_blocks",
+            "quota_ledger_errors",
+            "quota_remote_shared_tokens",
+            "quota_remote_block_denials",
+            "quota_remote_fallbacks",
+            "cache_evictions",
+        )
+        summary["quota_metrics"] = {
+            key: max(
+                0,
+                int(current_quota_metrics.get(key) or 0)
+                - int(initial_quota_metrics.get(key) or 0),
+            )
+            for key in metric_names
+        }
         summary["requests_avoided_at_least"] = (
             int(summary.get("skipped") or 0)
             + int(summary.get("core_skipped") or 0)
