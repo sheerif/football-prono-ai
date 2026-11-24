@@ -4,6 +4,14 @@ import threading
 from services import live_priority_watcher
 
 
+def _allow_poll_leases(monkeypatch):
+    monkeypatch.setattr(live_priority_watcher, "_claim_poll_lease", lambda: "test-owner")
+    monkeypatch.setattr(
+        live_priority_watcher, "_renew_poll_lease", lambda owner, force=False: True
+    )
+    monkeypatch.setattr(live_priority_watcher, "_release_poll_lease", lambda owner: None)
+
+
 def test_polling_interval_is_fast_when_live():
     assert live_priority_watcher._interval_seconds(has_live=True, quota={}) <= 120
 
@@ -37,6 +45,7 @@ def test_live_fixture_signature_tracks_score_and_status():
 
 
 def test_poll_once_uses_live_endpoint_and_persists_changes(monkeypatch):
+    _allow_poll_leases(monkeypatch)
     class FakeClient:
         last_rate_limit = {"daily_remaining": 4000, "daily_limit": 7500}
 
@@ -67,6 +76,7 @@ def test_filter_imminent_limits_to_next_24_hours_and_excludes_live():
 
 
 def test_poll_once_calls_live_and_imminent_endpoints_and_persists(monkeypatch):
+    _allow_poll_leases(monkeypatch)
     now = datetime.datetime.now(datetime.UTC)
     live = {"fixture": {"id": 10, "status": {"short": "1H"}}}
     imminent = {"fixture": {"id": 11, "date": (now + datetime.timedelta(hours=4)).isoformat(), "status": {"short": "NS"}}}
@@ -136,6 +146,7 @@ def test_watcher_backoff_grows_and_honors_retry_after():
 
 
 def test_poll_once_can_detect_changes_without_writing_during_secondary_job(monkeypatch):
+    _allow_poll_leases(monkeypatch)
     now = datetime.datetime.now(datetime.UTC)
     live = {"fixture": {"id": 99, "status": {"short": "1H"}}}
     class FakeClient:
@@ -171,3 +182,125 @@ def test_daily_quota_wait_targets_next_utc_reset():
 def test_daily_quota_wait_is_almost_one_day_when_early_utc():
     now = datetime.datetime(2026, 11, 22, 0, 0, 0, tzinfo=datetime.UTC)
     assert live_priority_watcher._seconds_until_utc_reset(now=now) == 86405
+
+
+def test_poll_once_fails_closed_when_local_global_lease_is_contended(monkeypatch):
+    from services import remote_sync_lease, sync_registry
+
+    monkeypatch.setattr(sync_registry, "claim_download", lambda *args, **kwargs: False)
+    monkeypatch.setattr(
+        remote_sync_lease,
+        "claim",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("remote claim must not run")),
+    )
+
+    class FakeClient:
+        last_rate_limit = {}
+        def _get(self, *args, **kwargs):
+            raise AssertionError("API must not be called without the local lease")
+
+    result = live_priority_watcher.poll_once(FakeClient())
+    assert result["skipped"] is True
+    assert result["live_count"] == 0
+
+
+def test_poll_once_fails_closed_on_remote_contention_and_releases_local(monkeypatch):
+    from services import remote_sync_lease, sync_registry
+
+    released = []
+    monkeypatch.setattr(sync_registry, "claim_download", lambda *args, **kwargs: True)
+    monkeypatch.setattr(
+        sync_registry,
+        "release_download_claim",
+        lambda key, owner: released.append((key, owner)),
+    )
+    monkeypatch.setattr(remote_sync_lease, "claim", lambda *args, **kwargs: False)
+
+    class FakeClient:
+        last_rate_limit = {}
+        def _get(self, *args, **kwargs):
+            raise AssertionError("API must not be called while another replica owns the poll lease")
+
+    result = live_priority_watcher.poll_once(FakeClient())
+    assert result["skipped"] is True
+    assert len(released) == 1
+    assert released[0][0] == live_priority_watcher.POLL_LEASE_KEY
+
+
+def test_poll_once_fails_closed_when_remote_lease_service_is_unavailable(monkeypatch):
+    from services import remote_sync_lease, sync_registry
+
+    released = []
+    monkeypatch.setattr(sync_registry, "claim_download", lambda *args, **kwargs: True)
+    monkeypatch.setattr(
+        sync_registry,
+        "release_download_claim",
+        lambda key, owner: released.append((key, owner)),
+    )
+    monkeypatch.setattr(
+        remote_sync_lease,
+        "claim",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("remote unavailable")),
+    )
+
+    class FakeClient:
+        last_rate_limit = {}
+        def _get(self, *args, **kwargs):
+            raise AssertionError("API must be blocked when remote coordination is unavailable")
+
+    result = live_priority_watcher.poll_once(FakeClient())
+    assert result["skipped"] is True
+    assert len(released) == 1
+
+
+def test_poll_once_aborts_remaining_requests_when_global_lease_is_lost(monkeypatch):
+    from services import live_priority_watcher as watcher
+
+    monkeypatch.setattr(watcher, "_claim_poll_lease", lambda: "owner-1")
+    renewals = iter([True, False])
+    monkeypatch.setattr(
+        watcher, "_renew_poll_lease", lambda owner, force=False: next(renewals)
+    )
+    released = []
+    monkeypatch.setattr(watcher, "_release_poll_lease", lambda owner: released.append(owner))
+    calls = []
+
+    class FakeClient:
+        last_rate_limit = {}
+        def _get(self, path, params):
+            calls.append((path, params))
+            return {"response": []}
+
+    monkeypatch.setattr(
+        watcher,
+        "_persist_live_fixtures",
+        lambda items: (_ for _ in ()).throw(AssertionError("must not persist after lease loss")),
+    )
+    try:
+        watcher.poll_once(FakeClient())
+    except watcher.PollLeaseLost:
+        pass
+    else:
+        raise AssertionError("poll must abort when the global lease is lost")
+
+    assert len(calls) == 1
+    assert released == ["owner-1"]
+
+
+def test_release_poll_lease_attempts_local_cleanup_when_remote_release_fails(monkeypatch):
+    from services import live_priority_watcher as watcher
+    from services import remote_sync_lease, sync_registry
+
+    released = []
+    monkeypatch.setattr(
+        remote_sync_lease,
+        "release",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("remote unavailable")),
+    )
+    monkeypatch.setattr(
+        sync_registry,
+        "release_download_claim",
+        lambda key, owner: released.append((key, owner)),
+    )
+    watcher._release_poll_lease("owner-2")
+    assert released == [(watcher.POLL_LEASE_KEY, "owner-2")]
