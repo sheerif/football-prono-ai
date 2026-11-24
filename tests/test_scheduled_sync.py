@@ -275,22 +275,23 @@ class ScheduledSyncTests(unittest.TestCase):
             result = run_scheduled_sync.main()
 
         self.assertEqual(result, 0)
-        backup.assert_called_once_with(force=False)
+        backup.assert_called_once_with(force=True)
         dispose.assert_called_once()
 
-    def test_scheduled_entrypoint_accepts_daily_backup_limit_skip(self):
+    def test_scheduled_entrypoint_fails_when_post_sync_snapshot_is_not_verified(self):
         with (
             patch.object(run_scheduled_sync, "run", return_value={"status": "complete"}),
             patch.object(
                 run_scheduled_sync.git_backup,
                 "backup_to_github",
                 return_value={"status": "skipped_daily_limit"},
-            ),
+            ) as backup,
             patch.object(run_scheduled_sync.engine, "dispose"),
         ):
             result = run_scheduled_sync.main()
 
-        self.assertEqual(result, 0)
+        self.assertEqual(result, 1)
+        backup.assert_called_once_with(force=True)
 
     def test_scheduled_entrypoint_fails_when_sync_is_waiting_for_quota(self):
         with (
