@@ -1,7 +1,7 @@
 """Low-overhead structured function tracing for application diagnostics.
 
-Only function metadata is emitted: argument names, never argument values.
-Secrets, request headers, payloads, and user data are deliberately excluded.
+Only function metadata and an allowlist of operational identifiers are emitted.
+Argument values, credentials, request bodies, headers, and user data are excluded.
 """
 from __future__ import annotations
 
@@ -24,8 +24,18 @@ _ENABLED = False
 _PREVIOUS_PROFILE = None
 _PREVIOUS_THREAD_PROFILE = None
 _PREFIXES = ("services.", "scripts.", "database.", "pages.", "components.")
-_SECRET_VALUE = re.compile(r"(?i)(gh[pousr]_[A-Za-z0-9_]{20,}|Bearer\\s+[^\\s]+)")
+_SECRET_VALUE = re.compile(r"(?i)(gh[pousr]_[A-Za-z0-9_]{20,}|Bearer\s+[^\s]+)")
 _SECRET_KEY = re.compile(r"(?i)(token|secret|password|authorization|cookie|api.?key|credential|headers?)")
+_SAFE_CONTEXT_NAMES = {
+    "fixture_id", "league_id", "season", "resource_key", "resource_type",
+    "retry_hours", "page", "sync_run_id", "current", "total", "label",
+    "path", "endpoint", "attempt", "status", "priority", "cost",
+    "days_ahead", "owner", "scope_key", "batch_key",
+}
+_SAFE_PARAM_NAMES = {
+    "league", "season", "fixture", "team", "date", "from", "to", "id",
+    "live", "type", "page", "last", "timezone", "player", "coach",
+}
 
 
 def _utc_now() -> str:
@@ -35,8 +45,27 @@ def _utc_now() -> str:
 def _safe_error(value) -> str:
     message = str(value or "")[:300]
     message = _SECRET_VALUE.sub("[REDACTED]", message)
-    message = re.sub(r"(?i)([?&](?:key|token|api_key|authorization)=)[^&\\s]+", r"\\1[REDACTED]", message)
+    message = re.sub(r"(?i)([?&](?:key|token|api_key|authorization)=)[^&\s]+", r"\1[REDACTED]", message)
     return message
+
+
+def _safe_value(value):
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, str):
+        return _SECRET_VALUE.sub("[REDACTED]", value[:300])
+    if isinstance(value, (list, tuple)):
+        return [_safe_value(item) for item in value[:32] if item is None or isinstance(item, (bool, int, float, str))]
+    if isinstance(value, dict):
+        result = {}
+        for key, item in list(value.items())[:32]:
+            key = str(key)
+            if _SECRET_KEY.search(key):
+                result[key] = "[REDACTED]"
+            elif item is None or isinstance(item, (bool, int, float, str)):
+                result[key] = _safe_value(item)
+        return result
+    return type(value).__name__
 
 
 def _safe_fields(fields: dict) -> dict:
@@ -44,13 +73,28 @@ def _safe_fields(fields: dict) -> dict:
     for key, value in (fields or {}).items():
         if _SECRET_KEY.search(str(key)):
             safe[str(key)] = "[REDACTED]"
-        elif value is None or isinstance(value, (bool, int, float)):
-            safe[str(key)] = value
-        elif isinstance(value, str):
-            safe[str(key)] = value[:300]
         else:
-            safe[str(key)] = type(value).__name__
+            safe[str(key)] = _safe_value(value)
     return safe
+
+
+def _function_context(frame) -> dict:
+    local_values = frame.f_locals
+    context = {
+        name: local_values[name]
+        for name in _SAFE_CONTEXT_NAMES
+        if name in local_values
+        and (local_values[name] is None or isinstance(local_values[name], (bool, int, float, str)))
+    }
+    params = local_values.get("params")
+    if isinstance(params, dict):
+        context["request_params"] = {
+            str(key): value
+            for key, value in params.items()
+            if str(key).lower() in _SAFE_PARAM_NAMES
+            and (value is None or isinstance(value, (bool, int, float, str)))
+        }
+    return context
 
 
 def current_trace_id() -> str | None:
@@ -152,7 +196,6 @@ def _profile(frame, event, arg):
             "function": code.co_qualname,
             "file": os.path.basename(code.co_filename),
             "line": code.co_firstlineno,
-            "argument_names": list(code.co_varnames[:code.co_argcount + code.co_kwonlyargcount]),
         }
         stack.append(entry)
         _emit(
@@ -163,7 +206,8 @@ def _profile(frame, event, arg):
             function=entry["function"],
             file=entry["file"],
             line=entry["line"],
-            argument_names=entry["argument_names"],
+            argument_names=list(code.co_varnames[:code.co_argcount + code.co_kwonlyargcount]),
+            context=_function_context(frame),
             depth=len(stack),
         )
         return
