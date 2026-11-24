@@ -23,7 +23,7 @@ _THREAD = threading.local()
 _ENABLED = False
 _PREVIOUS_PROFILE = None
 _PREVIOUS_THREAD_PROFILE = None
-_PREFIXES = ("services.", "scripts.", "database.", "pages.", "components.")
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))\n_TEST_ROOT = os.path.join(_PROJECT_ROOT, "tests")
 _SECRET_VALUE = re.compile(r"(?i)(gh[pousr]_[A-Za-z0-9_]{20,}|Bearer\s+[^\s]+)")
 _SECRET_KEY = re.compile(r"(?i)(token|secret|password|authorization|cookie|api.?key|credential|headers?)")
 _SAFE_CONTEXT_NAMES = {
@@ -152,11 +152,10 @@ def trace_scope(operation: str, *, trace_id: str | None = None, **fields):
 
 def _is_project_frame(frame) -> bool:
     module = str(frame.f_globals.get("__name__", ""))
-    filename = os.path.basename(frame.f_code.co_filename)
-    return (
-        (module.startswith(_PREFIXES) or filename == "app.py")
-        and module != __name__
-    )
+    filename = os.path.realpath(frame.f_code.co_filename)
+    inside_project = filename.startswith(_PROJECT_ROOT + os.sep)
+    inside_tests = filename.startswith(_TEST_ROOT + os.sep)
+    return inside_project and not inside_tests and module != __name__
 
 
 def _find_entry(stack: list, frame):
