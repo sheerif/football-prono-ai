@@ -3,18 +3,8 @@ name: Historical prediction backtest
 on:
   pull_request:
     branches: [main]
-    paths:
-      - "services/**"
-      - "database/**"
-      - "scripts/**"
-      - ".github/workflows/historical-backtest.yml"
   push:
     branches: [main]
-    paths:
-      - "services/**"
-      - "database/**"
-      - "scripts/**"
-      - ".github/workflows/historical-backtest.yml"
   workflow_dispatch:
 
 permissions:
