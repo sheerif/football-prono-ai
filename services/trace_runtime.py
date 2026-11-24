@@ -17,7 +17,8 @@ import threading
 import time
 import uuid
 
-_LOGGER = logging.getLogger("football.trace")\n_LOGGER.setLevel(logging.INFO)
+_LOGGER = logging.getLogger("football.trace")
+_LOGGER.setLevel(logging.INFO)
 _TRACE_ID = contextvars.ContextVar("football_trace_id", default=None)
 _THREAD = threading.local()
 _ENABLED = False
