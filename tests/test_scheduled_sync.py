@@ -441,7 +441,7 @@ class ScheduledSyncTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "waiting_quota")
         self.assertEqual(result["quota_kind"], "minute")
-        expected_retry = fixed_now.replace(tzinfo=datetime.UTC) + datetime.timedelta(seconds=90)
+        expected_retry = fixed_now + datetime.timedelta(seconds=90)
         self.assertEqual(datetime.datetime.fromisoformat(result["next_retry_at"]), expected_retry)
         self.assertIn("minute", marks[-1][1]["message"].casefold())
         self.assertEqual(result["quota_error"], quota_error)
