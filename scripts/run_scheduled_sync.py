@@ -56,16 +56,16 @@ def _quota_failure_kind(error: str, status_by_family: dict | None = None) -> str
     normalized = str(error or "").casefold()
     snapshots = (status_by_family or {}).values()
     if any(
-        _optional_int((snapshot or {}).get("minute_remaining")) == 0
-        for snapshot in snapshots
-    ):
-        return "minute"
-    snapshots = (status_by_family or {}).values()
-    if any(
         _optional_int((snapshot or {}).get("daily_remaining")) == 0
         for snapshot in snapshots
     ):
         return "daily"
+    snapshots = (status_by_family or {}).values()
+    if any(
+        _optional_int((snapshot or {}).get("minute_remaining")) == 0
+        for snapshot in snapshots
+    ):
+        return "minute"
     if "remote_quota_lock_contention" in normalized:
         return "remote_lock_contention"
     if "remote_shared_quota" in normalized:
@@ -238,25 +238,39 @@ def run() -> dict:
 
         if result.get("quota_reached"):
             current = _now().replace(tzinfo=datetime.UTC)
-            next_midnight = (current + datetime.timedelta(days=1)).replace(
-                hour=0, minute=0, second=0, microsecond=0
-            ).replace(tzinfo=None)
             status = "waiting_quota"
-            message = (
-                "Quota API atteint : données conservées. "
-                "Reprise automatique après minuit UTC."
-            )
             quota_error = sync_errors[-1] if sync_errors else str(result.get("message") or "")
+            quota_kind = _quota_failure_kind(quota_error, quota_status_by_family)
+            if quota_kind in {"minute", "provider_rate_limit"}:
+                retry_at = current + datetime.timedelta(seconds=90)
+                message = (
+                    "Limite API par minute atteinte : données conservées. "
+                    "Reprise possible après le délai minute, au prochain passage planifié."
+                )
+            elif quota_kind == "remote_lock_contention":
+                retry_at = current + datetime.timedelta(seconds=60)
+                message = (
+                    "Verrou distant du quota temporairement occupé : données conservées. "
+                    "Reprise au prochain passage planifié."
+                )
+            else:
+                retry_at = (current + datetime.timedelta(days=1)).replace(
+                    hour=0, minute=0, second=0, microsecond=0
+                )
+                message = (
+                    "Quota journalier ou réserve quotidienne atteint : données conservées. "
+                    "Reprise automatique après minuit UTC."
+                )
             metadata = {
                 "persistent": True,
                 "scheduler": "github-actions",
                 "attempt": attempt,
                 "started_at": started_at,
-                "next_retry_at": next_midnight.isoformat(),
+                "next_retry_at": retry_at.replace(tzinfo=None).isoformat(),
                 "checkpoint": result.get("checkpoint"),
                 "api_calls": int(result.get("api_calls") or 0),
                 "quota_error": quota_error,
-                "quota_kind": _quota_failure_kind(quota_error, quota_status_by_family),
+                "quota_kind": quota_kind,
                 **sync_diagnostics,
                 "pre_match_archive": pre_match_archive,
                 "lease_owner": owner,
