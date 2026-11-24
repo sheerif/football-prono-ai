@@ -7,14 +7,29 @@ It is not an always-on scheduler and production must keep the app instance alive
 import datetime
 import logging
 import threading
+import time
+import uuid
 
-from services import import_service
+from services import import_service, remote_sync_lease, sync_registry
 
 logger = logging.getLogger(__name__)
 _lock = threading.Lock()
 _started = False
 _stop = threading.Event()
 _last_signature = None
+
+# One durable owner polls across all Streamlit replicas. The lease is held for
+# the worker lifetime and renewed periodically, rather than claimed per poll;
+# this prevents replicas from taking turns and duplicating the same API calls.
+POLL_LEASE_KEY = "live-priority-watcher:global"
+POLL_LEASE_SECONDS = 300
+POLL_LEASE_RENEW_SECONDS = 180
+POLL_LEASE_RETRY_SECONDS = 30
+_last_poll_lease_renewed_at: float | None = None
+
+
+class PollLeaseLost(RuntimeError):
+    """The watcher no longer owns its cross-process polling lease."""
 
 
 def _interval_seconds(*, has_live: bool, has_imminent: bool = False, quota: dict | None = None) -> int:
@@ -126,62 +141,188 @@ def _persist_live_fixtures(items: list[dict]) -> int:
     return changed
 
 
-def poll_once(client=None, *, now: datetime.datetime | None = None, persist: bool = True) -> dict:
-    """Poll live plus next-24h fixtures; optionally defer writes during another job."""
+def _claim_poll_lease() -> str | None:
+    """Acquire one durable watcher lease shared by every application replica."""
+    global _last_poll_lease_renewed_at
+    owner = f"live-priority-watcher:{uuid.uuid4().hex}"
+    try:
+        local_claimed = sync_registry.claim_download(
+            POLL_LEASE_KEY, owner, lease_seconds=POLL_LEASE_SECONDS
+        )
+    except Exception:
+        logger.warning("Local live-priority watcher lease unavailable", exc_info=True)
+        return None
+    if not local_claimed:
+        return None
+
+    try:
+        remote_claimed = remote_sync_lease.claim(
+            POLL_LEASE_KEY, owner, lease_seconds=POLL_LEASE_SECONDS
+        )
+    except Exception:
+        logger.warning("Remote live-priority watcher lease unavailable", exc_info=True)
+        remote_claimed = False
+    if not remote_claimed:
+        try:
+            sync_registry.release_download_claim(POLL_LEASE_KEY, owner)
+        except Exception:
+            logger.warning("Unable to release local watcher lease after remote denial", exc_info=True)
+        return None
+
+    _last_poll_lease_renewed_at = time.monotonic()
+    return owner
+
+
+def _renew_poll_lease(owner: str, *, force: bool = False) -> bool:
+    """Renew the local and remote owner record before the durable lease expires."""
+    global _last_poll_lease_renewed_at
+    now = time.monotonic()
+    if (
+        not force
+        and _last_poll_lease_renewed_at is not None
+        and now - _last_poll_lease_renewed_at < POLL_LEASE_RENEW_SECONDS
+    ):
+        return True
+    try:
+        if not sync_registry.renew_download_claim(
+            POLL_LEASE_KEY, owner, lease_seconds=POLL_LEASE_SECONDS
+        ):
+            return False
+        if not remote_sync_lease.renew(
+            POLL_LEASE_KEY, owner, lease_seconds=POLL_LEASE_SECONDS
+        ):
+            return False
+    except Exception:
+        logger.warning("Unable to renew live-priority watcher lease", exc_info=True)
+        return False
+    _last_poll_lease_renewed_at = now
+    return True
+
+
+def _release_poll_lease(owner: str) -> None:
+    """Release only this worker's lease; always attempt both stores."""
+    global _last_poll_lease_renewed_at
+    try:
+        remote_sync_lease.release(POLL_LEASE_KEY, owner)
+    except Exception:
+        logger.warning("Unable to release remote live-priority watcher lease", exc_info=True)
+    try:
+        sync_registry.release_download_claim(POLL_LEASE_KEY, owner)
+    except Exception:
+        logger.warning("Unable to release local live-priority watcher lease", exc_info=True)
+    _last_poll_lease_renewed_at = None
+
+
+def _wait_with_poll_lease(delay: int, owner: str) -> bool:
+    """Sleep in bounded intervals and keep the single global watcher lease alive."""
+    remaining = max(0, int(delay))
+    while remaining > 0 and not _stop.is_set():
+        step = min(60, remaining)
+        if _stop.wait(step):
+            return False
+        remaining -= step
+        if not _renew_poll_lease(owner):
+            return False
+    return not _stop.is_set()
+
+
+def poll_once(
+    client=None,
+    *,
+    now: datetime.datetime | None = None,
+    persist: bool = True,
+    lease_owner: str | None = None,
+) -> dict:
+    """Poll live and imminent fixtures only while holding the shared watcher lease.
+
+    Direct callers acquire/release a short-lived lease. The background worker
+    passes its long-lived owner so replicas cannot alternate API polling loops.
+    """
     client = client or import_service.client
     now = now or datetime.datetime.now(datetime.UTC)
-    live_payload = client._get("/fixtures", {"live": "all"})
-    live_errors = live_payload.get("errors") if isinstance(live_payload, dict) else None
-    if live_errors:
-        raise RuntimeError(f"API live fixtures returned errors: {live_errors}")
-    live_items = live_payload.get("response") or []
+    owns_lease = lease_owner is None
+    owner = lease_owner or _claim_poll_lease()
+    if not owner:
+        return {
+            "skipped": True,
+            "reason": "live-priority watcher lease détenue ou indisponible",
+            "live_count": 0,
+            "imminent_count": 0,
+            "changed": 0,
+            "signature": None,
+            "quota": dict(getattr(client, "last_rate_limit", {}) or {}),
+        }
 
-    # API-Football rejects a global /fixtures range using only from/to
-    # ("The From/To field need another parameter"). Query each calendar date
-    # with the supported date filter instead. UTC makes the 24h window stable.
-    horizon = now + datetime.timedelta(hours=24)
-    query_dates = sorted({now.date(), horizon.date()})
-    queried_items = []
-    for query_date in query_dates:
-        imminent_payload = client._get(
-            "/fixtures", {"date": query_date.isoformat(), "timezone": "UTC"}
-        )
-        imminent_errors = (
-            imminent_payload.get("errors")
-            if isinstance(imminent_payload, dict)
-            else None
-        )
-        if imminent_errors:
-            raise RuntimeError(
-                f"API imminent fixtures returned errors for {query_date}: "
-                f"{imminent_errors}"
+    try:
+        if not _renew_poll_lease(owner):
+            raise PollLeaseLost("Live-priority watcher lease lost before polling.")
+
+        live_payload = client._get("/fixtures", {"live": "all"})
+        if not _renew_poll_lease(owner):
+            raise PollLeaseLost("Live-priority watcher lease lost after live fixtures request.")
+        live_errors = live_payload.get("errors") if isinstance(live_payload, dict) else None
+        if live_errors:
+            raise RuntimeError(f"API live fixtures returned errors: {live_errors}")
+        live_items = live_payload.get("response") or []
+
+        # API-Football rejects a global /fixtures range using only from/to
+        # ("The From/To field need another parameter"). Query each calendar date
+        # with the supported date filter instead. UTC makes the 24h window stable.
+        horizon = now + datetime.timedelta(hours=24)
+        query_dates = sorted({now.date(), horizon.date()})
+        queried_items = []
+        for query_date in query_dates:
+            imminent_payload = client._get(
+                "/fixtures", {"date": query_date.isoformat(), "timezone": "UTC"}
             )
-        queried_items.extend(imminent_payload.get("response") or [])
+            if not _renew_poll_lease(owner):
+                raise PollLeaseLost(
+                    f"Live-priority watcher lease lost after imminent fixtures request for {query_date}."
+                )
+            imminent_errors = (
+                imminent_payload.get("errors")
+                if isinstance(imminent_payload, dict)
+                else None
+            )
+            if imminent_errors:
+                raise RuntimeError(
+                    f"API imminent fixtures returned errors for {query_date}: "
+                    f"{imminent_errors}"
+                )
+            queried_items.extend(imminent_payload.get("response") or [])
 
-    # Some providers may repeat a fixture in adjacent-date responses. Keep one
-    # record per fixture before filtering/persisting to avoid duplicate writes.
-    unique_items = {}
-    for item in queried_items:
-        fixture = item.get("fixture") or {}
-        fixture_id = fixture.get("id") or item.get("id")
-        key = int(fixture_id) if fixture_id else _fixture_signature([item])
-        unique_items.setdefault(key, item)
-    imminent_items = _filter_imminent(list(unique_items.values()), now=now)
-    live_ids = {int((item.get("fixture") or {}).get("id") or item.get("id") or 0) for item in live_items}
-    imminent_items = [
-        item for item in imminent_items
-        if int((item.get("fixture") or {}).get("id") or item.get("id") or 0) not in live_ids
-    ]
-    items = live_items + imminent_items
-    changed = _persist_live_fixtures(items) if persist else 0
-    return {
-        "live_count": len(live_items),
-        "imminent_count": len(imminent_items),
-        "changed": changed,
-        "signature": _fixture_signature(items),
-        "quota": dict(getattr(client, "last_rate_limit", {}) or {}),
-    }
-
+        # Some providers may repeat a fixture in adjacent-date responses. Keep one
+        # record per fixture before filtering/persisting to avoid duplicate writes.
+        unique_items = {}
+        for item in queried_items:
+            fixture = item.get("fixture") or {}
+            fixture_id = fixture.get("id") or item.get("id")
+            key = int(fixture_id) if fixture_id else _fixture_signature([item])
+            unique_items.setdefault(key, item)
+        imminent_items = _filter_imminent(list(unique_items.values()), now=now)
+        live_ids = {
+            int((item.get("fixture") or {}).get("id") or item.get("id") or 0)
+            for item in live_items
+        }
+        imminent_items = [
+            item for item in imminent_items
+            if int((item.get("fixture") or {}).get("id") or item.get("id") or 0) not in live_ids
+        ]
+        items = live_items + imminent_items
+        if persist and not _renew_poll_lease(owner):
+            raise PollLeaseLost("Live-priority watcher lease lost before persisting fixtures.")
+        changed = _persist_live_fixtures(items) if persist else 0
+        return {
+            "skipped": False,
+            "live_count": len(live_items),
+            "imminent_count": len(imminent_items),
+            "changed": changed,
+            "signature": _fixture_signature(items),
+            "quota": dict(getattr(client, "last_rate_limit", {}) or {}),
+        }
+    finally:
+        if owns_lease:
+            _release_poll_lease(owner)
 
 def _is_daily_quota_exhausted(error: Exception | str) -> bool:
     message = str(error).casefold()
@@ -219,52 +360,82 @@ def _worker():
     global _last_signature
     client = import_service.client
     failures = 0
-    while not _stop.is_set():
-        try:
-            from services import background_jobs
-            job_active = background_jobs.data_job_running()
-            # Keep monitoring priority fixtures while secondary data jobs run,
-            # but defer SQLite writes until the active job reaches a checkpoint.
-            result = poll_once(client, persist=not job_active)
-            failures = 0
-            signature = result["signature"]
-            if signature != _last_signature and (
-                _last_signature is not None
-                or result["changed"] > 0
-                or result["live_count"] > 0
-                or result["imminent_count"] > 0
-            ):
-                try:
-                    background_jobs.start_prediction_sync(days=1)
-                except Exception:
-                    logger.exception("Could not enqueue priority prediction refresh")
-            # Remember the detected signature even when writes are deferred;
-            # otherwise the same event would enqueue a second refresh after
-            # the priority job completes. The next idle poll still persists it.
-            _last_signature = signature
-            delay = _interval_seconds(
-                has_live=bool(result["live_count"]),
-                has_imminent=bool(result["imminent_count"]),
-                quota=result["quota"],
-            )
-        except Exception as exc:
-            if _is_daily_quota_exhausted(exc):
-                # The API client has already activated the process-wide daily
-                # circuit breaker. Do not spin, retry, or emit a traceback for
-                # every poll: park this worker until the UTC quota reset.
+    owner = None
+    try:
+        while not _stop.is_set():
+            if owner is None:
+                owner = _claim_poll_lease()
+                if owner is None:
+                    _stop.wait(POLL_LEASE_RETRY_SECONDS)
+                    continue
+            try:
+                if not _renew_poll_lease(owner):
+                    raise PollLeaseLost("Live-priority watcher lease lost before polling.")
+                from services import background_jobs
+                job_active = background_jobs.data_job_running()
+                # Keep monitoring priority fixtures while secondary data jobs run,
+                # but defer SQLite writes until the active job reaches a checkpoint.
+                result = poll_once(client, persist=not job_active, lease_owner=owner)
+                if result.get("skipped"):
+                    raise PollLeaseLost(result.get("reason") or "Watcher lease unavailable.")
                 failures = 0
-                delay = _seconds_until_utc_reset()
-                logger.warning(
-                    "Live priority watcher suspended: daily API quota exhausted; "
-                    "automatic resume in %s seconds (UTC reset).",
-                    delay,
+                signature = result["signature"]
+                if signature != _last_signature and (
+                    _last_signature is not None
+                    or result["changed"] > 0
+                    or result["live_count"] > 0
+                    or result["imminent_count"] > 0
+                ):
+                    try:
+                        background_jobs.start_prediction_sync(days=1)
+                    except Exception:
+                        logger.exception("Could not enqueue priority prediction refresh")
+                # Remember the detected signature even when writes are deferred;
+                # otherwise the same event would enqueue a second refresh after
+                # the priority job completes. The next idle poll still persists it.
+                _last_signature = signature
+                delay = _interval_seconds(
+                    has_live=bool(result["live_count"]),
+                    has_imminent=bool(result["imminent_count"]),
+                    quota=result["quota"],
                 )
-            else:
-                failures += 1
-                logger.exception("Live/imminent priority polling failed")
-                delay = _failure_delay(failures, getattr(client, "last_rate_limit", {}))
-        _stop.wait(delay)
+            except PollLeaseLost as exc:
+                logger.warning("Live-priority watcher relinquishing lost lease: %s", exc)
+                _release_poll_lease(owner)
+                owner = None
+                failures = 0
+                delay = POLL_LEASE_RETRY_SECONDS
+            except Exception as exc:
+                if _is_daily_quota_exhausted(exc):
+                    # The API client has already activated the process-wide daily
+                    # circuit breaker. Keep the single watcher owner while parked.
+                    failures = 0
+                    delay = _seconds_until_utc_reset()
+                    logger.warning(
+                        "Live priority watcher suspended: daily API quota exhausted; "
+                        "automatic resume in %s seconds (UTC reset).",
+                        delay,
+                    )
+                else:
+                    failures += 1
+                    logger.exception("Live/imminent priority polling failed")
+                    delay = _failure_delay(failures, getattr(client, "last_rate_limit", {}))
 
+            if owner is not None and not _wait_with_poll_lease(delay, owner):
+                if not _stop.is_set():
+                    logger.warning("Live-priority watcher lease heartbeat failed; reacquiring.")
+                _release_poll_lease(owner)
+                owner = None
+                delay = POLL_LEASE_RETRY_SECONDS
+
+            # A lost lease sets owner=None in the exception handler above. Back
+            # off before the next global claim instead of spinning on the lease
+            # service (or repeatedly competing with the current owner).
+            if owner is None and delay > 0 and not _stop.is_set():
+                _stop.wait(delay)
+    finally:
+        if owner is not None:
+            _release_poll_lease(owner)
 
 def start():
     """Start at most one daemon watcher in this process when API credentials exist."""
