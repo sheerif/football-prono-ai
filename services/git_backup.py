@@ -298,16 +298,30 @@ def backup_to_github(*, database_engine=engine, force: bool = False) -> dict:
                     "type": "blob", "sha": manifest_sha,
                 })
                 archive_tree_entries = tree_entries
-                if head and head.get("manifest_sha") == manifest_sha:
+                if head and _archive_matches_head(
+                    head,
+                    use_chunks=True,
+                    manifest_sha=manifest_sha,
+                    expected_part_shas=expected_part_shas,
+                    expected_blob_sha="",
+                ):
                     return {
-                        "status": "unchanged", "repository": repository, "branch": branch,
-                        "integrity_verified": True, "gzip_verified": True,
+                        "status": "unchanged",
+                        "repository": repository,
+                        "branch": branch,
+                        "integrity_verified": True,
+                        "gzip_verified": True,
+                        "remote_verified": True,
                     }
             else:
                 if head and head.get("blob_sha") == _git_blob_sha(archive_bytes):
                     return {
-                        "status": "unchanged", "repository": repository, "branch": branch,
-                        "integrity_verified": True, "gzip_verified": True,
+                        "status": "unchanged",
+                        "repository": repository,
+                        "branch": branch,
+                        "integrity_verified": True,
+                        "gzip_verified": True,
+                        "remote_verified": True,
                     }
                 blob = _request(
                     "POST", f"{root}/git/blobs", token,
