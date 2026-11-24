@@ -9,8 +9,12 @@ class FunctionTraceRuntimeTests(unittest.TestCase):
     def test_traces_function_entry_and_exit_with_correlation_id(self):
         namespace = {"__name__": "services.trace_test_module"}
         exec(
-            "def traced_target(value):\n"
-            "    return value + 1\n",
+            compile(
+                "def traced_target(value):\n"
+                "    return value + 1\n",
+                trace_runtime._PROJECT_ROOT + "/services/trace_test_module.py",
+                "exec",
+            ),
             namespace,
         )
         target = namespace["traced_target"]
@@ -38,8 +42,12 @@ class FunctionTraceRuntimeTests(unittest.TestCase):
     def test_traces_exceptions_without_logging_secret_values(self):
         namespace = {"__name__": "services.trace_test_module"}
         exec(
-            "def traced_failure(api_key):\n"
-            "    raise ValueError('failure')\n",
+            compile(
+                "def traced_failure(api_key):\n"
+                "    raise ValueError('failure')\n",
+                trace_runtime._PROJECT_ROOT + "/services/trace_test_module.py",
+                "exec",
+            ),
             namespace,
         )
         target = namespace["traced_failure"]
