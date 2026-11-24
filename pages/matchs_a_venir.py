@@ -1,4 +1,5 @@
 import datetime
+from contextlib import contextmanager
 import hashlib
 import html
 import inspect
@@ -489,21 +490,104 @@ def _save_fixture_details(league_id: int, season: int, api_items: list[dict]) ->
     return stats
 
 
+@contextmanager
+def _fixture_details_batch_lease(league_id: int, season: int):
+    """Coordinate season-wide fixture-detail downloads across local and remote workers."""
+    resource_key = f"fixture-details-batch:{int(league_id)}:{int(season)}"
+    owner = (
+        f"upcoming-page-fixture-details:{int(league_id)}:{int(season)}:"
+        f"{uuid.uuid4().hex}"
+    )
+    logger = logging.getLogger(__name__)
+    local_claimed = False
+    remote_claimed = False
+    try:
+        try:
+            local_claimed = sync_registry.claim_download(resource_key, owner)
+        except Exception:
+            logger.warning(
+                "Local fixture-detail batch lease unavailable for %s",
+                resource_key,
+                exc_info=True,
+            )
+            yield False
+            return
+        if not local_claimed:
+            yield False
+            return
+
+        try:
+            remote_claimed = remote_sync_lease.claim(
+                resource_key,
+                owner,
+                lease_seconds=remote_sync_lease.LEASE_SECONDS,
+            )
+        except Exception:
+            logger.warning(
+                "Remote fixture-detail batch lease unavailable for %s",
+                resource_key,
+                exc_info=True,
+            )
+            yield False
+            return
+        if not remote_claimed:
+            yield False
+            return
+
+        yield True
+    finally:
+        if remote_claimed:
+            try:
+                remote_sync_lease.release(resource_key, owner)
+            except Exception:
+                logger.warning(
+                    "Unable to release remote fixture-detail batch lease for %s",
+                    resource_key,
+                    exc_info=True,
+                )
+        if local_claimed:
+            try:
+                sync_registry.release_download_claim(resource_key, owner)
+            except Exception:
+                logger.warning(
+                    "Unable to release local fixture-detail batch lease for %s",
+                    resource_key,
+                    exc_info=True,
+                )
+
+
 def _sync_fixture_details(upcoming: pd.DataFrame, progress_callback=None) -> dict:
     schema_guard.ensure_fixture_api_cache_tables()
     grouped = list(upcoming.groupby(["league_id", "season"]))
     total_groups = max(1, len(grouped))
-    totals = {"inserted": 0, "updated": 0, "unchanged": 0}
+    totals = {"inserted": 0, "updated": 0, "unchanged": 0, "skipped": 0, "errors": 0}
     for group_index, ((league_id, season), _) in enumerate(grouped, start=1):
         if progress_callback:
             progress_callback(group_index - 1, total_groups, f"Comparaison API: ligue {league_id}, saison {season}")
-        try:
-            response = api_client.get_fixtures(int(league_id), int(season))
-        except Exception:
-            continue
-        stats = _save_fixture_details(int(league_id), int(season), response.get("response") or [])
-        for key in totals:
-            totals[key] += stats.get(key, 0)
+        with _fixture_details_batch_lease(int(league_id), int(season)) as claimed:
+            if not claimed:
+                totals["skipped"] += 1
+                if progress_callback:
+                    progress_callback(
+                        group_index,
+                        total_groups,
+                        f"Détails différés: lease détenue/indisponible ({league_id}, {season})",
+                    )
+                continue
+            try:
+                response = api_client.get_fixtures(int(league_id), int(season))
+            except Exception:
+                totals["errors"] += 1
+                logging.getLogger(__name__).warning(
+                    "Fixture-detail bulk fetch failed for league=%s season=%s",
+                    league_id,
+                    season,
+                    exc_info=True,
+                )
+                continue
+            stats = _save_fixture_details(int(league_id), int(season), response.get("response") or [])
+            for key in ("inserted", "updated", "unchanged"):
+                totals[key] += stats.get(key, 0)
     if progress_callback:
         progress_callback(total_groups, total_groups, "Détails des matchs synchronisés")
     return totals
@@ -553,36 +637,54 @@ def _sync_missing_fixture_details(upcoming: pd.DataFrame, progress_callback=None
                 total_groups,
                 f"Complément API: {len(due)} détail(s) manquant(s)",
             )
-        for fixture_id in due:
-            sync_registry.mark(
-                f"fixture-detail:{fixture_id}", "fixture_detail", "running"
-            )
-        try:
-            response = api_client.get_fixtures(int(league_id), int(season))
-        except Exception as exc:
+        with _fixture_details_batch_lease(int(league_id), int(season)) as claimed:
+            if not claimed:
+                totals["skipped"] += len(due)
+                if progress_callback:
+                    progress_callback(
+                        group_index,
+                        total_groups,
+                        f"Détails différés: lease détenue/indisponible ({league_id}, {season})",
+                    )
+                continue
+
             for fixture_id in due:
+                sync_registry.mark(
+                    f"fixture-detail:{fixture_id}", "fixture_detail", "running"
+                )
+            try:
+                response = api_client.get_fixtures(int(league_id), int(season))
+            except Exception as exc:
+                totals["skipped"] += len(due)
+                for fixture_id in due:
+                    sync_registry.mark(
+                        f"fixture-detail:{fixture_id}",
+                        "fixture_detail",
+                        "error",
+                        message=str(exc),
+                    )
+                logging.getLogger(__name__).warning(
+                    "Fixture-detail bulk fetch failed for league=%s season=%s",
+                    league_id,
+                    season,
+                    exc_info=True,
+                )
+                continue
+            stats = _save_fixture_details(int(league_id), int(season), response.get("response") or [])
+            for key in ("inserted", "updated", "unchanged"):
+                totals[key] += stats.get(key, 0)
+            refreshed = _load_cached_fixture_details(
+                int(league_id), int(season), tuple(due)
+            )
+            for fixture_id in due:
+                complete = _fixture_detail_complete(refreshed.get(fixture_id))
                 sync_registry.mark(
                     f"fixture-detail:{fixture_id}",
                     "fixture_detail",
-                    "error",
-                    message=str(exc),
+                    "complete" if complete else "unavailable",
+                    item_count=1 if complete else 0,
+                    message=None if complete else "Détail incomplet dans la réponse saison",
                 )
-            continue
-        stats = _save_fixture_details(int(league_id), int(season), response.get("response") or [])
-        for key in ["inserted", "updated", "unchanged"]:
-            totals[key] += stats.get(key, 0)
-        refreshed = _load_cached_fixture_details(
-            int(league_id), int(season), tuple(due)
-        )
-        for fixture_id in due:
-            complete = _fixture_detail_complete(refreshed.get(fixture_id))
-            sync_registry.mark(
-                f"fixture-detail:{fixture_id}",
-                "fixture_detail",
-                "complete" if complete else "unavailable",
-                item_count=1 if complete else 0,
-                message=None if complete else "Détail incomplet dans la réponse saison",
-            )
 
     if progress_callback:
         progress_callback(total_groups, total_groups, "Détails, journées et logos vérifiés")
