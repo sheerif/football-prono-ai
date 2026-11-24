@@ -257,10 +257,26 @@ def run() -> dict:
                 retry_at = (current + datetime.timedelta(days=1)).replace(
                     hour=0, minute=0, second=0, microsecond=0
                 )
-                message = (
-                    "Quota journalier ou réserve quotidienne atteint : données conservées. "
-                    "Reprise automatique après minuit UTC."
-                )
+                if quota_kind == "daily":
+                    message = (
+                        "Quota API journalier épuisé : données conservées. "
+                        "Reprise automatique après minuit UTC."
+                    )
+                elif quota_kind == "policy_reserve":
+                    message = (
+                        "Réserve quotidienne protégée : données conservées. "
+                        "Reprise après renouvellement du quota journalier."
+                    )
+                elif quota_kind in {"local_atomic_budget", "remote_shared_budget"}:
+                    message = (
+                        "Budget de quota atomique ou partagé épuisé : données conservées. "
+                        "Diagnostic conservé et reprise après renouvellement journalier."
+                    )
+                else:
+                    message = (
+                        "Synchronisation arrêtée par une règle de quota non classée : "
+                        "données conservées et reprise au prochain renouvellement journalier."
+                    )
             metadata = {
                 "persistent": True,
                 "scheduler": "github-actions",
