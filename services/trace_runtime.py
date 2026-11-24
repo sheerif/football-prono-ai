@@ -23,7 +23,8 @@ _THREAD = threading.local()
 _ENABLED = False
 _PREVIOUS_PROFILE = None
 _PREVIOUS_THREAD_PROFILE = None
-_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))\n_TEST_ROOT = os.path.join(_PROJECT_ROOT, "tests")
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+_TEST_ROOT = os.path.join(_PROJECT_ROOT, "tests")
 _SECRET_VALUE = re.compile(r"(?i)(gh[pousr]_[A-Za-z0-9_]{20,}|Bearer\s+[^\s]+)")
 _SECRET_KEY = re.compile(r"(?i)(token|secret|password|authorization|cookie|api.?key|credential|headers?)")
 _SAFE_CONTEXT_NAMES = {
