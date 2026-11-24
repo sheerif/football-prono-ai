@@ -58,28 +58,28 @@ jobs:
           if summary.exists():
               result = json.loads(summary.read_text())
               with open(__import__("os").environ["GITHUB_STEP_SUMMARY"], "a") as out:
-                  out.write("## Prédictions réellement enregistrées\\n\\n")
-                  out.write(f"- Matchs évalués : **{result.get('matches_evaluated', 0)}**\\n")
-                  out.write(f"- Prédictions post-coup d'envoi exclues : **{result.get('post_kickoff_predictions_excluded', 0)}**\\n")
-                  out.write(f"- Prédictions invalides exclues : **{result.get('invalid_predictions_excluded', 0)}**\\n\\n")
+                  out.write("## Prédictions réellement enregistrées\n\n")
+                  out.write(f"- Matchs évalués : **{result.get('matches_evaluated', 0)}**\n")
+                  out.write(f"- Prédictions post-coup d'envoi exclues : **{result.get('post_kickoff_predictions_excluded', 0)}**\n")
+                  out.write(f"- Prédictions invalides exclues : **{result.get('invalid_predictions_excluded', 0)}**\n\n")
                   for group in result.get("groups", []):
                       metrics = group.get("metrics", {})
-                      out.write(f"### {group.get('model_version')} · {group.get('source')}\\n\\n")
-                      out.write(f"- Échantillon : {metrics.get('matches', 0)}\\n")
-                      out.write(f"- Exactitude 1/N/2 : {metrics.get('accuracy_1n2')}\\n")
-                      out.write(f"- Brier : {metrics.get('brier_score')}\\n")
-                      out.write(f"- Log Loss : {metrics.get('log_loss')}\\n")
-                      out.write(f"- Rappel du nul : {metrics.get('draw_recall')}\\n\\n")
+                      out.write(f"### {group.get('model_version')} · {group.get('source')}\n\n")
+                      out.write(f"- Échantillon : {metrics.get('matches', 0)}\n")
+                      out.write(f"- Exactitude 1/N/2 : {metrics.get('accuracy_1n2')}\n")
+                      out.write(f"- Brier : {metrics.get('brier_score')}\n")
+                      out.write(f"- Log Loss : {metrics.get('log_loss')}\n")
+                      out.write(f"- Rappel du nul : {metrics.get('draw_recall')}\n\n")
           production = Path("backtest-results/production-poisson-2026.json")
           if production.exists():
               result = json.loads(production.read_text())
               metrics = result.get("production_poisson_decision_engine", {})
               with open(__import__("os").environ["GITHUB_STEP_SUMMARY"], "a") as out:
-                  out.write("## Pipeline Poisson en walk-forward · saison 2026\\n\\n")
-                  out.write(f"- Matchs évalués : **{metrics.get('matches', 0)}**\\n")
-                  out.write(f"- Exactitude 1/N/2 : {metrics.get('accuracy_1n2')}\\n")
-                  out.write(f"- Brier : {metrics.get('brier_score')}\\n")
-                  out.write(f"- Log Loss : {metrics.get('log_loss')}\\n")
+                  out.write("## Pipeline Poisson en walk-forward · saison 2026\n\n")
+                  out.write(f"- Matchs évalués : **{metrics.get('matches', 0)}**\n")
+                  out.write(f"- Exactitude 1/N/2 : {metrics.get('accuracy_1n2')}\n")
+                  out.write(f"- Brier : {metrics.get('brier_score')}\n")
+                  out.write(f"- Log Loss : {metrics.get('log_loss')}\n")
                   sweep = sorted(
                       metrics.get("draw_decision_sweep", []),
                       key=lambda item: (
@@ -88,9 +88,9 @@ jobs:
                       ),
                       reverse=True,
                   )[:5]
-                  out.write("\\n### Diagnostic de décision du nul (non activé en production)\\n\\n")
-                  out.write("| Seuil nul | Écart maximal | Précision 1/N/2 | Rappel nul | Précision nul | F1 nul |\\n")
-                  out.write("|---:|---:|---:|---:|---:|---:|\\n")
+                  out.write("\n### Diagnostic de décision du nul (non activé en production)\n\n")
+                  out.write("| Seuil nul | Écart maximal | Précision 1/N/2 | Rappel nul | Précision nul | F1 nul |\n")
+                  out.write("|---:|---:|---:|---:|---:|---:|\n")
                   for item in sweep:
                       out.write(
                           f"| {item.get('draw_threshold')} % "
@@ -98,7 +98,7 @@ jobs:
                           f"| {item.get('accuracy_1n2')} "
                           f"| {item.get('draw_recall')} "
                           f"| {item.get('draw_precision')} "
-                          f"| {item.get('draw_f1')} |\\n"
+                          f"| {item.get('draw_f1')} |\n"
                       )
           PY
       - name: Upload reproducible metrics
