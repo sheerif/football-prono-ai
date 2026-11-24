@@ -12,6 +12,7 @@ import datetime
 import hashlib
 import json
 import os
+import time
 import uuid
 from urllib.parse import quote
 
@@ -20,6 +21,8 @@ from services import api_quota_policy, git_backup, remote_sync_lease
 _REMOTE_PREFIX = "api-quota-ledger"
 _SCHEMA_VERSION = 1
 _LOCK_SECONDS = 60
+_LOCK_ACQUIRE_ATTEMPTS = 4
+_LOCK_RETRY_BASE_SECONDS = 0.2
 _URGENT_SCORE = api_quota_policy.PRIORITIES["prediction_blocking"]
 
 
@@ -79,6 +82,24 @@ def _unknown_budget() -> int:
 def _path(day_key: str) -> str:
     digest = hashlib.sha256(day_key.encode("ascii")).hexdigest()
     return f"{_REMOTE_PREFIX}/{digest}.json"
+
+
+def _claim_allocation_lock(lock_key: str, lock_owner: str) -> bool:
+    """Retry short-lived lock contention before deferring an API request.
+
+    A failed claim is commonly a compare-and-swap race with another runtime,
+    not an exhausted API quota. A small bounded wait lets the current writer
+    finish its GitHub Contents transaction without turning that race into a
+    five-minute watcher failure. The lock remains fail-closed after retries.
+    """
+    for attempt in range(_LOCK_ACQUIRE_ATTEMPTS):
+        if remote_sync_lease.claim(
+            lock_key, lock_owner, lease_seconds=_LOCK_SECONDS
+        ):
+            return True
+        if attempt + 1 < _LOCK_ACQUIRE_ATTEMPTS:
+            time.sleep(_LOCK_RETRY_BASE_SECONDS * (2 ** attempt))
+    return False
 
 
 def _read_record(repository: str, branch: str, path: str, token: str, day_key: str):
@@ -168,7 +189,6 @@ def _merge_snapshot(record: dict, snapshot: dict) -> bool:
     candidate = max(0, low - outstanding)
     current_available = max(0, _int(record.get("available"), 0) or 0)
     if not record.get("known"):
-        # A fresh known status may safely replace the small unknown-quota pool.
         record["available"] = candidate
     else:
         record["available"] = min(current_available, candidate)
@@ -200,7 +220,7 @@ def reserve_block(
     day_key = current.date().isoformat()
     lock_key = f"api-quota-ledger:{day_key}"
     lock_owner = f"quota-{uuid.uuid4().hex}"
-    if not remote_sync_lease.claim(lock_key, lock_owner, lease_seconds=_LOCK_SECONDS):
+    if not _claim_allocation_lock(lock_key, lock_owner):
         return {"allowed": False, "reason": "remote_quota_lock_contention", "remote": True}
     reported = False
     try:
@@ -230,8 +250,6 @@ def reserve_block(
         available = max(0, _int(record.get("available"), 0) or 0)
         reserve = max(0, _int(record.get("reserve"), 0) or 0)
         urgent = api_quota_policy.PRIORITIES.get(priority, 0) >= _URGENT_SCORE
-        # Unknown quota snapshots are urgent-only even if another runtime
-        # previously initialized a known pool.
         if not snapshot_known and not urgent:
             amount = 0
             reason = "remote_quota_unknown_urgent_only"
