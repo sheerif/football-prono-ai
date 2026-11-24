@@ -61,6 +61,43 @@ class SyncRegistryTests(unittest.TestCase):
         ):
             self.assertTrue(sync_registry.should_download("fixture:1"))
 
+    def test_fresh_error_resource_is_not_downloaded_again(self):
+        row = {
+            "status": "error",
+            "updated_at": (self.now - datetime.timedelta(minutes=2)).isoformat(),
+        }
+        with patch.object(sync_registry, "get", return_value=row):
+            self.assertFalse(sync_registry.should_download("fixture:1"))
+
+    def test_stale_error_resource_can_be_retried(self):
+        row = {
+            "status": "error",
+            "updated_at": (self.now - datetime.timedelta(minutes=6)).isoformat(),
+        }
+        with patch.object(sync_registry, "get", return_value=row):
+            self.assertTrue(sync_registry.should_download("fixture:1"))
+
+    def test_error_retry_delay_can_be_configured(self):
+        row = {
+            "status": "error",
+            "updated_at": (self.now - datetime.timedelta(minutes=6)).isoformat(),
+        }
+        with patch.object(sync_registry, "get", return_value=row):
+            self.assertFalse(
+                sync_registry.should_download("fixture:1", error_retry_minutes=10)
+            )
+            self.assertTrue(
+                sync_registry.should_download("fixture:1", error_retry_minutes=5)
+            )
+
+    def test_invalid_error_timestamp_allows_recovery(self):
+        with patch.object(
+            sync_registry,
+            "get",
+            return_value={"status": "error", "updated_at": "invalid"},
+        ):
+            self.assertTrue(sync_registry.should_download("fixture:1"))
+
     def test_unavailable_resource_keeps_existing_retry_delay(self):
         row = {
             "status": "unavailable",
