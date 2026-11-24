@@ -304,3 +304,43 @@ def test_release_poll_lease_attempts_local_cleanup_when_remote_release_fails(mon
     )
     watcher._release_poll_lease("owner-2")
     assert released == [(watcher.POLL_LEASE_KEY, "owner-2")]
+
+def test_worker_waits_before_reacquiring_after_lost_lease(monkeypatch):
+    from services import live_priority_watcher as watcher
+
+    class StopAfterWait:
+        def __init__(self):
+            self.wait_calls = []
+            self.stopped = False
+
+        def is_set(self):
+            return self.stopped
+
+        def wait(self, seconds):
+            self.wait_calls.append(seconds)
+            self.stopped = True
+            return True
+
+    stop = StopAfterWait()
+    monkeypatch.setattr(watcher, "_stop", stop)
+    claim_calls = []
+    released = []
+
+    def claim():
+        claim_calls.append("claim")
+        return "owner-1"
+
+    monkeypatch.setattr(watcher, "_claim_poll_lease", claim)
+    monkeypatch.setattr(
+        watcher, "_renew_poll_lease", lambda owner, force=False: False
+    )
+    monkeypatch.setattr(
+        watcher, "_release_poll_lease", lambda owner: released.append(owner)
+    )
+
+    watcher._worker()
+
+    assert claim_calls == ["claim"]
+    assert released == ["owner-1"]
+    assert stop.wait_calls == [watcher.POLL_LEASE_RETRY_SECONDS]
+

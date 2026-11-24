@@ -426,6 +426,13 @@ def _worker():
                     logger.warning("Live-priority watcher lease heartbeat failed; reacquiring.")
                 _release_poll_lease(owner)
                 owner = None
+                delay = POLL_LEASE_RETRY_SECONDS
+
+            # A lost lease sets owner=None in the exception handler above. Back
+            # off before the next global claim instead of spinning on the lease
+            # service (or repeatedly competing with the current owner).
+            if owner is None and delay > 0 and not _stop.is_set():
+                _stop.wait(delay)
     finally:
         if owner is not None:
             _release_poll_lease(owner)
