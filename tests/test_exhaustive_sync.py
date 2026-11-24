@@ -872,6 +872,9 @@ class ExhaustiveSyncTests(unittest.TestCase):
         self.assertIsNone(sync_xg.call_args.kwargs["max_matches"])
         self.assertEqual(result["mode"], "exhaustive")
         self.assertIn("api_calls_by_family", result)
+        self.assertIn("quota_status_by_family", result)
+        self.assertIn("quota_metrics", result)
+        self.assertIn("données principales", result["quota_status_by_family"])
         self.assertIn("requests_avoided_at_least", result)
         self.assertEqual(
             result["priority_dispatch_order"],
