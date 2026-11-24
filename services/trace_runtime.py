@@ -152,7 +152,11 @@ def trace_scope(operation: str, *, trace_id: str | None = None, **fields):
 
 def _is_project_frame(frame) -> bool:
     module = str(frame.f_globals.get("__name__", ""))
-    return module.startswith(_PREFIXES) and module != __name__
+    filename = os.path.basename(frame.f_code.co_filename)
+    return (
+        (module.startswith(_PREFIXES) or filename == "app.py")
+        and module != __name__
+    )
 
 
 def _find_entry(stack: list, frame):
