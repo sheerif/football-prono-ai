@@ -524,5 +524,118 @@ class ScheduledSyncTests(unittest.TestCase):
         run_full_sync.assert_not_called()
 
 
+    def test_scheduled_entrypoint_retries_minute_quota_after_verified_checkpoint_backup(self):
+        fixed_now = datetime.datetime(2026, 11, 24, 5, 20)
+        waiting = {
+            "status": "waiting_quota",
+            "quota_kind": "minute",
+            "next_retry_at": (fixed_now + datetime.timedelta(seconds=90)).isoformat(),
+            "checkpoint": "fixture-lineup:1570488",
+            "api_calls": 400,
+        }
+        with (
+            patch.object(run_scheduled_sync, "_now", return_value=fixed_now),
+            patch.object(run_scheduled_sync, "run", side_effect=[waiting, {"status": "complete", "api_calls": 12}]) as run,
+            patch.object(
+                run_scheduled_sync.git_backup,
+                "backup_to_github",
+                side_effect=[
+                    {"status": "uploaded", "remote_verified": True},
+                    {"status": "unchanged", "remote_verified": True},
+                ],
+            ) as backup,
+            patch.object(run_scheduled_sync.time, "sleep") as sleep,
+            patch.object(run_scheduled_sync.engine, "dispose"),
+        ):
+            result = run_scheduled_sync.main()
+
+        self.assertEqual(result, 0)
+        self.assertEqual(run.call_count, 2)
+        self.assertEqual(backup.call_count, 2)
+        self.assertTrue(all(item.kwargs == {"force": True} for item in backup.call_args_list))
+        sleep.assert_called_once_with(90.0)
+
+    def test_scheduled_entrypoint_does_not_retry_daily_quota(self):
+        with (
+            patch.object(
+                run_scheduled_sync,
+                "run",
+                return_value={
+                    "status": "waiting_quota",
+                    "quota_kind": "daily",
+                    "next_retry_at": "2026-11-25T00:00:00",
+                },
+            ) as run,
+            patch.object(
+                run_scheduled_sync.git_backup,
+                "backup_to_github",
+                return_value={"status": "uploaded", "remote_verified": True},
+            ) as backup,
+            patch.object(run_scheduled_sync.time, "sleep") as sleep,
+            patch.object(run_scheduled_sync.engine, "dispose"),
+        ):
+            result = run_scheduled_sync.main()
+
+        self.assertEqual(result, 1)
+        run.assert_called_once()
+        backup.assert_called_once_with(force=True)
+        sleep.assert_not_called()
+
+    def test_scheduled_entrypoint_never_retries_without_verified_checkpoint_backup(self):
+        fixed_now = datetime.datetime(2026, 11, 24, 5, 20)
+        with (
+            patch.object(run_scheduled_sync, "_now", return_value=fixed_now),
+            patch.object(
+                run_scheduled_sync,
+                "run",
+                return_value={
+                    "status": "waiting_quota",
+                    "quota_kind": "minute",
+                    "next_retry_at": (fixed_now + datetime.timedelta(seconds=90)).isoformat(),
+                    "checkpoint": "fixture-lineup:1570488",
+                },
+            ) as run,
+            patch.object(
+                run_scheduled_sync.git_backup,
+                "backup_to_github",
+                return_value={"status": "uploaded", "remote_verified": False},
+            ) as backup,
+            patch.object(run_scheduled_sync.time, "sleep") as sleep,
+            patch.object(run_scheduled_sync.engine, "dispose"),
+        ):
+            result = run_scheduled_sync.main()
+
+        self.assertEqual(result, 1)
+        run.assert_called_once()
+        backup.assert_called_once_with(force=True)
+        sleep.assert_not_called()
+
+    def test_scheduled_entrypoint_bounds_transient_quota_retries(self):
+        fixed_now = datetime.datetime(2026, 11, 24, 5, 20)
+        waiting = {
+            "status": "waiting_quota",
+            "quota_kind": "minute",
+            "next_retry_at": (fixed_now + datetime.timedelta(seconds=90)).isoformat(),
+        }
+        with (
+            patch.object(run_scheduled_sync, "_now", return_value=fixed_now),
+            patch.object(run_scheduled_sync, "MAX_TRANSIENT_QUOTA_RETRIES", 2),
+            patch.object(run_scheduled_sync, "run", return_value=waiting) as run,
+            patch.object(
+                run_scheduled_sync.git_backup,
+                "backup_to_github",
+                return_value={"status": "unchanged", "remote_verified": True},
+            ) as backup,
+            patch.object(run_scheduled_sync.time, "sleep") as sleep,
+            patch.object(run_scheduled_sync.engine, "dispose"),
+        ):
+            result = run_scheduled_sync.main()
+
+        self.assertEqual(result, 1)
+        self.assertEqual(run.call_count, 3)
+        self.assertEqual(backup.call_count, 3)
+        self.assertEqual(sleep.call_count, 2)
+
+
 if __name__ == "__main__":
     unittest.main()
