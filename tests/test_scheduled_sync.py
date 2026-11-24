@@ -373,6 +373,82 @@ class ScheduledSyncTests(unittest.TestCase):
 
         self.assertEqual(result, 1)
 
+    def test_scheduler_persists_exact_quota_failure_diagnostics(self):
+        marks = []
+        quota_error = (
+            "fixture-lineup:1570488: Appel API différé (lineups) : "
+            "minute_quota; réserve protégée=1125."
+        )
+        sync_result = {
+            "quota_reached": True,
+            "api_calls": 400,
+            "api_calls_by_family": {"compositions/statistiques joueurs": 400},
+            "quota_status_by_family": {
+                "compositions/statistiques joueurs": {
+                    "daily_limit": "7500",
+                    "daily_remaining": "6627",
+                    "minute_limit": "300",
+                    "minute_remaining": "0",
+                    "checked_at": "2026-11-24T05:20:18",
+                    "status_error": "",
+                }
+            },
+            "quota_metrics": {
+                "quota_policy_blocks": 1,
+                "quota_atomic_blocks": 0,
+                "quota_remote_block_denials": 0,
+                "quota_remote_shared_tokens": 250,
+            },
+            "checkpoint": "fixture-lineup:1570488",
+            "errors": [quota_error],
+        }
+
+        with (
+            patch.object(run_scheduled_sync.import_service, "init_db"),
+            patch.object(run_scheduled_sync.import_service, "record_update_log"),
+            patch.object(run_scheduled_sync.sync_registry, "ensure_table"),
+            patch.object(run_scheduled_sync.sync_registry, "get", return_value=None),
+            patch.object(run_scheduled_sync.remote_sync_lease, "claim", return_value=True),
+            patch.object(run_scheduled_sync.sync_registry, "claim_download", return_value=True),
+            patch.object(run_scheduled_sync.remote_sync_lease, "renew", return_value=True),
+            patch.object(run_scheduled_sync.sync_registry, "renew_download_claim", return_value=True),
+            patch.object(run_scheduled_sync.sync_registry, "release_download_claim"),
+            patch.object(run_scheduled_sync.remote_sync_lease, "release"),
+            patch.object(
+                run_scheduled_sync.prediction_archive_service,
+                "archive_upcoming_predictions",
+                return_value={"status": "complete", "archived": 0, "api_calls": 0},
+            ),
+            patch.object(
+                run_scheduled_sync.background_jobs,
+                "api_quota_status",
+                return_value={"verified": True, "remaining": 6627, "minute_remaining": 300},
+            ),
+            patch.object(
+                run_scheduled_sync.sync_registry,
+                "mark",
+                side_effect=lambda *args, **kwargs: marks.append((args, kwargs)),
+            ),
+            patch.object(
+                run_scheduled_sync.full_sync_service,
+                "run_full_sync",
+                return_value=sync_result,
+            ) as run_full_sync,
+        ):
+            result = run_scheduled_sync.run()
+
+        self.assertEqual(result["status"], "waiting_quota")
+        self.assertEqual(result["quota_kind"], "minute")
+        self.assertEqual(result["quota_error"], quota_error)
+        self.assertEqual(result["api_calls_by_family"], sync_result["api_calls_by_family"])
+        self.assertEqual(result["quota_status_by_family"], sync_result["quota_status_by_family"])
+        self.assertEqual(result["quota_metrics"], sync_result["quota_metrics"])
+        self.assertEqual(result["checkpoint"], "fixture-lineup:1570488")
+        self.assertEqual(marks[-1][0][2], "waiting_quota")
+        self.assertEqual(marks[-1][1]["metadata"]["quota_error"], quota_error)
+        self.assertEqual(marks[-1][1]["metadata"]["quota_kind"], "minute")
+        run_full_sync.assert_called_once()
+
     def test_scheduler_defers_without_data_calls_when_quota_is_exhausted(self):
         marks = []
         with (
