@@ -267,7 +267,7 @@ def enable_function_tracing() -> bool:
     _ENABLED = True
     _emit(
         "tracing_enabled",
-        modules="services,scripts,database,pages,components",
+        modules="all repository Python modules except tests and this tracer",
         values_logged=False,
         argument_values_logged=False,
     )
