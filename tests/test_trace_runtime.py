@@ -15,7 +15,7 @@ class FunctionTraceRuntimeTests(unittest.TestCase):
         )
         target = namespace["traced_target"]
 
-        with patch.object(trace_runtime._LOGGER, "info") as log:
+        with patch.dict("os.environ", {"FOOTBALL_FUNCTION_TRACE": "1"}), patch.object(trace_runtime._LOGGER, "info") as log:
             trace_runtime.enable_function_tracing()
             try:
                 self.assertEqual(target(4), 5)
