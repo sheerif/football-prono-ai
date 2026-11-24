@@ -194,6 +194,43 @@ class GitBackupTests(unittest.TestCase):
         self.assertEqual(result["status"], "skipped_daily_limit")
         self.assertEqual(len(calls), 3)
 
+    def test_forced_backup_verifies_same_day_snapshot_instead_of_skipping(self):
+        with tempfile.TemporaryDirectory() as directory:
+            archive_bytes = b"verified-current-sqlite-snapshot"
+            head = {
+                "commit_sha": "today-commit",
+                "blob_sha": git_backup._git_blob_sha(archive_bytes),
+                "committed_at": datetime.now(timezone.utc).strftime(
+                    "%Y-%m-%dT%H:%M:%SZ"
+                ),
+            }
+            with (
+                patch.object(
+                    git_backup,
+                    "_setting",
+                    side_effect=lambda name, default="": {
+                        "GITHUB_BACKUP_TOKEN": "test-token",
+                        "GITHUB_BACKUP_REPOSITORY": "owner/repository",
+                        "GITHUB_BACKUP_BRANCH": "database-backup",
+                    }.get(name, default),
+                ),
+                patch.object(git_backup, "_backup_head", return_value=head),
+                patch.object(
+                    git_backup,
+                    "_create_database_archive",
+                    side_effect=lambda _engine, path: Path(path).write_bytes(archive_bytes),
+                ),
+                patch.object(git_backup, "_request") as request,
+            ):
+                result = git_backup.backup_to_github(
+                    database_engine=object(), force=True
+                )
+
+        self.assertEqual(result["status"], "unchanged")
+        self.assertTrue(result["integrity_verified"])
+        self.assertTrue(result["gzip_verified"])
+        request.assert_not_called()
+
     def test_skips_when_token_is_not_configured(self):
         with patch.object(git_backup, "_setting", return_value=""):
             result = git_backup.backup_to_github()
