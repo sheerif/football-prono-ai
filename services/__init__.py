@@ -60,4 +60,10 @@ _ensure_visual_kpi_compatibility()
 
 from . import analysis_store, api_football, import_service, lineup_service, player_service, prediction_helpers, prediction_service, stats_service
 
-__all__ = ["analysis_store", "api_football", "import_service", "lineup_service", "player_service", "prediction_helpers", "prediction_service", "stats_service"]
+import os as _os
+from . import trace_runtime as _trace_runtime
+
+if _os.getenv("FOOTBALL_FUNCTION_TRACE", "").strip().lower() in {"1", "true", "yes", "on"}:
+    _trace_runtime.enable_function_tracing()
+
+__all__ = ["analysis_store", "api_football", "import_service", "lineup_service", "player_service", "prediction_helpers", "prediction_service", "stats_service", "trace_runtime"]
