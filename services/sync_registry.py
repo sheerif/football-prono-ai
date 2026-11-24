@@ -156,6 +156,7 @@ def should_download(
     resource_key: str,
     unavailable_retry_hours: int = 12,
     running_retry_minutes: int = 30,
+    error_retry_minutes: int = 5,
 ) -> bool:
     row = get(resource_key)
     if not row:
@@ -175,12 +176,28 @@ def should_download(
             )
         except (TypeError, ValueError):
             return True
+    if row["status"] == "error":
+        # A failed interactive download can be followed by many Streamlit
+        # reruns. Keep its error visible without issuing the same API request
+        # on every rerun; still allow recovery after a short bounded cooldown.
+        try:
+            updated_at = datetime.datetime.fromisoformat(row["updated_at"])
+            if updated_at.tzinfo is not None:
+                updated_at = updated_at.astimezone(datetime.UTC).replace(tzinfo=None)
+            return (
+                (_now() - updated_at).total_seconds()
+                >= max(1, int(error_retry_minutes)) * 60
+            )
+        except (TypeError, ValueError):
+            return True
     if row["status"] != "unavailable":
         return True
     try:
         updated_at = datetime.datetime.fromisoformat(row["updated_at"])
-        return (_now() - updated_at).total_seconds() >= unavailable_retry_hours * 3600
-    except Exception:
+        if updated_at.tzinfo is not None:
+            updated_at = updated_at.astimezone(datetime.UTC).replace(tzinfo=None)
+        return (_now() - updated_at).total_seconds() >= max(1, int(unavailable_retry_hours)) * 3600
+    except (TypeError, ValueError):
         return True
 
 
