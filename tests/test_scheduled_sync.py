@@ -403,7 +403,9 @@ class ScheduledSyncTests(unittest.TestCase):
             "errors": [quota_error],
         }
 
+        fixed_now = datetime.datetime(2026, 11, 24, 5, 20)
         with (
+            patch.object(run_scheduled_sync, "_now", return_value=fixed_now),
             patch.object(run_scheduled_sync.import_service, "init_db"),
             patch.object(run_scheduled_sync.import_service, "record_update_log"),
             patch.object(run_scheduled_sync.sync_registry, "ensure_table"),
@@ -439,6 +441,9 @@ class ScheduledSyncTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "waiting_quota")
         self.assertEqual(result["quota_kind"], "minute")
+        expected_retry = fixed_now.replace(tzinfo=datetime.UTC) + datetime.timedelta(seconds=90)
+        self.assertEqual(datetime.datetime.fromisoformat(result["next_retry_at"]), expected_retry)
+        self.assertIn("minute", marks[-1][1]["message"].casefold())
         self.assertEqual(result["quota_error"], quota_error)
         self.assertEqual(result["api_calls_by_family"], sync_result["api_calls_by_family"])
         self.assertEqual(result["quota_status_by_family"], sync_result["quota_status_by_family"])
