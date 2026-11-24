@@ -12,6 +12,7 @@ import datetime
 import hashlib
 import json
 import threading
+import time
 from urllib.parse import quote
 
 from services import git_backup
@@ -19,6 +20,8 @@ from services import git_backup
 DEFAULT_BRANCH = "sync-coordination"
 LEASE_PATH_PREFIX = "sync-locks"
 LEASE_SECONDS = 900
+MAX_RENEW_CAS_ATTEMPTS = 3
+RENEW_CAS_RETRY_DELAY_SECONDS = 0.05
 _branch_lock = threading.Lock()
 _branch_ready: set[tuple[str, str]] = set()
 
@@ -225,29 +228,41 @@ def renew(
     *,
     lease_seconds: int = LEASE_SECONDS,
 ) -> bool:
-    """Renew only an unexpired lease still owned by the caller."""
+    """Renew an owned lease, retrying bounded GitHub Contents CAS conflicts."""
     repository, token = _repo_token()
     branch = _branch()
     _ensure_branch(repository, branch, token)
     path = _path(resource_key)
-    now = _now()
-    existing, sha = _read_lock(repository, branch, path, token)
-    if not existing or not sha or existing.get("owner") != str(owner):
-        return False
-    try:
-        expiry = datetime.datetime.fromisoformat(str(existing["lease_until"]))
-        if expiry.tzinfo is None:
-            expiry = expiry.replace(tzinfo=datetime.UTC)
-    except (KeyError, TypeError, ValueError):
-        return False
-    if expiry <= now:
-        return False
-    record = dict(existing)
-    record["lease_until"] = (
-        now + datetime.timedelta(seconds=max(1, int(lease_seconds)))
-    ).isoformat()
-    record["updated_at"] = now.isoformat()
-    return _write_lock(repository, branch, path, token, record, sha)
+
+    for attempt in range(MAX_RENEW_CAS_ATTEMPTS):
+        now = _now()
+        existing, sha = _read_lock(repository, branch, path, token)
+        if not existing or not sha or existing.get("owner") != str(owner):
+            return False
+        try:
+            expiry = datetime.datetime.fromisoformat(str(existing["lease_until"]))
+            if expiry.tzinfo is None:
+                expiry = expiry.replace(tzinfo=datetime.UTC)
+        except (KeyError, TypeError, ValueError):
+            return False
+        if expiry <= now:
+            return False
+
+        record = dict(existing)
+        record["lease_until"] = (
+            now + datetime.timedelta(seconds=max(1, int(lease_seconds)))
+        ).isoformat()
+        record["updated_at"] = now.isoformat()
+        if _write_lock(repository, branch, path, token, record, sha):
+            return True
+
+        # A 409/422 can be a transient Contents API compare-and-swap conflict
+        # while another lease updates the coordination branch. Re-read on the
+        # next attempt; the owner and expiry checks above remain authoritative.
+        if attempt + 1 < MAX_RENEW_CAS_ATTEMPTS:
+            time.sleep(RENEW_CAS_RETRY_DELAY_SECONDS * (attempt + 1))
+
+    return False
 
 
 def release(resource_key: str, owner: str) -> bool:

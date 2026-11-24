@@ -12,6 +12,7 @@ class FakeGitHubContents:
         self.records = {}
         self.next_sha = 0
         self.conflict_next_write = False
+        self.owner_after_conflict = None
         self.branch_exists = True
         self.branch_initialized = False
         self.tree_payload = None
@@ -65,6 +66,15 @@ class FakeGitHubContents:
         if method == "PUT":
             if self.conflict_next_write:
                 self.conflict_next_write = False
+                if self.owner_after_conflict and current is not None:
+                    self.next_sha += 1
+                    changed_record = dict(current["record"])
+                    changed_record["owner"] = self.owner_after_conflict
+                    self.records[path] = {
+                        "sha": f"blob-{self.next_sha}",
+                        "record": changed_record,
+                    }
+                    self.owner_after_conflict = None
                 raise RuntimeError("GitHub API (422) : sha conflict")
             if payload.get("sha") != (current["sha"] if current else None):
                 raise RuntimeError("GitHub API (409) : sha conflict")
@@ -120,6 +130,34 @@ class RemoteSyncLeaseTests(unittest.TestCase):
         self.assertFalse(remote_sync_lease.release("full-sync:exhaustive", "worker-2"))
         self.assertTrue(remote_sync_lease.release("full-sync:exhaustive", "worker-1"))
         self.assertTrue(remote_sync_lease.claim("full-sync:exhaustive", "worker-2"))
+
+    def test_renew_retries_transient_content_api_conflict_while_owner_still_holds_lease(self):
+        self.assertTrue(remote_sync_lease.claim("full-sync:exhaustive", "worker-1"))
+        path = remote_sync_lease._path("full-sync:exhaustive")
+        previous_until = self.github.records[path]["record"]["lease_until"]
+        self.github.conflict_next_write = True
+
+        self.assertTrue(remote_sync_lease.renew("full-sync:exhaustive", "worker-1"))
+
+        renewed = self.github.records[path]["record"]
+        self.assertEqual(renewed["owner"], "worker-1")
+        self.assertGreater(
+            datetime.datetime.fromisoformat(renewed["lease_until"]),
+            datetime.datetime.fromisoformat(previous_until),
+        )
+
+    def test_renew_stops_retrying_if_owner_changes_after_cas_conflict(self):
+        self.assertTrue(remote_sync_lease.claim("full-sync:exhaustive", "worker-1"))
+        path = remote_sync_lease._path("full-sync:exhaustive")
+        self.github.conflict_next_write = True
+        self.github.owner_after_conflict = "worker-2"
+
+        self.assertFalse(remote_sync_lease.renew("full-sync:exhaustive", "worker-1"))
+
+        self.assertEqual(
+            self.github.records[path]["record"]["owner"],
+            "worker-2",
+        )
 
     def test_expired_lease_can_be_taken_over_with_blob_sha_compare_and_swap(self):
         path = remote_sync_lease._path("full-sync:exhaustive")
