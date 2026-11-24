@@ -624,7 +624,9 @@ def _sync_missing_fixture_details(upcoming: pd.DataFrame, progress_callback=None
             fixture_id
             for fixture_id in missing_or_incomplete
             if sync_registry.should_download(
-                f"fixture-detail:{fixture_id}", unavailable_retry_hours=24
+                f"fixture-detail:{fixture_id}",
+                unavailable_retry_hours=24,
+                error_retry_minutes=5,
             )
         ]
         totals["skipped"] += len(fixture_ids) - len(due)
