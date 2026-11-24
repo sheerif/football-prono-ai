@@ -268,7 +268,7 @@ class ScheduledSyncTests(unittest.TestCase):
             patch.object(
                 run_scheduled_sync.git_backup,
                 "backup_to_github",
-                return_value={"status": "uploaded"},
+                return_value={"status": "uploaded", "remote_verified": True},
             ) as backup,
             patch.object(run_scheduled_sync.engine, "dispose") as dispose,
         ):
@@ -292,6 +292,29 @@ class ScheduledSyncTests(unittest.TestCase):
 
         self.assertEqual(result, 1)
         backup.assert_called_once_with(force=True)
+
+    def test_scheduled_entrypoint_fails_when_backup_is_not_remote_verified(self):
+        with (
+            patch.object(
+                run_scheduled_sync,
+                "run",
+                return_value={"status": "complete"},
+            ),
+            patch.object(
+                run_scheduled_sync.git_backup,
+                "backup_to_github",
+                return_value={
+                    "status": "unchanged",
+                    "integrity_verified": True,
+                    "gzip_verified": True,
+                    "remote_verified": False,
+                },
+            ),
+            patch.object(run_scheduled_sync.engine, "dispose"),
+        ):
+            result = run_scheduled_sync.main()
+
+        self.assertEqual(result, 1)
 
     def test_scheduled_entrypoint_fails_when_sync_is_waiting_for_quota(self):
         with (
