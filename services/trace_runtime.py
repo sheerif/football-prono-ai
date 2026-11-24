@@ -17,7 +17,7 @@ import threading
 import time
 import uuid
 
-_LOGGER = logging.getLogger("football.trace")
+_LOGGER = logging.getLogger("football.trace")\n_LOGGER.setLevel(logging.INFO)
 _TRACE_ID = contextvars.ContextVar("football_trace_id", default=None)
 _THREAD = threading.local()
 _ENABLED = False
@@ -31,7 +31,7 @@ _SECRET_VALUE = re.compile(r"(?i)(gh[pousr]_[A-Za-z0-9_]{20,}|Bearer\s+[^\s]+)")
 _SECRET_KEY = re.compile(r"(?i)(token|secret|password|authorization|cookie|api.?key|credential|headers?)")
 _SAFE_CONTEXT_NAMES = {
     "fixture_id", "league_id", "season", "resource_key", "resource_type",
-    "retry_hours", "page", "sync_run_id", "current", "total", "label",
+    "retry_hours", "page", "sync_run_id", "current", "total",
     "path", "endpoint", "attempt", "status", "priority", "cost",
     "days_ahead", "owner", "scope_key", "batch_key",
 }
