@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import datetime
 import logging
+import json
 import os
 import sys
 import time
@@ -41,6 +42,45 @@ def _log_progress(current: int, total: int, label: str) -> None:
     current = max(0, int(current or 0))
     percent = min(100, int(round(current / total * 100)))
     logging.info("Scheduled sync progress %s/%s (%s%%): %s", current, total, percent, label)
+
+
+def _optional_int(value) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _quota_failure_kind(error: str, status_by_family: dict | None = None) -> str:
+    """Classifie la cause observée sans confondre quota journalier et blocage transitoire."""
+    normalized = str(error or "").casefold()
+    snapshots = (status_by_family or {}).values()
+    if any(
+        _optional_int((snapshot or {}).get("minute_remaining")) == 0
+        for snapshot in snapshots
+    ):
+        return "minute"
+    snapshots = (status_by_family or {}).values()
+    if any(
+        _optional_int((snapshot or {}).get("daily_remaining")) == 0
+        for snapshot in snapshots
+    ):
+        return "daily"
+    if "remote_quota_lock_contention" in normalized:
+        return "remote_lock_contention"
+    if "remote_shared_quota" in normalized:
+        return "remote_shared_budget"
+    if "atomic_" in normalized:
+        return "local_atomic_budget"
+    if "emergency_reserve" in normalized or "reserve" in normalized or "réserve" in normalized:
+        return "policy_reserve"
+    if "daily" in normalized or "journalier" in normalized:
+        return "daily"
+    if "minute" in normalized:
+        return "minute"
+    if "429" in normalized or "rate limit" in normalized:
+        return "provider_rate_limit"
+    return "unclassified"
 
 
 def run() -> dict:
@@ -137,6 +177,11 @@ def run() -> dict:
                 if minute_exhausted
                 else "Quota API quotidien épuisé : synchronisation reportée."
             )
+            preflight_error = str(quota_status.get("error") or message)
+            preflight_snapshot = {
+                "daily_remaining": quota_status.get("remaining"),
+                "minute_remaining": quota_status.get("minute_remaining"),
+            }
             metadata = {
                 "persistent": True,
                 "scheduler": "github-actions",
@@ -144,6 +189,8 @@ def run() -> dict:
                 "started_at": started_at,
                 "next_retry_at": retry_at.isoformat(),
                 "quota_preflight": quota_status,
+                "quota_error": preflight_error,
+                "quota_kind": _quota_failure_kind(preflight_error, {"preflight": preflight_snapshot}),
                 "pre_match_archive": pre_match_archive,
                 "lease_owner": owner,
             }
@@ -179,6 +226,16 @@ def run() -> dict:
         result = full_sync_service.run_full_sync(progress_callback=progress)
         renew_lease(force=True)
 
+        sync_errors = [str(item) for item in (result.get("errors") or [])]
+        quota_status_by_family = dict(result.get("quota_status_by_family") or {})
+        sync_diagnostics = {
+            "api_calls_by_family": dict(result.get("api_calls_by_family") or {}),
+            "quota_status_by_family": quota_status_by_family,
+            "quota_metrics": dict(result.get("quota_metrics") or {}),
+            "errors": sync_errors[-20:],
+            "errors_total": len(sync_errors),
+        }
+
         if result.get("quota_reached"):
             current = _now().replace(tzinfo=datetime.UTC)
             next_midnight = (current + datetime.timedelta(days=1)).replace(
@@ -189,6 +246,7 @@ def run() -> dict:
                 "Quota API atteint : données conservées. "
                 "Reprise automatique après minuit UTC."
             )
+            quota_error = sync_errors[-1] if sync_errors else str(result.get("message") or "")
             metadata = {
                 "persistent": True,
                 "scheduler": "github-actions",
@@ -197,6 +255,9 @@ def run() -> dict:
                 "next_retry_at": next_midnight.isoformat(),
                 "checkpoint": result.get("checkpoint"),
                 "api_calls": int(result.get("api_calls") or 0),
+                "quota_error": quota_error,
+                "quota_kind": _quota_failure_kind(quota_error, quota_status_by_family),
+                **sync_diagnostics,
                 "pre_match_archive": pre_match_archive,
                 "lease_owner": owner,
             }
@@ -216,6 +277,7 @@ def run() -> dict:
                 "api_calls": int(result.get("api_calls") or 0),
                 "xg_api_calls": int(result.get("xg_api_calls") or 0),
                 "xg_budget_reserved": bool(result.get("xg_budget_reserved")),
+                **sync_diagnostics,
                 "pre_match_archive": pre_match_archive,
                 "lease_owner": owner,
             }
@@ -286,6 +348,29 @@ def main() -> int:
             "prévision(s) · "
             f"sauvegarde : {backup.get('status', 'unknown')}"
         )
+        if result.get("status") == "waiting_quota":
+            print(
+                "Diagnostic quota : "
+                f"type={result.get('quota_kind', 'non_classé')} · "
+                f"checkpoint={result.get('checkpoint') or 'non précisé'}"
+            )
+            if result.get("quota_error"):
+                print(f"Cause quota : {result['quota_error']}")
+            if result.get("quota_status_by_family"):
+                print(
+                    "Compteurs quota par famille : "
+                    + json.dumps(result["quota_status_by_family"], ensure_ascii=False, sort_keys=True)
+                )
+            if result.get("quota_metrics"):
+                print(
+                    "Mesures quota : "
+                    + json.dumps(result["quota_metrics"], ensure_ascii=False, sort_keys=True)
+                )
+            if result.get("quota_preflight"):
+                print(
+                    "Quota préflight : "
+                    + json.dumps(result["quota_preflight"], ensure_ascii=False, sort_keys=True)
+                )
         if result.get("status") == "skipped":
             print(
                 "Synchronisation ignorée : une autre instance possède la lease globale. "
