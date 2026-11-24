@@ -418,7 +418,14 @@ def main() -> int:
                 file=sys.stderr,
             )
             return 1
-        if backup.get("status") not in {"uploaded", "unchanged"}:
+        if (
+            backup.get("status") not in {"uploaded", "unchanged"}
+            or backup.get("remote_verified") is not True
+        ):
+            print(
+                "Sauvegarde post-sync non vérifiée à distance.",
+                file=sys.stderr,
+            )
             return 1
         return 0
     except Exception as exc:
