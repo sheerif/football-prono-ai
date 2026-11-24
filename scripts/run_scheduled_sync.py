@@ -362,11 +362,14 @@ def main() -> int:
     try:
         result = run()
         status = result.get("status")
-        checkpoint_required = status in {"waiting_quota", "partial"}
+        # Force a fresh comparison against the current SQLite snapshot after
+        # every non-skipped sync. The backup service returns "unchanged" when
+        # the remote archive already matches; it must not silently skip based
+        # only on the UTC-day commit timestamp.
         backup = (
             {"status": "skipped_active_sync"}
             if status == "skipped"
-            else git_backup.backup_to_github(force=checkpoint_required)
+            else git_backup.backup_to_github(force=True)
         )
         result["database_backup"] = backup
         print(
@@ -415,11 +418,7 @@ def main() -> int:
                 file=sys.stderr,
             )
             return 1
-        if backup.get("status") not in {
-            "uploaded",
-            "unchanged",
-            "skipped_daily_limit",
-        }:
+        if backup.get("status") not in {"uploaded", "unchanged"}:
             return 1
         return 0
     except Exception as exc:
