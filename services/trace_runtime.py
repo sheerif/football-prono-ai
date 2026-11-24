@@ -23,6 +23,8 @@ _THREAD = threading.local()
 _ENABLED = False
 _PREVIOUS_PROFILE = None
 _PREVIOUS_THREAD_PROFILE = None
+_PREVIOUS_TRACE = None
+_PREVIOUS_THREAD_TRACE = None
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 _TEST_ROOT = os.path.join(_PROJECT_ROOT, "tests")
 _SECRET_VALUE = re.compile(r"(?i)(gh[pousr]_[A-Za-z0-9_]{20,}|Bearer\s+[^\s]+)")
@@ -254,15 +256,52 @@ def _profile(frame, event, arg):
             _TRACE_ID.reset(entry["trace_token"])
 
 
+def _trace_exceptions(frame, event, arg):
+    """Capture Python exception events; sys.setprofile does not expose them."""
+    previous = _PREVIOUS_TRACE
+    if previous is not None and previous is not _trace_exceptions:
+        try:
+            previous(frame, event, arg)
+        except Exception:
+            pass
+
+    if not _is_project_frame(frame):
+        return None
+    if event == "exception":
+        exception_type, exception, _traceback = arg
+        stack = getattr(_THREAD, "stack", [])
+        _index, entry = _find_entry(stack, frame)
+        if entry is not None:
+            entry["exception_seen"] = True
+        code = frame.f_code
+        _emit(
+            "function_exception",
+            span_id=entry["span_id"] if entry else None,
+            parent_span_id=entry["parent_span_id"] if entry else None,
+            module=str(frame.f_globals.get("__name__", "")),
+            function=code.co_qualname,
+            file=os.path.basename(code.co_filename),
+            line=frame.f_lineno,
+            error_type=getattr(exception_type, "__name__", str(exception_type)),
+            error=_safe_error(exception),
+        )
+    return _trace_exceptions
+
+
 def enable_function_tracing() -> bool:
     """Trace calls in project packages on this thread and future threads."""
     global _ENABLED, _PREVIOUS_PROFILE, _PREVIOUS_THREAD_PROFILE
+    global _PREVIOUS_TRACE, _PREVIOUS_THREAD_TRACE
     if _ENABLED:
         return True
     if os.getenv("FOOTBALL_FUNCTION_TRACE", "").strip().lower() not in {"1", "true", "yes", "on"}:
         return False
     _PREVIOUS_PROFILE = sys.getprofile()
     _PREVIOUS_THREAD_PROFILE = threading.getprofile()
+    _PREVIOUS_TRACE = sys.gettrace()
+    _PREVIOUS_THREAD_TRACE = threading.gettrace()
+    sys.settrace(_trace_exceptions)
+    threading.settrace(_trace_exceptions)
     sys.setprofile(_profile)
     threading.setprofile(_profile)
     _ENABLED = True
@@ -280,6 +319,8 @@ def disable_function_tracing() -> None:
     global _ENABLED
     if not _ENABLED:
         return
+    sys.settrace(_PREVIOUS_TRACE)
+    threading.settrace(_PREVIOUS_THREAD_TRACE)
     sys.setprofile(_PREVIOUS_PROFILE)
     threading.setprofile(_PREVIOUS_THREAD_PROFILE)
     _ENABLED = False
