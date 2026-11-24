@@ -23,6 +23,7 @@ jobs:
       GITHUB_BACKUP_REPOSITORY: sheerif/football-prono-ai
       GITHUB_BACKUP_BRANCH: database-backup
       DATABASE_URL: sqlite:///football.db
+      FOOTBALL_FUNCTION_TRACE: "1"
     steps:
       - name: Checkout application
         uses: actions/checkout@v7
