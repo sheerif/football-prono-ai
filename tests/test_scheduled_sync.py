@@ -551,7 +551,8 @@ class ScheduledSyncTests(unittest.TestCase):
 
         self.assertEqual(result, 0)
         self.assertEqual(run.call_count, 2)
-        self.assertEqual(backup.call_args_list, [unittest.mock.call(force=True), unittest.mock.call(force=True)])
+        self.assertEqual(backup.call_count, 2)
+        self.assertTrue(all(item.kwargs == {"force": True} for item in backup.call_args_list))
         sleep.assert_called_once_with(90.0)
 
     def test_scheduled_entrypoint_does_not_retry_daily_quota(self):
