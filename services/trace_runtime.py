@@ -5,6 +5,7 @@ Argument values, credentials, request bodies, headers, and user data are exclude
 """
 from __future__ import annotations
 
+import atexit
 import contextlib
 import contextvars
 import datetime
@@ -28,6 +29,10 @@ _PREVIOUS_TRACE = None
 _PREVIOUS_THREAD_TRACE = None
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 _TEST_ROOT = os.path.join(_PROJECT_ROOT, "tests")
+_TRACE_STATS_LOCK = threading.Lock()
+_FUNCTION_STATS = {}
+_MAX_SPANS_PER_FUNCTION = 0
+_SUMMARY_FLUSHED = False
 _SECRET_VALUE = re.compile(r"(?i)(gh[pousr]_[A-Za-z0-9_]{20,}|Bearer\s+[^\s]+)")
 _SECRET_KEY = re.compile(r"(?i)(token|secret|password|authorization|cookie|api.?key|credential|headers?)")
 _SAFE_CONTEXT_NAMES = {
@@ -169,6 +174,102 @@ def _find_entry(stack: list, frame):
     return None, None
 
 
+def _function_key(frame):
+    code = frame.f_code
+    return (
+        str(frame.f_globals.get("__name__", "")),
+        code.co_qualname,
+        os.path.basename(code.co_filename),
+        code.co_firstlineno,
+    )
+
+
+def _register_function_call(frame):
+    key = _function_key(frame)
+    with _TRACE_STATS_LOCK:
+        stats = _FUNCTION_STATS.setdefault(
+            key,
+            {
+                "calls": 0,
+                "sampled_calls": 0,
+                "completed_calls": 0,
+                "exception_calls": 0,
+                "total_duration_ms": 0.0,
+                "max_duration_ms": 0.0,
+            },
+        )
+        stats["calls"] += 1
+        sampled = (
+            _MAX_SPANS_PER_FUNCTION <= 0
+            or stats["sampled_calls"] < _MAX_SPANS_PER_FUNCTION
+        )
+        if sampled:
+            stats["sampled_calls"] += 1
+    return key, sampled
+
+
+def _note_exception(entry, exception_type, exception, line):
+    entry["exception_seen"] = True
+    if entry.get("error_type") is None:
+        entry["error_type"] = getattr(exception_type, "__name__", str(exception_type))
+        entry["error"] = _safe_error(exception)
+        entry["error_line"] = line
+    if entry["sampled"] and not entry["exception_logged"]:
+        _emit(
+            "function_exception",
+            span_id=entry["span_id"],
+            parent_span_id=entry["parent_span_id"],
+            module=entry["module"],
+            function=entry["function"],
+            file=entry["file"],
+            line=line,
+            error_type=entry["error_type"],
+            error=entry["error"],
+        )
+        entry["exception_logged"] = True
+
+
+def _record_function_completion(entry, duration_ms):
+    with _TRACE_STATS_LOCK:
+        stats = _FUNCTION_STATS.get(entry["function_key"])
+        if stats is None:
+            return
+        stats["completed_calls"] += 1
+        stats["total_duration_ms"] += duration_ms
+        stats["max_duration_ms"] = max(stats["max_duration_ms"], duration_ms)
+        if entry["exception_seen"]:
+            stats["exception_calls"] += 1
+
+
+def flush_function_trace_summary():
+    """Emit one bounded aggregate record per function after tracing stops."""
+    global _SUMMARY_FLUSHED
+    with _TRACE_STATS_LOCK:
+        if _SUMMARY_FLUSHED or not _FUNCTION_STATS:
+            return
+        _SUMMARY_FLUSHED = True
+        snapshots = [
+            (key, dict(stats))
+            for key, stats in _FUNCTION_STATS.items()
+        ]
+
+    for (module, function, file_name, line), stats in sorted(snapshots):
+        _emit(
+            "function_trace_summary",
+            module=module,
+            function=function,
+            file=file_name,
+            line=line,
+            calls=stats["calls"],
+            completed_calls=stats["completed_calls"],
+            sampled_calls=stats["sampled_calls"],
+            suppressed_calls=max(0, stats["calls"] - stats["sampled_calls"]),
+            exception_calls=stats["exception_calls"],
+            total_duration_ms=round(stats["total_duration_ms"], 3),
+            max_duration_ms=round(stats["max_duration_ms"], 3),
+        )
+
+
 def _profile(frame, event, arg):
     # Preserve an existing profiler rather than silently disabling it.
     previous = _PREVIOUS_PROFILE
@@ -192,6 +293,7 @@ def _profile(frame, event, arg):
             trace_token = _TRACE_ID.set(uuid.uuid4().hex)
         parent = stack[-1]["span_id"] if stack else None
         code = frame.f_code
+        function_key, sampled = _register_function_call(frame)
         entry = {
             "frame": frame,
             "span_id": uuid.uuid4().hex[:16],
@@ -199,24 +301,30 @@ def _profile(frame, event, arg):
             "started": time.perf_counter(),
             "trace_token": trace_token,
             "exception_seen": False,
-            "module": str(frame.f_globals.get("__name__", "")),
-            "function": code.co_qualname,
-            "file": os.path.basename(code.co_filename),
-            "line": code.co_firstlineno,
+            "exception_logged": False,
+            "error_type": None,
+            "error": None,
+            "sampled": sampled,
+            "function_key": function_key,
+            "module": function_key[0],
+            "function": function_key[1],
+            "file": function_key[2],
+            "line": function_key[3],
         }
         stack.append(entry)
-        _emit(
-            "function_start",
-            span_id=entry["span_id"],
-            parent_span_id=parent,
-            module=entry["module"],
-            function=entry["function"],
-            file=entry["file"],
-            line=entry["line"],
-            argument_names=list(code.co_varnames[:code.co_argcount + code.co_kwonlyargcount]),
-            context=_function_context(frame),
-            depth=len(stack),
-        )
+        if sampled:
+            _emit(
+                "function_start",
+                span_id=entry["span_id"],
+                parent_span_id=parent,
+                module=entry["module"],
+                function=entry["function"],
+                file=entry["file"],
+                line=entry["line"],
+                argument_names=list(code.co_varnames[:code.co_argcount + code.co_kwonlyargcount]),
+                context=_function_context(frame),
+                depth=len(stack),
+            )
         return
 
     index, entry = _find_entry(stack, frame)
@@ -225,40 +333,33 @@ def _profile(frame, event, arg):
 
     if event == "exception":
         exception_type, exception, _traceback = arg
-        entry["exception_seen"] = True
-        _emit(
-            "function_exception",
-            span_id=entry["span_id"],
-            parent_span_id=entry["parent_span_id"],
-            module=entry["module"],
-            function=entry["function"],
-            file=entry["file"],
-            line=frame.f_lineno,
-            error_type=getattr(exception_type, "__name__", str(exception_type)),
-            error=_safe_error(exception),
-        )
+        _note_exception(entry, exception_type, exception, frame.f_lineno)
         return
 
     if event == "return":
         stack.pop(index)
-        _emit(
-            "function_end",
-            span_id=entry["span_id"],
-            parent_span_id=entry["parent_span_id"],
-            module=entry["module"],
-            function=entry["function"],
-            file=entry["file"],
-            line=entry["line"],
-            duration_ms=round((time.perf_counter() - entry["started"]) * 1000, 3),
-            status="exception_seen" if entry["exception_seen"] else "ok",
-            depth=len(stack),
-        )
+        duration_ms = round((time.perf_counter() - entry["started"]) * 1000, 3)
+        _record_function_completion(entry, duration_ms)
+        if entry["sampled"]:
+            _emit(
+                "function_end",
+                span_id=entry["span_id"],
+                parent_span_id=entry["parent_span_id"],
+                module=entry["module"],
+                function=entry["function"],
+                file=entry["file"],
+                line=entry["line"],
+                duration_ms=duration_ms,
+                status="exception_seen" if entry["exception_seen"] else "ok",
+                error_type=entry["error_type"],
+                depth=len(stack),
+            )
         if entry["trace_token"] is not None:
             _TRACE_ID.reset(entry["trace_token"])
 
 
 def _trace_exceptions(frame, event, arg):
-    """Capture Python exception events; sys.setprofile does not expose them."""
+    """Capture Python exceptions while keeping sampled traces bounded."""
     previous = _PREVIOUS_TRACE
     if previous is not None and previous is not _trace_exceptions:
         try:
@@ -273,30 +374,28 @@ def _trace_exceptions(frame, event, arg):
         stack = getattr(_THREAD, "stack", [])
         _index, entry = _find_entry(stack, frame)
         if entry is not None:
-            entry["exception_seen"] = True
-        code = frame.f_code
-        _emit(
-            "function_exception",
-            span_id=entry["span_id"] if entry else None,
-            parent_span_id=entry["parent_span_id"] if entry else None,
-            module=str(frame.f_globals.get("__name__", "")),
-            function=code.co_qualname,
-            file=os.path.basename(code.co_filename),
-            line=frame.f_lineno,
-            error_type=getattr(exception_type, "__name__", str(exception_type)),
-            error=_safe_error(exception),
-        )
+            _note_exception(entry, exception_type, exception, frame.f_lineno)
     return _trace_exceptions
 
 
 def enable_function_tracing() -> bool:
-    """Trace calls in project packages on this thread and future threads."""
+    """Trace every project function, sampling repeated spans when configured."""
     global _ENABLED, _PREVIOUS_PROFILE, _PREVIOUS_THREAD_PROFILE
     global _PREVIOUS_TRACE, _PREVIOUS_THREAD_TRACE
+    global _MAX_SPANS_PER_FUNCTION, _SUMMARY_FLUSHED
     if _ENABLED:
         return True
     if os.getenv("FOOTBALL_FUNCTION_TRACE", "").strip().lower() not in {"1", "true", "yes", "on"}:
         return False
+    try:
+        _MAX_SPANS_PER_FUNCTION = max(
+            0, int(os.getenv("FOOTBALL_FUNCTION_TRACE_MAX_SPANS_PER_FUNCTION", "0"))
+        )
+    except (TypeError, ValueError):
+        _MAX_SPANS_PER_FUNCTION = 0
+    with _TRACE_STATS_LOCK:
+        _FUNCTION_STATS.clear()
+        _SUMMARY_FLUSHED = False
     _PREVIOUS_PROFILE = sys.getprofile()
     _PREVIOUS_THREAD_PROFILE = threading.getprofile()
     _PREVIOUS_TRACE = sys.gettrace()
@@ -309,6 +408,9 @@ def enable_function_tracing() -> bool:
     _emit(
         "tracing_enabled",
         modules="all repository Python modules except tests and this tracer",
+        mode="sampled" if _MAX_SPANS_PER_FUNCTION else "full",
+        max_spans_per_function=_MAX_SPANS_PER_FUNCTION,
+        summary_at_exit=True,
         values_logged=False,
         argument_values_logged=False,
     )
@@ -316,12 +418,17 @@ def enable_function_tracing() -> bool:
 
 
 def disable_function_tracing() -> None:
-    """Disable tracing and restore any profiler that was active beforehand."""
+    """Disable tracing, flush summaries, and restore any previous profiler."""
     global _ENABLED
     if not _ENABLED:
+        flush_function_trace_summary()
         return
+    flush_function_trace_summary()
     sys.settrace(_PREVIOUS_TRACE)
     threading.settrace(_PREVIOUS_THREAD_TRACE)
     sys.setprofile(_PREVIOUS_PROFILE)
     threading.setprofile(_PREVIOUS_THREAD_PROFILE)
     _ENABLED = False
+
+
+atexit.register(flush_function_trace_summary)
