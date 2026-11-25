@@ -1,5 +1,7 @@
 import datetime
+import io
 import unittest
+from contextlib import redirect_stderr
 from unittest.mock import patch
 
 from scripts import run_scheduled_sync
@@ -277,6 +279,73 @@ class ScheduledSyncTests(unittest.TestCase):
         self.assertEqual(result, 0)
         backup.assert_called_once_with(force=True)
         dispose.assert_called_once()
+
+    def test_scheduled_entrypoint_persists_checkpoint_after_sync_exception(self):
+        with (
+            patch.object(
+                run_scheduled_sync,
+                "run",
+                side_effect=RuntimeError("sync interrupted after checkpoint"),
+            ),
+            patch.object(
+                run_scheduled_sync.git_backup,
+                "backup_to_github",
+                return_value={"status": "uploaded", "remote_verified": True},
+            ) as backup,
+            patch.object(run_scheduled_sync.engine, "dispose") as dispose,
+        ):
+            result = run_scheduled_sync.main()
+
+        self.assertEqual(result, 1)
+        backup.assert_called_once_with(force=True)
+        dispose.assert_called_once()
+
+    def test_scheduled_entrypoint_keeps_sync_error_when_error_checkpoint_backup_fails(self):
+        stderr = io.StringIO()
+        with (
+            patch.object(
+                run_scheduled_sync,
+                "run",
+                side_effect=RuntimeError("sync interrupted"),
+            ),
+            patch.object(
+                run_scheduled_sync.git_backup,
+                "backup_to_github",
+                side_effect=RuntimeError("backup lease unavailable"),
+            ) as backup,
+            patch.object(run_scheduled_sync.engine, "dispose") as dispose,
+            redirect_stderr(stderr),
+        ):
+            result = run_scheduled_sync.main()
+
+        self.assertEqual(result, 1)
+        backup.assert_called_once_with(force=True)
+        dispose.assert_called_once()
+        self.assertIn("sync interrupted", stderr.getvalue())
+        self.assertIn("backup lease unavailable", stderr.getvalue())
+
+    def test_scheduled_entrypoint_reports_unverified_error_checkpoint_without_success(self):
+        stderr = io.StringIO()
+        with (
+            patch.object(
+                run_scheduled_sync,
+                "run",
+                side_effect=RuntimeError("sync interrupted"),
+            ),
+            patch.object(
+                run_scheduled_sync.git_backup,
+                "backup_to_github",
+                return_value={"status": "uploaded", "remote_verified": False},
+            ) as backup,
+            patch.object(run_scheduled_sync.engine, "dispose"),
+            redirect_stderr(stderr),
+        ):
+            result = run_scheduled_sync.main()
+
+        self.assertEqual(result, 1)
+        backup.assert_called_once_with(force=True)
+        self.assertIn("Checkpoint post-erreur non vérifié à distance", stderr.getvalue())
+        self.assertIn("sync interrupted", stderr.getvalue())
 
     def test_scheduled_entrypoint_fails_when_post_sync_snapshot_is_not_verified(self):
         with (
