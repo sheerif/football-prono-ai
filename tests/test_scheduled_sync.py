@@ -216,6 +216,16 @@ class ScheduledSyncTests(unittest.TestCase):
             "skipped_insufficient_history": 1,
             "api_calls": 0,
         }
+        renewals_during_archive = []
+
+        def archive_with_progress(**kwargs):
+            callback = kwargs.get("progress_callback")
+            if not callable(callback):
+                raise AssertionError("scheduled archive must receive its lease heartbeat callback")
+            callback(1, 1, "Archivage pré-match simulé")
+            renewals_during_archive.append((remote_renew.call_count, local_renew.call_count))
+            return archive
+
         with (
             patch.object(run_scheduled_sync.import_service, "init_db"),
             patch.object(run_scheduled_sync.import_service, "record_update_log"),
@@ -223,14 +233,15 @@ class ScheduledSyncTests(unittest.TestCase):
             patch.object(run_scheduled_sync.sync_registry, "get", return_value=None),
             patch.object(run_scheduled_sync.remote_sync_lease, "claim", return_value=True),
             patch.object(run_scheduled_sync.sync_registry, "claim_download", return_value=True),
-            patch.object(run_scheduled_sync.remote_sync_lease, "renew", return_value=True),
-            patch.object(run_scheduled_sync.sync_registry, "renew_download_claim", return_value=True),
+            patch.object(run_scheduled_sync.remote_sync_lease, "renew", return_value=True) as remote_renew,
+            patch.object(run_scheduled_sync.sync_registry, "renew_download_claim", return_value=True) as local_renew,
+            patch.object(run_scheduled_sync.time, "monotonic", side_effect=[0.0, 0.0, 61.0, 61.0, 61.0]),
             patch.object(run_scheduled_sync.sync_registry, "release_download_claim"),
             patch.object(run_scheduled_sync.remote_sync_lease, "release"),
             patch.object(
                 run_scheduled_sync.prediction_archive_service,
                 "archive_upcoming_predictions",
-                return_value=archive,
+                side_effect=archive_with_progress,
             ) as archive_predictions,
             patch.object(
                 run_scheduled_sync.background_jobs,
@@ -251,7 +262,11 @@ class ScheduledSyncTests(unittest.TestCase):
         ):
             result = run_scheduled_sync.run()
 
-        archive_predictions.assert_called_once_with()
+        archive_predictions.assert_called_once()
+        self.assertTrue(callable(archive_predictions.call_args.kwargs["progress_callback"]))
+        self.assertEqual(renewals_during_archive, [(2, 2)])
+        self.assertEqual(remote_renew.call_count, 4)
+        self.assertEqual(local_renew.call_count, 4)
         self.assertEqual(result["status"], "waiting_quota")
         self.assertEqual(result["pre_match_archive"], archive)
         run_full_sync.assert_not_called()
