@@ -223,6 +223,7 @@ class BackupLeaseUnavailable(RuntimeError):
     """A remote publisher lease could not be acquired or maintained."""
 
 
+@contextmanager
 def _remote_coordination_lease(
     resource_key: str,
     owner_prefix: str,
