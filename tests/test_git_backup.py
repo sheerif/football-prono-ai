@@ -5,6 +5,7 @@ import json
 import sqlite3
 import tempfile
 import unittest
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -14,7 +15,19 @@ from sqlalchemy import create_engine
 from services import git_backup
 
 
+@contextmanager
+def _no_remote_backup_lease():
+    yield lambda: None
+
+
 class GitBackupTests(unittest.TestCase):
+    def setUp(self):
+        patcher = patch.object(
+            git_backup, "_remote_backup_lease", _no_remote_backup_lease
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     class ImmediateThread:
         def __init__(self, target, **_kwargs):
             self.target = target
@@ -117,7 +130,7 @@ class GitBackupTests(unittest.TestCase):
                 "commit_sha": "old-commit",
                 "tree_sha": "old-tree",
                 "blob_sha": "old-blob",
-                "committed_at": "2026-11-14T10:00:00Z",
+                "committed_at": "2026-10-31T23:59:00Z",
             }
 
             def backup_head(*_args):
@@ -155,12 +168,12 @@ class GitBackupTests(unittest.TestCase):
         self.assertFalse(ref_payload["force"])
         self.assertFalse(result["history_reset"])
 
-    def test_backup_history_resets_at_utc_month_boundary(self):
+    def test_backup_history_is_never_force_reset_at_utc_month_boundary(self):
         now = datetime(2026, 11, 20, 0, 0, tzinfo=timezone.utc)
         same_month = {"committed_at": "2026-11-01T00:00:00Z"}
         previous_month = {"committed_at": "2026-10-31T23:59:00Z"}
         self.assertFalse(git_backup._should_reset_backup_history(same_month, now))
-        self.assertTrue(git_backup._should_reset_backup_history(previous_month, now))
+        self.assertFalse(git_backup._should_reset_backup_history(previous_month, now))
         self.assertFalse(git_backup._should_reset_backup_history(None, now))
 
     def test_skips_duplicate_backup_for_utc_day(self):
@@ -380,7 +393,7 @@ class GitBackupTests(unittest.TestCase):
         self.assertTrue(started)
         backup.assert_called_once_with()
 
-    def test_retries_backup_branch_update_after_non_fast_forward(self):
+    def test_aborts_stale_snapshot_after_non_fast_forward_conflict(self):
         with tempfile.TemporaryDirectory() as directory:
             database_engine = create_engine(
                 f"sqlite:///{Path(directory) / 'source.db'}"
@@ -464,21 +477,19 @@ class GitBackupTests(unittest.TestCase):
                 patch.object(git_backup, "_request", side_effect=request),
                 patch.object(git_backup, "_backup_head", side_effect=backup_head),
             ):
-                result = git_backup.backup_to_github(database_engine=database_engine)
+                with self.assertRaisesRegex(RuntimeError, "snapshot préparé"):
+                    git_backup.backup_to_github(database_engine=database_engine)
 
             database_engine.dispose()
 
-        self.assertEqual(result["status"], "uploaded")
-        self.assertEqual(result["concurrent_retries"], 1)
-        self.assertTrue(result["remote_verified"])
-        self.assertEqual(len(tree_payloads), 2)
-        self.assertEqual(tree_payloads[1]["base_tree"], "competing-tree")
-        self.assertEqual(commit_payloads[1]["parents"], ["competing-commit"])
+        self.assertEqual(len(tree_payloads), 1)
+        self.assertEqual(len(commit_payloads), 1)
+        self.assertEqual(current_head["commit_sha"], "competing-commit")
         ref_payloads = [
             payload for method, endpoint, payload in request_calls if method == "PATCH"
         ]
-        self.assertEqual(len(ref_payloads), 2)
-        self.assertFalse(ref_payloads[1]["force"])
+        self.assertEqual(len(ref_payloads), 1)
+        self.assertFalse(ref_payloads[0]["force"])
 
     def test_latest_backup_info_exposes_github_commit_timestamp(self):
         expected = {
@@ -544,6 +555,42 @@ class GitBackupTests(unittest.TestCase):
 
         self.assertEqual(result, expected)
 
+
+
+
+class RemoteBackupLeaseTests(unittest.TestCase):
+    def test_remote_backup_lease_claims_renews_and_releases_owner(self):
+        with (
+            patch("services.remote_sync_lease.claim", return_value=True) as claim,
+            patch("services.remote_sync_lease.renew", return_value=True) as renew,
+            patch("services.remote_sync_lease.release", return_value=True) as release,
+        ):
+            with git_backup._remote_backup_lease() as ensure_owned:
+                ensure_owned()
+
+        claim.assert_called_once()
+        self.assertEqual(claim.call_args.args[0], "database-backup:publish")
+        self.assertGreaterEqual(renew.call_count, 1)
+        release.assert_called_once_with(
+            "database-backup:publish", claim.call_args.args[1]
+        )
+
+    def test_remote_backup_lease_fails_closed_when_contended(self):
+        with patch("services.remote_sync_lease.claim", return_value=False):
+            with self.assertRaises(git_backup.BackupLeaseUnavailable):
+                with git_backup._remote_backup_lease():
+                    self.fail("backup must not start without the remote lease")
+
+    def test_remote_backup_lease_does_not_release_after_ownership_loss(self):
+        with (
+            patch("services.remote_sync_lease.claim", return_value=True),
+            patch("services.remote_sync_lease.renew", return_value=False),
+            patch("services.remote_sync_lease.release") as release,
+        ):
+            with self.assertRaises(git_backup.BackupLeaseUnavailable):
+                with git_backup._remote_backup_lease() as ensure_owned:
+                    ensure_owned()
+        release.assert_not_called()
 
 
 if __name__ == "__main__":
