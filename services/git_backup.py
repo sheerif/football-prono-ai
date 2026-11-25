@@ -6,10 +6,13 @@ import base64
 import gzip
 import hashlib
 import json
+import logging
 import os
 import sqlite3
 import tempfile
 import threading
+import uuid
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.error import HTTPError
@@ -24,6 +27,9 @@ _daily_last_attempt_at: datetime | None = None
 _API = "https://api.github.com"
 _DEFAULT_REPOSITORY = "sheerif/football-prono-ai"
 _DEFAULT_BRANCH = "database-backup"
+_BACKUP_LEASE_KEY = "database-backup:publish"
+_BACKUP_LEASE_SECONDS = 900
+_BACKUP_LEASE_HEARTBEAT_SECONDS = 60
 
 
 def _setting(name: str, default: str = "") -> str:
@@ -173,14 +179,8 @@ def latest_backup_info() -> dict:
 
 
 def _should_reset_backup_history(head: dict | None, now: datetime) -> bool:
-    """Reset reachable backup commits at the first changed snapshot of a new UTC month."""
-    if not head or not head.get("committed_at"):
-        return False
-    previous = datetime.fromisoformat(
-        head["committed_at"].replace("Z", "+00:00")
-    ).astimezone(timezone.utc)
-    current = now.astimezone(timezone.utc)
-    return (previous.year, previous.month) != (current.year, current.month)
+    """Never force-reset a shared backup ref; rotation needs a separate branch."""
+    return False
 
 
 def _archive_matches_head(
@@ -213,8 +213,105 @@ def _is_ref_conflict(exc: RuntimeError) -> bool:
     )
 
 
+class BackupLeaseUnavailable(RuntimeError):
+    """A remote publisher lease could not be acquired or maintained."""
+
+
+@contextmanager
+def _remote_backup_lease():
+    """Serialize every backup publisher across Streamlit and GitHub Actions."""
+    # Import lazily: remote_sync_lease itself uses git_backup for GitHub requests.
+    from services import remote_sync_lease
+
+    owner = f"database-backup:{uuid.uuid4().hex}"
+    try:
+        claimed = remote_sync_lease.claim(
+            _BACKUP_LEASE_KEY,
+            owner,
+            lease_seconds=_BACKUP_LEASE_SECONDS,
+        )
+    except Exception as exc:
+        raise BackupLeaseUnavailable(
+            "Impossible de vérifier le verrou distant de publication SQLite."
+        ) from exc
+    if not claimed:
+        raise BackupLeaseUnavailable(
+            "Une autre instance détient le verrou distant de publication SQLite."
+        )
+
+    stop = threading.Event()
+    lost = threading.Event()
+
+    def heartbeat():
+        while not stop.wait(_BACKUP_LEASE_HEARTBEAT_SECONDS):
+            try:
+                if not remote_sync_lease.renew(
+                    _BACKUP_LEASE_KEY,
+                    owner,
+                    lease_seconds=_BACKUP_LEASE_SECONDS,
+                ):
+                    lost.set()
+                    return
+            except Exception:
+                lost.set()
+                logging.getLogger(__name__).exception(
+                    "Unable to renew remote SQLite backup lease"
+                )
+                return
+
+    heartbeat_thread = threading.Thread(
+        target=heartbeat,
+        name="football-db-backup-lease-heartbeat",
+        daemon=True,
+    )
+    started = False
+
+    def ensure_owned():
+        if lost.is_set():
+            raise BackupLeaseUnavailable(
+                "Le verrou distant de publication SQLite a été perdu."
+            )
+        try:
+            if not remote_sync_lease.renew(
+                _BACKUP_LEASE_KEY,
+                owner,
+                lease_seconds=_BACKUP_LEASE_SECONDS,
+            ):
+                lost.set()
+                raise BackupLeaseUnavailable(
+                    "Le verrou distant de publication SQLite n'appartient plus à ce worker."
+                )
+        except BackupLeaseUnavailable:
+            raise
+        except Exception as exc:
+            lost.set()
+            raise BackupLeaseUnavailable(
+                "Impossible de renouveler le verrou distant de publication SQLite."
+            ) from exc
+
+    try:
+        heartbeat_thread.start()
+        started = True
+        yield ensure_owned
+    finally:
+        stop.set()
+        if started:
+            heartbeat_thread.join(timeout=65)
+        if started and heartbeat_thread.is_alive():
+            logging.getLogger(__name__).warning(
+                "SQLite backup lease heartbeat did not stop; leaving lease to expire"
+            )
+        elif not lost.is_set():
+            try:
+                remote_sync_lease.release(_BACKUP_LEASE_KEY, owner)
+            except Exception:
+                logging.getLogger(__name__).exception(
+                    "Unable to release remote SQLite backup lease"
+                )
+
+
 def backup_to_github(*, database_engine=engine, force: bool = False) -> dict:
-    """Publish a daily snapshot and reset reachable history at each month boundary."""
+    """Publish a verified SQLite snapshot under a cross-process lease."""
     token = _backup_token()
     if not token:
         return {"status": "not_configured"}
@@ -223,7 +320,7 @@ def backup_to_github(*, database_engine=engine, force: bool = False) -> dict:
     if "/" not in repository or not branch or "/" in branch:
         raise ValueError("Configuration du dépôt ou de la branche Git invalide.")
 
-    with _backup_lock:
+    with _backup_lock, _remote_backup_lease() as ensure_backup_lease:
         root = f"/repos/{repository}"
         head = _backup_head(root, branch, token)
         now_utc = datetime.now(timezone.utc)
@@ -247,6 +344,7 @@ def backup_to_github(*, database_engine=engine, force: bool = False) -> dict:
 
         with tempfile.TemporaryDirectory(prefix="football-backup-") as temp_dir:
             archive_path = Path(temp_dir) / "football.db.gz"
+            ensure_backup_lease()
             _create_database_archive(database_engine, archive_path)
             archive_bytes = archive_path.read_bytes()
             chunk_size = 8 * 1024 * 1024
@@ -264,6 +362,7 @@ def backup_to_github(*, database_engine=engine, force: bool = False) -> dict:
                     part_path = f"football.db.gz.part-{index:04d}"
                     part_sha = _git_blob_sha(part)
                     expected_part_shas[part_path] = part_sha
+                    ensure_backup_lease()
                     blob = _request(
                         "POST", f"{root}/git/blobs", token,
                         {"content": base64.b64encode(part).decode("ascii"), "encoding": "base64"},
@@ -287,6 +386,7 @@ def backup_to_github(*, database_engine=engine, force: bool = False) -> dict:
                     sort_keys=True, separators=(",", ":"),
                 ).encode("utf-8")
                 manifest_sha = _git_blob_sha(manifest_bytes)
+                ensure_backup_lease()
                 manifest_blob = _request(
                     "POST", f"{root}/git/blobs", token,
                     {"content": base64.b64encode(manifest_bytes).decode("ascii"), "encoding": "base64"},
@@ -323,6 +423,7 @@ def backup_to_github(*, database_engine=engine, force: bool = False) -> dict:
                         "gzip_verified": True,
                         "remote_verified": True,
                     }
+                ensure_backup_lease()
                 blob = _request(
                     "POST", f"{root}/git/blobs", token,
                     {"content": base64.b64encode(archive_bytes).decode("ascii"), "encoding": "base64"},
@@ -332,8 +433,6 @@ def backup_to_github(*, database_engine=engine, force: bool = False) -> dict:
                 }]
                 archive_tree_entries = tree_entries
             expected_blob_sha = _git_blob_sha(archive_bytes)
-            max_ref_retries = 3
-            ref_retries = 0
             while True:
                 current_tree_entries = [
                     dict(entry) for entry in archive_tree_entries
@@ -355,6 +454,7 @@ def backup_to_github(*, database_engine=engine, force: bool = False) -> dict:
                 tree_payload = {"tree": current_tree_entries}
                 if head:
                     tree_payload["base_tree"] = head["tree_sha"]
+                ensure_backup_lease()
                 tree = _request("POST", f"{root}/git/trees", token, tree_payload)
                 reset_history = _should_reset_backup_history(head, now_utc)
                 timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
@@ -364,10 +464,12 @@ def backup_to_github(*, database_engine=engine, force: bool = False) -> dict:
                 }
                 if head and not reset_history:
                     commit_payload["parents"] = [head["commit_sha"]]
+                ensure_backup_lease()
                 commit = _request(
                     "POST", f"{root}/git/commits", token, commit_payload
                 )
                 try:
+                    ensure_backup_lease()
                     if head:
                         _request(
                             "PATCH", f"{root}/git/refs/heads/{branch}", token,
@@ -379,11 +481,9 @@ def backup_to_github(*, database_engine=engine, force: bool = False) -> dict:
                             {"ref": f"refs/heads/{branch}", "sha": commit["sha"]},
                         )
                 except RuntimeError as exc:
-                    if (
-                        not _is_ref_conflict(exc)
-                        or ref_retries >= max_ref_retries
-                    ):
+                    if not _is_ref_conflict(exc):
                         raise
+                    ensure_backup_lease()
                     refreshed_head = _backup_head(root, branch, token)
                     if _archive_matches_head(
                         refreshed_head,
@@ -400,12 +500,13 @@ def backup_to_github(*, database_engine=engine, force: bool = False) -> dict:
                             "gzip_verified": True,
                             "remote_verified": True,
                             "concurrent_update": True,
-                            "concurrent_retries": ref_retries,
                         }
-                    head = refreshed_head
-                    ref_retries += 1
-                    continue
+                    raise RuntimeError(
+                        "Conflit concurrent sur database-backup : le snapshot préparé "
+                        "avant le conflit est abandonné pour éviter d'écraser une base plus récente."
+                    ) from exc
 
+                ensure_backup_lease()
                 verified_head = _backup_head(root, branch, token)
                 if _archive_matches_head(
                     verified_head,
@@ -426,7 +527,6 @@ def backup_to_github(*, database_engine=engine, force: bool = False) -> dict:
                             "integrity_verified": True,
                             "gzip_verified": True,
                             "remote_verified": True,
-                            "concurrent_retries": ref_retries,
                         }
                     return {
                         "status": "unchanged",
@@ -436,15 +536,10 @@ def backup_to_github(*, database_engine=engine, force: bool = False) -> dict:
                         "gzip_verified": True,
                         "remote_verified": True,
                         "concurrent_update": True,
-                        "concurrent_retries": ref_retries,
                     }
-                if verified_head and ref_retries < max_ref_retries:
-                    head = verified_head
-                    ref_retries += 1
-                    continue
                 raise RuntimeError(
                     "Sauvegarde envoyée mais vérification distante échouée : "
-                    "le commit ou le fichier football.db.gz ne correspond pas."
+                    "la branche a changé pendant la publication; le snapshot local n'est pas republié."
                 )
 
 
