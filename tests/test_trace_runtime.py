@@ -77,8 +77,8 @@ class FunctionTraceRuntimeTests(unittest.TestCase):
         namespace = {"__name__": "services.trace_test_module"}
         exec(
             compile(
-                "def traced_repeated(value):\\n"
-                "    return value + 1\\n",
+                "def traced_repeated(value):\n"
+                "    return value + 1\n",
                 trace_runtime._PROJECT_ROOT + "/services/trace_test_module.py",
                 "exec",
             ),
@@ -130,8 +130,8 @@ class FunctionTraceRuntimeTests(unittest.TestCase):
         namespace = {"__name__": "services.trace_test_module"}
         exec(
             compile(
-                "def traced_repeated_failure(value):\\n"
-                "    raise ValueError('failure')\\n",
+                "def traced_repeated_failure(value):\n"
+                "    raise ValueError('failure')\n",
                 trace_runtime._PROJECT_ROOT + "/services/trace_test_module.py",
                 "exec",
             ),
