@@ -22,11 +22,12 @@ def _no_remote_backup_lease():
 
 class GitBackupTests(unittest.TestCase):
     def setUp(self):
-        patcher = patch.object(
-            git_backup, "_remote_backup_lease", _no_remote_backup_lease
-        )
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        for target in ("_remote_full_sync_lease", "_remote_backup_lease"):
+            patcher = patch.object(
+                git_backup, target, _no_remote_backup_lease
+            )
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
     class ImmediateThread:
         def __init__(self, target, **_kwargs):
@@ -591,6 +592,123 @@ class RemoteBackupLeaseTests(unittest.TestCase):
                 with git_backup._remote_backup_lease() as ensure_owned:
                     ensure_owned()
         release.assert_not_called()
+
+    def test_remote_full_sync_gate_claims_renews_and_releases_owner(self):
+        with (
+            patch("services.remote_sync_lease.claim", return_value=True) as claim,
+            patch("services.remote_sync_lease.renew", return_value=True) as renew,
+            patch("services.remote_sync_lease.release", return_value=True) as release,
+        ):
+            with git_backup._remote_full_sync_lease() as ensure_owned:
+                ensure_owned()
+
+        claim.assert_called_once()
+        self.assertEqual(claim.call_args.args[0], "full-sync:exhaustive")
+        self.assertGreaterEqual(renew.call_count, 1)
+        release.assert_called_once_with(
+            "full-sync:exhaustive", claim.call_args.args[1]
+        )
+
+    def test_remote_full_sync_gate_fails_closed_when_sync_is_active(self):
+        with (
+            patch("services.remote_sync_lease.claim", return_value=False),
+            patch("services.git_backup.time.sleep"),
+        ):
+            with self.assertRaises(git_backup.BackupLeaseUnavailable):
+                with git_backup._remote_full_sync_lease():
+                    self.fail("backup must not overlap an active exhaustive sync")
+
+    def test_remote_full_sync_gate_retries_brief_post_job_handoff(self):
+        with (
+            patch(
+                "services.remote_sync_lease.claim",
+                side_effect=[False, False, True],
+            ) as claim,
+            patch("services.remote_sync_lease.renew", return_value=True) as renew,
+            patch("services.remote_sync_lease.release", return_value=True) as release,
+            patch("services.git_backup.time.sleep") as sleep,
+        ):
+            with git_backup._remote_full_sync_lease() as ensure_owned:
+                ensure_owned()
+
+        self.assertEqual(claim.call_count, 3)
+        self.assertEqual(sleep.call_count, 2)
+        self.assertEqual(claim.call_args.args[0], "full-sync:exhaustive")
+        self.assertGreaterEqual(renew.call_count, 1)
+        release.assert_called_once_with(
+            "full-sync:exhaustive", claim.call_args.args[1]
+        )
+
+    def test_remote_full_sync_gate_does_not_release_after_ownership_loss(self):
+        with (
+            patch("services.remote_sync_lease.claim", return_value=True),
+            patch("services.remote_sync_lease.renew", return_value=False),
+            patch("services.remote_sync_lease.release") as release,
+        ):
+            with self.assertRaises(git_backup.BackupLeaseUnavailable):
+                with git_backup._remote_full_sync_lease() as ensure_owned:
+                    ensure_owned()
+        release.assert_not_called()
+
+    def test_backup_acquires_full_sync_gate_before_backup_publisher_lease(self):
+        events = []
+
+        @contextmanager
+        def observed_lease(name):
+            events.append(f"enter:{name}")
+            yield lambda: events.append(f"check:{name}")
+            events.append(f"exit:{name}")
+
+        today = datetime.now(timezone.utc).isoformat()
+        with (
+            patch.object(git_backup, "_backup_token", return_value="token"),
+            patch.object(git_backup, "_setting", side_effect=lambda _name, default="": default),
+            patch.object(
+                git_backup,
+                "_remote_full_sync_lease",
+                side_effect=lambda: observed_lease("full-sync"),
+            ),
+            patch.object(
+                git_backup,
+                "_remote_backup_lease",
+                side_effect=lambda: observed_lease("backup"),
+            ),
+            patch.object(
+                git_backup, "_backup_head", return_value={"committed_at": today}
+            ),
+        ):
+            result = git_backup.backup_to_github()
+
+        self.assertEqual(result["status"], "skipped_daily_limit")
+        self.assertEqual(
+            events,
+            [
+                "enter:full-sync",
+                "enter:backup",
+                "check:full-sync",
+                "check:backup",
+                "exit:backup",
+                "exit:full-sync",
+            ],
+        )
+
+    def test_backup_refuses_to_read_or_snapshot_database_when_full_sync_gate_is_contended(self):
+        @contextmanager
+        def unavailable():
+            raise git_backup.BackupLeaseUnavailable("active full sync")
+            yield lambda: None
+
+        with (
+            patch.object(git_backup, "_backup_token", return_value="token"),
+            patch.object(
+                git_backup, "_remote_full_sync_lease", side_effect=unavailable
+            ),
+            patch.object(git_backup, "_backup_head") as backup_head,
+        ):
+            with self.assertRaises(git_backup.BackupLeaseUnavailable):
+                git_backup.backup_to_github()
+
+        backup_head.assert_not_called()
 
 
 if __name__ == "__main__":
