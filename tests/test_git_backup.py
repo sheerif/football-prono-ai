@@ -610,10 +610,34 @@ class RemoteBackupLeaseTests(unittest.TestCase):
         )
 
     def test_remote_full_sync_gate_fails_closed_when_sync_is_active(self):
-        with patch("services.remote_sync_lease.claim", return_value=False):
+        with (
+            patch("services.remote_sync_lease.claim", return_value=False),
+            patch("services.git_backup.time.sleep"),
+        ):
             with self.assertRaises(git_backup.BackupLeaseUnavailable):
                 with git_backup._remote_full_sync_lease():
                     self.fail("backup must not overlap an active exhaustive sync")
+
+    def test_remote_full_sync_gate_retries_brief_post_job_handoff(self):
+        with (
+            patch(
+                "services.remote_sync_lease.claim",
+                side_effect=[False, False, True],
+            ) as claim,
+            patch("services.remote_sync_lease.renew", return_value=True) as renew,
+            patch("services.remote_sync_lease.release", return_value=True) as release,
+            patch("services.git_backup.time.sleep") as sleep,
+        ):
+            with git_backup._remote_full_sync_lease() as ensure_owned:
+                ensure_owned()
+
+        self.assertEqual(claim.call_count, 3)
+        self.assertEqual(sleep.call_count, 2)
+        self.assertEqual(claim.call_args.args[0], "full-sync:exhaustive")
+        self.assertGreaterEqual(renew.call_count, 1)
+        release.assert_called_once_with(
+            "full-sync:exhaustive", claim.call_args.args[1]
+        )
 
     def test_remote_full_sync_gate_does_not_release_after_ownership_loss(self):
         with (
