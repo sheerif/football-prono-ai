@@ -11,6 +11,7 @@ import os
 import sqlite3
 import tempfile
 import threading
+import time
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -33,6 +34,8 @@ _BACKUP_LEASE_HEARTBEAT_SECONDS = 60
 _FULL_SYNC_LEASE_KEY = "full-sync:exhaustive"
 _FULL_SYNC_LEASE_SECONDS = 900
 _FULL_SYNC_LEASE_HEARTBEAT_SECONDS = 60
+_FULL_SYNC_LEASE_ACQUIRE_ATTEMPTS = 20
+_FULL_SYNC_LEASE_RETRY_DELAY_SECONDS = 0.25
 
 
 def _setting(name: str, default: str = "") -> str:
@@ -226,22 +229,31 @@ def _remote_coordination_lease(
     *,
     lease_seconds: int,
     heartbeat_seconds: int,
+    acquire_attempts: int = 1,
+    acquire_retry_delay_seconds: float = 0,
 ):
     """Acquire, heartbeat and release one fail-closed cross-process lease."""
+
     # Import lazily: remote_sync_lease itself uses git_backup for GitHub requests.
     from services import remote_sync_lease
 
     owner = f"{owner_prefix}:{uuid.uuid4().hex}"
-    try:
-        claimed = remote_sync_lease.claim(
-            resource_key,
-            owner,
-            lease_seconds=lease_seconds,
-        )
-    except Exception as exc:
-        raise BackupLeaseUnavailable(
-            f"Impossible de vérifier le verrou distant {resource_key}."
-        ) from exc
+    claimed = False
+    for attempt in range(max(1, int(acquire_attempts))):
+        try:
+            claimed = remote_sync_lease.claim(
+                resource_key,
+                owner,
+                lease_seconds=lease_seconds,
+            )
+        except Exception as exc:
+            raise BackupLeaseUnavailable(
+                f"Impossible de vérifier le verrou distant {resource_key}."
+            ) from exc
+        if claimed:
+            break
+        if attempt + 1 < max(1, int(acquire_attempts)) and acquire_retry_delay_seconds > 0:
+            time.sleep(acquire_retry_delay_seconds)
     if not claimed:
         raise BackupLeaseUnavailable(
             f"Une autre instance détient le verrou distant {resource_key}."
@@ -339,6 +351,11 @@ def _remote_full_sync_lease():
         "database-backup-sync-gate",
         lease_seconds=_FULL_SYNC_LEASE_SECONDS,
         heartbeat_seconds=_FULL_SYNC_LEASE_HEARTBEAT_SECONDS,
+        # Streamlit starts its post-job backup thread just before releasing the
+        # sync lease; bounded retries cover that handoff without waiting on a
+        # genuinely active writer indefinitely.
+        acquire_attempts=_FULL_SYNC_LEASE_ACQUIRE_ATTEMPTS,
+        acquire_retry_delay_seconds=_FULL_SYNC_LEASE_RETRY_DELAY_SECONDS,
     ) as ensure_owned:
         yield ensure_owned
 
@@ -362,7 +379,7 @@ def backup_to_github(*, database_engine=engine, force: bool = False) -> dict:
     ):
         def ensure_leases_owned():
             ensure_full_sync_lease()
-            ensure_leases_owned()
+            ensure_backup_lease()
 
         ensure_leases_owned()
         root = f"/repos/{repository}"
