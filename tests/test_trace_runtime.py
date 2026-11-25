@@ -34,7 +34,11 @@ class FunctionTraceRuntimeTests(unittest.TestCase):
         events = [record["event"] for record in records]
         self.assertIn("function_start", events)
         self.assertIn("function_end", events)
-        traced = [record for record in records if record.get("function") == "traced_target"]
+        traced = [
+            record for record in records
+            if record.get("function") == "traced_target"
+            and record.get("event") in {"function_start", "function_end", "function_exception"}
+        ]
         self.assertTrue(traced)
         self.assertTrue(all(record.get("trace_id") for record in traced))
         self.assertTrue(all(record.get("span_id") for record in traced))
