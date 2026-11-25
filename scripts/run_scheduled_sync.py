@@ -381,7 +381,37 @@ def main() -> int:
     retries = 0
     try:
         while True:
-            result = run()
+            try:
+                result = run()
+            except Exception:
+                # run() releases its local and remote sync leases in finally.
+                # Reacquire the shared sync gate through backup_to_github before
+                # snapshotting, so an exception cannot discard a committed
+                # checkpoint and cannot race a replacement sync worker.
+                try:
+                    backup = git_backup.backup_to_github(force=True)
+                    if (
+                        backup.get("status") not in {"uploaded", "unchanged"}
+                        or backup.get("remote_verified") is not True
+                    ):
+                        print(
+                            "Checkpoint post-erreur non vérifié à distance "
+                            f"(backup={backup.get('status', 'unknown')}).",
+                            file=sys.stderr,
+                        )
+                    else:
+                        print(
+                            "Checkpoint post-erreur vérifié à distance "
+                            f"(backup={backup.get('status')}).",
+                            file=sys.stderr,
+                        )
+                except Exception as backup_error:
+                    print(
+                        "Sauvegarde du checkpoint post-erreur impossible : "
+                        f"{backup_error}",
+                        file=sys.stderr,
+                    )
+                raise
             status = result.get("status")
             # Persist each partial checkpoint before waiting for a transient
             # minute/rate-limit window to reset. A retry is never attempted
