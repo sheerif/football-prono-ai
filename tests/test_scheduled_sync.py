@@ -324,6 +324,29 @@ class ScheduledSyncTests(unittest.TestCase):
         self.assertIn("sync interrupted", stderr.getvalue())
         self.assertIn("backup lease unavailable", stderr.getvalue())
 
+    def test_scheduled_entrypoint_reports_unverified_error_checkpoint_without_success(self):
+        stderr = io.StringIO()
+        with (
+            patch.object(
+                run_scheduled_sync,
+                "run",
+                side_effect=RuntimeError("sync interrupted"),
+            ),
+            patch.object(
+                run_scheduled_sync.git_backup,
+                "backup_to_github",
+                return_value={"status": "uploaded", "remote_verified": False},
+            ) as backup,
+            patch.object(run_scheduled_sync.engine, "dispose"),
+            redirect_stderr(stderr),
+        ):
+            result = run_scheduled_sync.main()
+
+        self.assertEqual(result, 1)
+        backup.assert_called_once_with(force=True)
+        self.assertIn("Checkpoint post-erreur non vérifié à distance", stderr.getvalue())
+        self.assertIn("sync interrupted", stderr.getvalue())
+
     def test_scheduled_entrypoint_fails_when_post_sync_snapshot_is_not_verified(self):
         with (
             patch.object(run_scheduled_sync, "run", return_value={"status": "complete"}),
