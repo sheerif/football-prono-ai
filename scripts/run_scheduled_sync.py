@@ -164,7 +164,9 @@ def run() -> dict:
         attempt = int((previous or {}).get("attempts") or 0) + 1
         renew_lease(force=True)
         try:
-            pre_match_archive = prediction_archive_service.archive_upcoming_predictions()
+            pre_match_archive = prediction_archive_service.archive_upcoming_predictions(
+                progress_callback=progress,
+            )
         except Exception as exc:
             pre_match_archive = {
                 "status": "error",
