@@ -40,7 +40,7 @@ jobs:
             missing+=("BACKUP_TOKEN")
           fi
           if [ "${#missing[@]}" -gt 0 ]; then
-            printf '::error::Scheduled sync cannot run; missing required Actions secrets: %s\n' "${missing[*]}"
+            printf '::error::Scheduled sync cannot run; missing required Actions secrets: %s\\n' "${missing[*]}"
             {
               echo "## Synchronisation non exécutée"
               echo
@@ -54,7 +54,7 @@ jobs:
       - name: Restore persistent SQLite database
         shell: bash
         run: |
-          git fetch --no-tags --depth=1 origin \
+          git fetch --no-tags --depth=1 origin \\
             refs/heads/database-backup:refs/remotes/origin/database-backup
           if git cat-file -e origin/database-backup:football.db.gz 2>/dev/null; then
             git show origin/database-backup:football.db.gz > football.db.gz
@@ -67,7 +67,7 @@ jobs:
           archive = bytearray()
           for part in manifest["parts"]:
               data = subprocess.check_output(["git", "show", f"origin/database-backup:{part['path']}"])
-              header = f"blob {len(data)}\0".encode("ascii")
+              header = f"blob {len(data)}\\0".encode("ascii")
               git_sha = hashlib.sha1(header + data).hexdigest()
               if len(data) != part["size_bytes"] or git_sha != part["git_blob_sha"]:
                   raise SystemExit(f"Fragment invalide: {part['path']}")
@@ -119,10 +119,10 @@ jobs:
           summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
           if summary_path:
               with open(summary_path, "a", encoding="utf-8") as summary:
-                  summary.write("## Restauration SQLite vérifiée\n\n")
-                  summary.write("- PRAGMA integrity_check: ok\n")
-                  summary.write("- Tables core: leagues, teams, matches, standings\n")
-                  summary.write("- Volumes: " + ", ".join(f"{name}={count}" for name, count in counts.items()) + "\n")
+                  summary.write("## Restauration SQLite vérifiée\\n\\n")
+                  summary.write("- PRAGMA integrity_check: ok\\n")
+                  summary.write("- Tables core: leagues, teams, matches, standings\\n")
+                  summary.write("- Volumes: " + ", ".join(f"{name}={count}" for name, count in counts.items()) + "\\n")
           PY
 
       - name: Set up Python
@@ -137,4 +137,17 @@ jobs:
           python -m pip install -r requirements.txt
 
       - name: Synchronize and archive pre-match forecasts
-        run: python -m scripts.run_scheduled_sync
+        shell: bash
+        run: |
+          set -o pipefail
+          python -u -m scripts.run_scheduled_sync 2>&1 | tee scheduled-sync.log
+
+      - name: Archive structured synchronization logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scheduled-sync-logs-${{ github.run_id }}
+          path: scheduled-sync.log
+          if-no-files-found: warn
+          retention-days: 14
+          compression-level: 6
