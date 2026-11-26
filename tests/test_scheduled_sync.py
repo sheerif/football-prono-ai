@@ -205,15 +205,17 @@ class ScheduledSyncTests(unittest.TestCase):
     def test_scheduler_aborts_when_background_heartbeat_loses_lease(self):
         remote_renewals = []
         marks = []
+        sync_started = threading.Event()
 
         def renew_remote(*args, **kwargs):
             remote_renewals.append(True)
-            return len(remote_renewals) < 4
+            return not sync_started.is_set()
 
         def remember_mark(key, resource_type, status, **kwargs):
             marks.append(status)
 
         def fake_sync(progress_callback):
+            sync_started.set()
             threading.Event().wait(0.15)
             return {"quota_reached": False, "api_calls": 1, "errors": []}
 
