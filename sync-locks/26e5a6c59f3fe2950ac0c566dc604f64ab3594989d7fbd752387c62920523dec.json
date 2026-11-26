@@ -1,1 +1,1 @@
-{"claimed_at":"2026-11-26T10:13:35.822851+00:00","lease_until":"2026-11-26T10:28:35.822851+00:00","owner":"database-backup-sync-gate:c3e37dd8b153407f9d9a468969286db2","resource_key":"full-sync:exhaustive","updated_at":"2026-11-26T10:13:35.822851+00:00"}
+{"claimed_at":"2026-11-26T10:13:35.822851+00:00","lease_until":"2026-11-26T10:28:42.269769+00:00","owner":"database-backup-sync-gate:c3e37dd8b153407f9d9a468969286db2","resource_key":"full-sync:exhaustive","updated_at":"2026-11-26T10:13:42.269769+00:00"}
