@@ -3,11 +3,6 @@ import streamlit as st
 import datetime
 import os
 
-# Streamlit Cloud runtime: trace project functions without exposing argument values.
-# GitHub browser tests remain quiet unless their workflow explicitly opts in.
-if os.getenv("GITHUB_ACTIONS", "").lower() != "true":
-    os.environ.setdefault("FOOTBALL_FUNCTION_TRACE", "1")
-
 from services import api_football, background_jobs, git_backup, import_service, live_priority_watcher, schema_guard
 from components import api_metrics, auth, sidebar, ui
 from pages import dashboard, data_management, api_widgets, matchs_a_venir, analyse_match, prediction_ia
