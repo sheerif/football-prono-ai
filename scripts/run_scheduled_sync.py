@@ -12,7 +12,6 @@ import logging
 import json
 import os
 import sys
-import threading
 import time
 import uuid
 
@@ -120,75 +119,47 @@ def run() -> dict:
         remote_sync_lease.release(CONTROL_KEY, owner)
         return {"status": "skipped", "reason": "lease locale de synchronisation détenue"}
 
-    lease_lost = threading.Event()
-    heartbeat_stop = threading.Event()
-    renew_lock = threading.Lock()
-    heartbeat_thread = None
-    heartbeat_started = False
+    lease_lost = False
     last_renewed = time.monotonic()
     started_at = _now().isoformat()
     attempt = 1
 
     def renew_lease(*, force: bool = False) -> None:
-        nonlocal last_renewed
-        with renew_lock:
-            if lease_lost.is_set():
-                raise FullSyncLeaseLost(
-                    "Lease globale de synchronisation déjà perdue."
-                )
-            now = time.monotonic()
-            if not force and now - last_renewed < LEASE_RENEW_INTERVAL_SECONDS:
-                return
-            try:
-                remote_renewed = remote_sync_lease.renew(
-                    CONTROL_KEY, owner, lease_seconds=LEASE_SECONDS
-                )
-            except Exception as exc:
-                lease_lost.set()
-                raise FullSyncLeaseLost(
-                    "Impossible de vérifier la lease distante de synchronisation."
-                ) from exc
-            if not remote_renewed:
-                lease_lost.set()
-                raise FullSyncLeaseLost(
-                    "Lease distante globale de synchronisation perdue."
-                )
-            try:
-                local_renewed = sync_registry.renew_download_claim(
-                    CONTROL_KEY, owner, lease_seconds=LEASE_SECONDS
-                )
-            except Exception as exc:
-                lease_lost.set()
-                raise FullSyncLeaseLost(
-                    "Impossible de vérifier la lease locale de synchronisation."
-                ) from exc
-            if not local_renewed:
-                lease_lost.set()
-                raise FullSyncLeaseLost(
-                    "Lease locale globale de synchronisation perdue."
-                )
-            last_renewed = now
-
-    def heartbeat() -> None:
-        while not heartbeat_stop.wait(LEASE_RENEW_INTERVAL_SECONDS):
-            try:
-                renew_lease(force=True)
-            except Exception:
-                logging.exception("Scheduled sync lease heartbeat failed")
-                return
+        nonlocal last_renewed, lease_lost
+        now = time.monotonic()
+        if not force and now - last_renewed < LEASE_RENEW_INTERVAL_SECONDS:
+            return
+        try:
+            remote_renewed = remote_sync_lease.renew(
+                CONTROL_KEY, owner, lease_seconds=LEASE_SECONDS
+            )
+        except Exception as exc:
+            lease_lost = True
+            raise FullSyncLeaseLost(
+                "Impossible de vérifier la lease distante de synchronisation."
+            ) from exc
+        if not remote_renewed:
+            lease_lost = True
+            raise FullSyncLeaseLost("Lease distante globale de synchronisation perdue.")
+        try:
+            local_renewed = sync_registry.renew_download_claim(
+                CONTROL_KEY, owner, lease_seconds=LEASE_SECONDS
+            )
+        except Exception as exc:
+            lease_lost = True
+            raise FullSyncLeaseLost(
+                "Impossible de vérifier la lease locale de synchronisation."
+            ) from exc
+        if not local_renewed:
+            lease_lost = True
+            raise FullSyncLeaseLost("Lease locale globale de synchronisation perdue.")
+        last_renewed = now
 
     def progress(current: int, total: int, label: str) -> None:
         renew_lease()
         _log_progress(current, total, label)
 
     try:
-        heartbeat_thread = threading.Thread(
-            target=heartbeat,
-            name="football-scheduled-sync-lease-heartbeat",
-            daemon=True,
-        )
-        heartbeat_thread.start()
-        heartbeat_started = True
         previous = sync_registry.get(CONTROL_KEY)
         attempt = int((previous or {}).get("attempts") or 0) + 1
         renew_lease(force=True)
@@ -378,7 +349,7 @@ def run() -> dict:
         )
         return {"status": status, **metadata, "pre_match_archive": pre_match_archive}
     except Exception as exc:
-        if not lease_lost.is_set():
+        if not lease_lost:
             sync_registry.mark(
                 CONTROL_KEY,
                 "full_sync_control",
@@ -398,28 +369,14 @@ def run() -> dict:
             )
         raise
     finally:
-        heartbeat_stop.set()
-        heartbeat_stopped = True
-        if heartbeat_started and heartbeat_thread is not None:
-            heartbeat_thread.join(timeout=LEASE_RENEW_INTERVAL_SECONDS + 5)
-            heartbeat_stopped = not heartbeat_thread.is_alive()
-            if not heartbeat_stopped:
-                logging.warning(
-                    "Scheduled sync lease heartbeat did not stop; leaving leases to expire"
-                )
-        if heartbeat_stopped:
-            try:
-                sync_registry.release_download_claim(CONTROL_KEY, owner)
-            except Exception:
-                logging.warning(
-                    "Unable to release scheduled local full-sync lease", exc_info=True
-                )
-            try:
-                remote_sync_lease.release(CONTROL_KEY, owner)
-            except Exception:
-                logging.warning(
-                    "Unable to release scheduled remote full-sync lease", exc_info=True
-                )
+        try:
+            sync_registry.release_download_claim(CONTROL_KEY, owner)
+        except Exception:
+            logging.warning("Unable to release scheduled local full-sync lease", exc_info=True)
+        try:
+            remote_sync_lease.release(CONTROL_KEY, owner)
+        except Exception:
+            logging.warning("Unable to release scheduled remote full-sync lease", exc_info=True)
 
 
 def main() -> int:

@@ -1,6 +1,5 @@
 import datetime
 import io
-import threading
 import unittest
 from contextlib import redirect_stderr
 from unittest.mock import patch
@@ -159,101 +158,6 @@ class ScheduledSyncTests(unittest.TestCase):
         record_log.assert_not_called()
         local_release.assert_called_once()
         remote_release.assert_called_once()
-
-    def test_scheduler_renews_local_and_remote_leases_during_blocking_sync(self):
-        def fake_sync(progress_callback):
-            # Simulate a long operation that does not emit progress callbacks.
-            threading.Event().wait(0.15)
-            return {"quota_reached": False, "api_calls": 1, "errors": []}
-
-        with (
-            patch.object(run_scheduled_sync, "LEASE_RENEW_INTERVAL_SECONDS", 0.05),
-            patch.object(run_scheduled_sync.import_service, "init_db"),
-            patch.object(run_scheduled_sync.import_service, "record_update_log"),
-            patch.object(run_scheduled_sync.sync_registry, "ensure_table"),
-            patch.object(run_scheduled_sync.sync_registry, "get", return_value=None),
-            patch.object(run_scheduled_sync.remote_sync_lease, "claim", return_value=True),
-            patch.object(run_scheduled_sync.sync_registry, "claim_download", return_value=True),
-            patch.object(run_scheduled_sync.remote_sync_lease, "renew", return_value=True) as remote_renew,
-            patch.object(run_scheduled_sync.sync_registry, "renew_download_claim", return_value=True) as local_renew,
-            patch.object(run_scheduled_sync.sync_registry, "release_download_claim"),
-            patch.object(run_scheduled_sync.remote_sync_lease, "release"),
-            patch.object(
-                run_scheduled_sync.prediction_archive_service,
-                "archive_upcoming_predictions",
-                return_value={"status": "complete", "archived": 0, "api_calls": 0},
-            ),
-            patch.object(
-                run_scheduled_sync.background_jobs,
-                "api_quota_status",
-                return_value={"verified": True, "remaining": 50, "current": 0, "limit": 100},
-            ),
-            patch.object(run_scheduled_sync.sync_registry, "mark"),
-            patch.object(
-                run_scheduled_sync.full_sync_service,
-                "run_full_sync",
-                side_effect=fake_sync,
-            ) as sync,
-        ):
-            result = run_scheduled_sync.run()
-
-        self.assertEqual(result["status"], "complete")
-        sync.assert_called_once()
-        self.assertGreaterEqual(remote_renew.call_count, 5)
-        self.assertGreaterEqual(local_renew.call_count, 5)
-
-    def test_scheduler_aborts_when_background_heartbeat_loses_lease(self):
-        remote_renewals = []
-        marks = []
-        sync_started = threading.Event()
-
-        def renew_remote(*args, **kwargs):
-            remote_renewals.append(True)
-            return not sync_started.is_set()
-
-        def remember_mark(key, resource_type, status, **kwargs):
-            marks.append(status)
-
-        def fake_sync(progress_callback):
-            sync_started.set()
-            threading.Event().wait(0.15)
-            return {"quota_reached": False, "api_calls": 1, "errors": []}
-
-        with (
-            patch.object(run_scheduled_sync, "LEASE_RENEW_INTERVAL_SECONDS", 0.05),
-            patch.object(run_scheduled_sync.import_service, "init_db"),
-            patch.object(run_scheduled_sync.import_service, "record_update_log"),
-            patch.object(run_scheduled_sync.sync_registry, "ensure_table"),
-            patch.object(run_scheduled_sync.sync_registry, "get", return_value=None),
-            patch.object(run_scheduled_sync.remote_sync_lease, "claim", return_value=True),
-            patch.object(run_scheduled_sync.sync_registry, "claim_download", return_value=True),
-            patch.object(run_scheduled_sync.remote_sync_lease, "renew", side_effect=renew_remote),
-            patch.object(run_scheduled_sync.sync_registry, "renew_download_claim", return_value=True),
-            patch.object(run_scheduled_sync.sync_registry, "release_download_claim"),
-            patch.object(run_scheduled_sync.remote_sync_lease, "release"),
-            patch.object(
-                run_scheduled_sync.prediction_archive_service,
-                "archive_upcoming_predictions",
-                return_value={"status": "complete", "archived": 0, "api_calls": 0},
-            ),
-            patch.object(
-                run_scheduled_sync.background_jobs,
-                "api_quota_status",
-                return_value={"verified": True, "remaining": 50, "current": 0, "limit": 100},
-            ),
-            patch.object(run_scheduled_sync.sync_registry, "mark", side_effect=remember_mark),
-            patch.object(
-                run_scheduled_sync.full_sync_service,
-                "run_full_sync",
-                side_effect=fake_sync,
-            ) as sync,
-        ):
-            with self.assertRaises(run_scheduled_sync.FullSyncLeaseLost):
-                run_scheduled_sync.run()
-
-        sync.assert_called_once()
-        self.assertGreaterEqual(len(remote_renewals), 4)
-        self.assertEqual(marks, ["running"])
 
     def test_scheduler_persists_successful_completion(self):
         marks = []
