@@ -1,0 +1,1 @@
+{"allocations":{"13d9ab449ad5425dad8d23be11fec87e":{"amount":25,"created_at":"2026-11-27T00:13:23.699633+00:00","owner":"runtime:streamlit","priority_class":"urgent","remaining":25}},"available":7475,"daily_limit":7500,"known":true,"lowest_observed_remaining":7500,"quota_day":"2026-11-27","reserve":1125,"schema_version":1,"updated_at":"2026-11-27T00:13:23.699633+00:00"}
